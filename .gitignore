@@ -42,6 +42,7 @@ litellm/proxy/tests/node_modules
 litellm/proxy/tests/package.json
 litellm/proxy/tests/package-lock.json
 ui/litellm-dashboard/.next
+ui/litellm-dashboard/out/
 ui/litellm-dashboard/node_modules
 ui/litellm-dashboard/next-env.d.ts
 ui/litellm-dashboard/package.json
@@ -73,6 +74,9 @@ tests/local_testing/log.txt
 litellm/proxy/_new_new_secret_config.yaml
 litellm/proxy/custom_guardrail.py
 **/.mypy_cache/
+.mypy_cache/*
+litellm/proxy/_experimental/out/**/*.html
+litellm/proxy/_experimental/out/_next/static/
 litellm/proxy/application.log
 tests/llm_translation/vertex_test_account.json
 tests/llm_translation/test_vertex_key.json
