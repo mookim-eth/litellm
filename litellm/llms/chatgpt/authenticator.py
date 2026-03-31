@@ -29,19 +29,30 @@ DEVICE_CODE_POLL_SLEEP_SECONDS = 5
 
 
 class Authenticator:
-    def __init__(self) -> None:
-        self.token_dir = os.getenv(
-            "CHATGPT_TOKEN_DIR",
-            os.path.expanduser("~/.config/litellm/chatgpt"),
-        )
-        self.auth_file = os.path.join(
-            self.token_dir, os.getenv("CHATGPT_AUTH_FILE", "auth.json")
-        )
+    def __init__(
+        self,
+        auth_file_path: Optional[str] = None,
+        api_base: Optional[str] = None,
+    ) -> None:
+        self._api_base = api_base
+        if auth_file_path:
+            resolved_auth_file = os.path.expanduser(auth_file_path)
+            self.auth_file = resolved_auth_file
+            self.token_dir = os.path.dirname(resolved_auth_file) or "."
+        else:
+            self.token_dir = os.getenv(
+                "CHATGPT_TOKEN_DIR",
+                os.path.expanduser("~/.config/litellm/chatgpt"),
+            )
+            self.auth_file = os.path.join(
+                self.token_dir, os.getenv("CHATGPT_AUTH_FILE", "auth.json")
+            )
         self._ensure_token_dir()
 
     def get_api_base(self) -> str:
         return (
-            os.getenv("CHATGPT_API_BASE")
+            self._api_base
+            or os.getenv("CHATGPT_API_BASE")
             or os.getenv("OPENAI_CHATGPT_API_BASE")
             or CHATGPT_API_BASE
         )

@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import time
 from unittest.mock import mock_open, patch
 
@@ -66,3 +67,16 @@ class TestChatGPTAuthenticator:
             assert account_id == "acct-123"
             mock_write.assert_called_once()
             assert mock_write.call_args[0][0]["account_id"] == "acct-123"
+
+    def test_explicit_auth_file_path_overrides_env(self):
+        with patch("os.path.exists", return_value=True):
+            authenticator = Authenticator(
+                auth_file_path="~/custom-chatgpt/auth.json",
+                api_base="https://example.chatgpt.local",
+            )
+
+        assert authenticator.auth_file == os.path.expanduser(
+            "~/custom-chatgpt/auth.json"
+        )
+        assert authenticator.token_dir == os.path.expanduser("~/custom-chatgpt")
+        assert authenticator.get_api_base() == "https://example.chatgpt.local"
