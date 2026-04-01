@@ -558,6 +558,9 @@ class LiteLLMRoutes(enum.Enum):
         "/model/update",
         "/model/delete",
         "/model/info",
+        # fallback
+        "/fallback",
+        "/fallback/{model}",
         "/jwt/key/mapping/new",
         "/jwt/key/mapping/update",
         "/jwt/key/mapping/delete",
