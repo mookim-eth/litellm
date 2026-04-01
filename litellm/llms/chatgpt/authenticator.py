@@ -35,6 +35,7 @@ class Authenticator:
         api_base: Optional[str] = None,
     ) -> None:
         self._api_base = api_base
+        self._explicit_auth_file_path = auth_file_path is not None
         if auth_file_path:
             resolved_auth_file = os.path.expanduser(auth_file_path)
             self.auth_file = resolved_auth_file
@@ -59,10 +60,14 @@ class Authenticator:
 
     def get_access_token(self) -> str:
         auth_data = self._read_auth_file()
+        auth_error_reason = "ChatGPT auth file is missing or invalid"
         if auth_data:
             access_token = auth_data.get("access_token")
             if access_token and not self._is_token_expired(auth_data, access_token):
                 return access_token
+            auth_error_reason = (
+                "ChatGPT access token is expired or missing in the auth file"
+            )
             refresh_token = auth_data.get("refresh_token")
             if refresh_token:
                 try:
@@ -72,6 +77,12 @@ class Authenticator:
                     verbose_logger.warning(
                         "ChatGPT refresh token failed, re-login required: %s", exc
                     )
+                    auth_error_reason = (
+                        "ChatGPT refresh token failed for the configured auth file"
+                    )
+
+        if self._is_interactive_login_disabled():
+            self._raise_non_interactive_auth_error(auth_error_reason)
 
         cooldown_remaining = self._get_device_code_cooldown_remaining(auth_data)
         if cooldown_remaining > 0:
@@ -81,6 +92,25 @@ class Authenticator:
 
         tokens = self._login_device_code()
         return tokens["access_token"]
+
+    def _is_interactive_login_disabled(self) -> bool:
+        env_value = os.getenv("CHATGPT_DISABLE_INTERACTIVE_LOGIN", "")
+        disable_interactive_login = env_value.lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        return self._explicit_auth_file_path or disable_interactive_login
+
+    def _raise_non_interactive_auth_error(self, reason: str) -> None:
+        raise GetAccessTokenError(
+            message=(
+                f"{reason}. Expected auth file at '{self.auth_file}'. "
+                "Interactive ChatGPT device-code login is disabled."
+            ),
+            status_code=401,
+        )
 
     def get_account_id(self) -> Optional[str]:
         auth_data = self._read_auth_file()

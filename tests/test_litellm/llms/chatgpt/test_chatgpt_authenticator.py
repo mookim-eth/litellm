@@ -7,6 +7,7 @@ from unittest.mock import mock_open, patch
 import pytest
 
 from litellm.llms.chatgpt.authenticator import Authenticator
+from litellm.llms.chatgpt.common_utils import GetAccessTokenError
 
 
 def _make_jwt(payload: dict) -> str:
@@ -80,3 +81,35 @@ class TestChatGPTAuthenticator:
         )
         assert authenticator.token_dir == os.path.expanduser("~/custom-chatgpt")
         assert authenticator.get_api_base() == "https://example.chatgpt.local"
+
+    def test_explicit_auth_file_path_missing_fails_fast(self):
+        with patch("os.path.exists", return_value=True):
+            authenticator = Authenticator(
+                auth_file_path="~/custom-chatgpt/auth.json",
+            )
+
+        with patch("builtins.open", side_effect=IOError), patch.object(
+            authenticator, "_login_device_code"
+        ) as mock_login_device_code, pytest.raises(GetAccessTokenError) as exc_info:
+            authenticator.get_access_token()
+
+        mock_login_device_code.assert_not_called()
+        assert "Interactive ChatGPT device-code login is disabled" in str(
+            exc_info.value
+        )
+
+    def test_disable_interactive_login_env_missing_auth_fails_fast(self):
+        with patch("os.path.exists", return_value=True):
+            authenticator = Authenticator()
+
+        with patch.dict(
+            os.environ, {"CHATGPT_DISABLE_INTERACTIVE_LOGIN": "true"}
+        ), patch("builtins.open", side_effect=IOError), patch.object(
+            authenticator, "_login_device_code"
+        ) as mock_login_device_code, pytest.raises(GetAccessTokenError) as exc_info:
+            authenticator.get_access_token()
+
+        mock_login_device_code.assert_not_called()
+        assert "Interactive ChatGPT device-code login is disabled" in str(
+            exc_info.value
+        )
