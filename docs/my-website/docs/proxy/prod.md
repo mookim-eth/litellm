@@ -182,12 +182,16 @@ To ensure only one service manages database migrations, use our [Helm PreSync ho
   ```
 
 2. **LiteLLM Pods**:
-   - Set `DISABLE_SCHEMA_UPDATE=true` in LiteLLM pod configurations to prevent them from running migrations.
+   - Set `DISABLE_SCHEMA_UPDATE=true` in LiteLLM pod configurations to prevent them from running startup schema updates.
+   - `DISABLE_SCHEMA_UPDATE=true` does not skip the startup Prisma schema diff/check by itself. If you also want to skip the diff/check on steady-state pods, set `SKIP_PRISMA_SCHEMA_DIFF_CHECK=true`.
+   - During version upgrades, you should temporarily set `DISABLE_SCHEMA_UPDATE=false` so schema changes are applied and validated before switching traffic back.
    
    Example configuration for LiteLLM pod:
    ```yaml
    env:
      - name: DISABLE_SCHEMA_UPDATE
+       value: "true"
+     - name: SKIP_PRISMA_SCHEMA_DIFF_CHECK
        value: "true"
    ```
 

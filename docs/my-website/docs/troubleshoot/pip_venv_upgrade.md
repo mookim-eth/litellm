@@ -110,7 +110,9 @@ All migrations should have a `finished_at` timestamp and no `rolled_back_at`.
 
 ## Key Things to Know
 
-- **`DISABLE_SCHEMA_UPDATE=true`** env var prevents auto-migration on startup - useful if you want full manual control
+- **`DISABLE_SCHEMA_UPDATE=true`** env var prevents auto-migration on startup. During a version upgrade you should temporarily set it to `false` so the new version can apply or validate required schema changes.
+
+- **`SKIP_PRISMA_SCHEMA_DIFF_CHECK=true`** skips the startup Prisma schema diff/check when you have already disabled schema updates. This is useful for steady-state pods where you do not want startup blocked by schema inspection, but it should stay off during version upgrades.
 
 - **`prisma db push`** is the nuclear option: force-syncs the DB to match the schema, bypassing migration history. Safe when all changes are additive (new columns/tables), but always have a backup.
 

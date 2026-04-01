@@ -262,7 +262,7 @@ router_settings:
 | key_management_settings | List[Dict[str, Any]] | Settings for key management system (e.g. AWS KMS, Azure Key Vault) [Doc on key management](../secret.md) |
 | allow_user_auth | boolean | (Deprecated) old approach for user authentication. |
 | user_api_key_cache_ttl | int | The time (in seconds) to cache user api keys in memory. |
-| disable_prisma_schema_update | boolean | If true, turns off automatic schema updates to DB |
+| disable_prisma_schema_update | boolean | If true, skips automatic schema updates. Turn this off during version upgrades so new schema changes can be applied and validated. |
 | litellm_key_header_name | str | If set, allows passing LiteLLM keys as a custom header. [Doc on custom headers](./virtual_keys.md#custom-headers) |
 | moderation_model | str | The default model to use for moderation. |
 | custom_sso | str | Path to a python file that implements custom SSO logic. [Doc on custom SSO](./custom_sso.md) |
@@ -638,7 +638,8 @@ router_settings:
 | DISABLE_ADMIN_UI | Toggle to disable the admin UI
 | DISABLE_AIOHTTP_TRANSPORT | Flag to disable aiohttp transport. When this is set to True, litellm will use httpx instead of aiohttp. **Default is False**
 | DISABLE_AIOHTTP_TRUST_ENV | Flag to disable aiohttp trust environment. When this is set to True, litellm will not trust the environment for aiohttp eg. `HTTP_PROXY` and `HTTPS_PROXY` environment variables will not be used when this is set to True. **Default is False**
-| DISABLE_SCHEMA_UPDATE | Toggle to disable schema updates
+| DISABLE_SCHEMA_UPDATE | Toggle to skip automatic schema updates. Turn this off during version upgrades so schema changes can run. |
+| SKIP_PRISMA_SCHEMA_DIFF_CHECK | Toggle to skip the startup Prisma schema diff/check when schema updates are already disabled. Use with care on steady-state pods; do not rely on this during version upgrades. |
 | DYNAMIC_RATE_LIMIT_ERROR_THRESHOLD_PER_MINUTE | Threshold for deployment failures per minute before enforcing rate limits in parallel request limiter. Default is 1
 | DOCS_DESCRIPTION | Description text for documentation pages
 | DOCS_FILTERED | Flag indicating filtered documentation

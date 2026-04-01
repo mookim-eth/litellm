@@ -884,7 +884,13 @@ def run_server(  # noqa: PLR0915
                     )
                     is False
                 ):
-                    check_prisma_schema_diff(db_url=None)
+                    if os.getenv("SKIP_PRISMA_SCHEMA_DIFF_CHECK", "false").lower() == "true":
+                        print(  # noqa: T201
+                            "LiteLLM Proxy: Skipping startup Prisma schema diff check "
+                            "because SKIP_PRISMA_SCHEMA_DIFF_CHECK=true."
+                        )
+                    else:
+                        check_prisma_schema_diff(db_url=None)
                 else:
                     if not PrismaManager.setup_database(
                         use_migrate=not use_prisma_db_push
