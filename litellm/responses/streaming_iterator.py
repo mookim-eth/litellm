@@ -1038,12 +1038,81 @@ class ManagedResponsesWebSocketHandler:
             )
             return None
 
-    async def _send_error(self, message: str, error_type: str = "server_error") -> None:
+    @staticmethod
+    def _default_status_for_error_type(error_type: str) -> int:
+        return {
+            "invalid_request_error": 400,
+            "authentication_error": 401,
+            "permission_error": 403,
+            "not_found_error": 404,
+            "timeout_error": 408,
+            "rate_limit_error": 429,
+            "usage_limit_reached": 429,
+            "service_unavailable_error": 503,
+        }.get(error_type, 500)
+
+    @staticmethod
+    def _parse_nested_error_payload(message: str) -> Optional[Dict[str, Any]]:
+        json_start = message.find("{")
+        if json_start == -1:
+            return None
         try:
+            parsed = json.loads(message[json_start:])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        error = parsed.get("error")
+        if isinstance(error, dict):
+            return error
+        return None
+
+    @classmethod
+    def _error_payload_from_exception(
+        cls, exc: Exception
+    ) -> tuple[str, str, int, Optional[str]]:
+        message = str(exc)
+        error_type = "server_error"
+        status = getattr(exc, "status_code", None)
+        error_code: Optional[str] = None
+
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            nested_error = body.get("error") if isinstance(body.get("error"), dict) else body
+            if isinstance(nested_error, dict):
+                error_type = nested_error.get("type", error_type)
+                message = nested_error.get("message", message)
+                error_code = nested_error.get("code")
+
+        if error_type == "server_error":
+            nested_error = cls._parse_nested_error_payload(message)
+            if nested_error is not None:
+                error_type = nested_error.get("type", error_type)
+                message = nested_error.get("message", message)
+                error_code = nested_error.get("code")
+
+        if status is None:
+            status = cls._default_status_for_error_type(error_type)
+
+        return message, error_type, int(status), error_code
+
+    async def _send_error(
+        self,
+        message: str,
+        error_type: str = "server_error",
+        status: Optional[int] = None,
+        error_code: Optional[str] = None,
+    ) -> None:
+        try:
+            error_payload: Dict[str, Any] = {
+                "type": "error",
+                "status": status or self._default_status_for_error_type(error_type),
+                "error": {"type": error_type, "message": message},
+            }
+            if error_code is not None:
+                error_payload["error"]["code"] = error_code
             await self.websocket.send_text(
-                json.dumps(
-                    {"type": "error", "error": {"type": error_type, "message": message}}
-                )
+                json.dumps(error_payload)
             )
         except Exception:
             pass
@@ -1489,7 +1558,15 @@ class ManagedResponsesWebSocketHandler:
             verbose_logger.exception(
                 "ManagedResponsesWS: error processing response.create: %s", exc
             )
-            await self._send_error(str(exc))
+            message, error_type, status, error_code = (
+                self._error_payload_from_exception(exc)
+            )
+            await self._send_error(
+                message,
+                error_type=error_type,
+                status=status,
+                error_code=error_code,
+            )
             return
 
         self._save_turn_history(completed_event, prior_history, current_messages)

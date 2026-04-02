@@ -930,6 +930,64 @@ class TestWebSocketErrorHandling:
         error_event = mock_websocket.send_text.call_args[0][0]
         assert "error" in error_event
         assert "Invalid JSON" in error_event
+        parsed = json.loads(error_event)
+        assert parsed["status"] == 400
+        assert parsed["error"]["type"] == "invalid_request_error"
+
+    @pytest.mark.asyncio
+    async def test_managed_handler_bad_request_includes_status_and_nested_error(self):
+        import litellm
+
+        handler = TestManagedWebSocketHandlerIntegration._make_handler(
+            model="chatgpt/gpt-5.4",
+            custom_llm_provider="chatgpt",
+        )
+        handler._stream_and_forward = AsyncMock(
+            side_effect=litellm.BadRequestError(
+                message=(
+                    'ChatgptException - {\n'
+                    '  "error": {\n'
+                    '    "message": "No tool call found for custom tool call output with call_id call_RlrXilcrezdITUjYJK87E6iX.",\n'
+                    '    "type": "invalid_request_error",\n'
+                    '    "param": "input",\n'
+                    '    "code": null\n'
+                    "  }\n"
+                    "}"
+                ),
+                model="chatgpt/gpt-5.4",
+                llm_provider="chatgpt",
+                body={
+                    "error": {
+                        "message": "No tool call found for custom tool call output with call_id call_RlrXilcrezdITUjYJK87E6iX.",
+                        "type": "invalid_request_error",
+                        "param": "input",
+                        "code": None,
+                    }
+                },
+            )
+        )
+
+        await handler._process_response_create(
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "response": {
+                        "model": "chatgpt/gpt-5.4",
+                        "input": "hello",
+                    },
+                }
+            )
+        )
+
+        handler.websocket.send_text.assert_called_once()
+        error_event = json.loads(handler.websocket.send_text.call_args[0][0])
+        assert error_event["type"] == "error"
+        assert error_event["status"] == 400
+        assert error_event["error"]["type"] == "invalid_request_error"
+        assert (
+            "No tool call found for custom tool call output"
+            in error_event["error"]["message"]
+        )
 
 
 class TestWebSocketChunkTypes:
