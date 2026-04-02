@@ -80,6 +80,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         litellm_params: GenericLiteLLMParams,
         headers: dict,
     ) -> dict:
+        response_api_optional_request_params.pop("metadata", None)
         request = super().transform_responses_api_request(
             model,
             input,

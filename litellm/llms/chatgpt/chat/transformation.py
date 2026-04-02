@@ -99,5 +99,6 @@ class ChatGPTConfig(OpenAIConfig):
         optional_params = super().map_openai_params(
             non_default_params, optional_params, model, drop_params
         )
+        optional_params.pop("metadata", None)
         optional_params.setdefault("stream", False)
         return optional_params
