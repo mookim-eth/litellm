@@ -72,6 +72,7 @@ semantic-router = {version = "0.1.12", optional = true, python = ">=3.9,<3.14"}
 mlflow = {version = "3.9.0", optional = true, python = ">=3.10"} # not in PyPI proxy extra
 soundfile = {version = "0.12.1", optional = true}
 pyroscope-io = {version = "0.8.16", optional = true, markers = "sys_platform != 'win32'"}
+RestrictedPython = {version = "8.1", optional = true}
 # grpcio: pinned to 1.80.0 (past reconnect bug #38290 in 1.68.x, has Python 3.14 wheels)
 grpcio = {version = "1.80.0", optional = true}
 
@@ -98,6 +99,7 @@ proxy = [
     "mcp",
     "litellm-proxy-extras",
     "litellm-enterprise",
+    "RestrictedPython",
     "rich",
     "polars",
     "soundfile",
