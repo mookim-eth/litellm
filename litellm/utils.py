@@ -5410,6 +5410,81 @@ def _get_model_info_from_model_cost(key: str) -> dict:
     return litellm.model_cost[key]
 
 
+_CHATGPT_PRICING_FALLBACK_MODEL_MAP = {
+    "gpt-5.3-codex-spark": "gpt-5.3-codex",
+    "gpt-5.3-instant": "gpt-5.3-chat-latest",
+}
+
+
+def _merge_missing_model_info_fields(
+    target_model_info: Dict[str, Any], source_model_info: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Fill missing model metadata fields from a fallback entry.
+
+    This is used when a provider-prefixed alias exists for routing/capabilities but
+    the pricing fields live on the underlying base-model entry.
+    """
+    merged_model_info = copy.deepcopy(target_model_info)
+    for key, value in source_model_info.items():
+        if merged_model_info.get(key) is None and value is not None:
+            merged_model_info[key] = value
+    return merged_model_info
+
+
+def _get_chatgpt_fallback_model_info(model: str) -> tuple[Optional[str], Optional[dict]]:
+    """
+    Resolve ChatGPT deployment aliases to the closest priced model entry.
+
+    Examples:
+    - ``chatgpt/gpt-5.4-1`` -> merge ``chatgpt/gpt-5.4`` metadata with ``gpt-5.4`` pricing
+    - ``chatgpt/gpt-5.3-codex-spark`` -> reuse ``gpt-5.3-codex`` pricing
+    """
+    bare_model_name = model.split("/", 1)[-1]
+    base_model_name = re.sub(r"-\d+$", "", bare_model_name)
+    mapped_model_name = _CHATGPT_PRICING_FALLBACK_MODEL_MAP.get(
+        base_model_name, base_model_name
+    )
+
+    fallback_candidates = [
+        f"chatgpt/{base_model_name}",
+        f"chatgpt/{mapped_model_name}",
+        base_model_name,
+        mapped_model_name,
+    ]
+
+    selected_key: Optional[str] = None
+    merged_model_info: Optional[dict] = None
+    seen_candidates = set()
+
+    for candidate in fallback_candidates:
+        if candidate in seen_candidates:
+            continue
+        seen_candidates.add(candidate)
+
+        matched_key = _get_model_cost_key(candidate)
+        if matched_key is None:
+            continue
+
+        candidate_model_info = _get_model_info_from_model_cost(key=matched_key)
+        if merged_model_info is None:
+            merged_model_info = copy.deepcopy(candidate_model_info)
+            selected_key = matched_key
+        else:
+            merged_model_info = _merge_missing_model_info_fields(
+                target_model_info=merged_model_info,
+                source_model_info=candidate_model_info,
+            )
+
+        if (
+            merged_model_info.get("input_cost_per_token") is not None
+            and merged_model_info.get("output_cost_per_token") is not None
+        ):
+            break
+
+    return selected_key, merged_model_info
+
+
 def _check_provider_match(model_info: dict, custom_llm_provider: Optional[str]) -> bool:
     """
     Check if the model info provider matches the custom provider.
@@ -5699,6 +5774,19 @@ def _get_model_info_helper(  # noqa: PLR0915
                         model_info=_model_info, custom_llm_provider=custom_llm_provider
                     ):
                         _model_info = None
+
+            if custom_llm_provider == "chatgpt":
+                fallback_key, fallback_model_info = _get_chatgpt_fallback_model_info(
+                    model=model
+                )
+                if _model_info is None and fallback_key is not None and fallback_model_info is not None:
+                    key = fallback_key
+                    _model_info = fallback_model_info
+                elif _model_info is not None and fallback_model_info is not None:
+                    _model_info = _merge_missing_model_info_fields(
+                        target_model_info=_model_info,
+                        source_model_info=fallback_model_info,
+                    )
 
             if _model_info is None or key is None:
                 raise ValueError(
