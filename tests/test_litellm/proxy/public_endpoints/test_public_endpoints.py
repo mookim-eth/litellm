@@ -155,6 +155,23 @@ def test_chatgpt_provider_fields():
     assert "api_base" in field_keys
 
 
+def test_anthropic_provider_fields():
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    response = client.get("/public/providers/fields")
+    providers = response.json()
+
+    anthropic = next((p for p in providers if p["litellm_provider"] == "anthropic"), None)
+    assert anthropic is not None
+    assert anthropic["provider_display_name"] == "Anthropic"
+
+    field_keys = [f["key"] for f in anthropic["credential_fields"]]
+    assert "api_key" in field_keys
+    assert "api_base" in field_keys
+
+
 def test_public_model_hub_with_healthy_model():
     """Test that health information is populated for a healthy model"""
     app = FastAPI()

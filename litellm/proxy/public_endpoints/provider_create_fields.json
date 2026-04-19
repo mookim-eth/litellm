@@ -243,6 +243,16 @@
     "litellm_provider": "anthropic",
     "credential_fields": [
       {
+        "key": "api_base",
+        "label": "API Base",
+        "placeholder": "https://api.anthropic.com",
+        "tooltip": "Optional override for Anthropic-compatible endpoints or custom Anthropic API bases.",
+        "required": false,
+        "field_type": "text",
+        "options": null,
+        "default_value": null
+      },
+      {
         "key": "api_key",
         "label": "API Key",
         "placeholder": "sk-",
