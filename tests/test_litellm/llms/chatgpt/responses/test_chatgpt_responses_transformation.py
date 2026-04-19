@@ -13,10 +13,14 @@ import pytest
 
 sys.path.insert(0, os.path.abspath("../../../../.."))
 
+from litellm import ModelResponse
+from litellm.completion_extras.litellm_responses_transformation.transformation import (
+    LiteLLMResponsesTransformationHandler,
+)
+from litellm.llms.chatgpt.responses.transformation import ChatGPTResponsesAPIConfig
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.utils import LlmProviders
 from litellm.utils import ProviderConfigManager
-from litellm.llms.chatgpt.responses.transformation import ChatGPTResponsesAPIConfig
 
 
 class TestChatGPTResponsesAPITransformation:
@@ -134,9 +138,113 @@ class TestChatGPTResponsesAPITransformation:
 
         assert request["stream"] is True
         assert "reasoning.encrypted_content" in request["include"]
-        assert request["instructions"].startswith(
-            "You are Codex, based on GPT-5."
+        assert request["instructions"] == ""
+
+    def test_chatgpt_responses_extracts_system_and_developer_input_to_instructions(self):
+        config = ChatGPTResponsesAPIConfig()
+        request = config.transform_responses_api_request(
+            model="chatgpt/gpt-5.4",
+            input=[
+                {
+                    "type": "message",
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": "Be terse."}],
+                },
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "Prefer patches."}],
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Fix this bug"}],
+                },
+            ],
+            response_api_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
         )
+
+        assert request["input"] == [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Fix this bug"}],
+            }
+        ]
+        assert request["instructions"] == "Be terse.\n\nPrefer patches."
+
+    def test_chatgpt_responses_extracted_instructions_replace_existing_instructions(self):
+        config = ChatGPTResponsesAPIConfig()
+        request = config.transform_responses_api_request(
+            model="chatgpt/gpt-5.4",
+            input=[
+                {
+                    "type": "message",
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": "Use markdown."}],
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Summarize this diff"}],
+                },
+            ],
+            response_api_optional_request_params={
+                "instructions": "Existing provider rule."
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert request["input"] == [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Summarize this diff"}],
+            }
+        ]
+        assert request["instructions"] == "Use markdown."
+        assert "Existing provider rule." not in request["instructions"]
+
+    def test_chatgpt_responses_keeps_existing_instructions_without_system_messages(self):
+        config = ChatGPTResponsesAPIConfig()
+        request = config.transform_responses_api_request(
+            model="chatgpt/gpt-5.4",
+            input=[
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Summarize this diff"}],
+                }
+            ],
+            response_api_optional_request_params={
+                "instructions": "Existing provider rule."
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert request["instructions"] == "Existing provider rule."
+
+    def test_chatgpt_responses_sends_empty_instructions_without_system_messages(self):
+        config = ChatGPTResponsesAPIConfig()
+        request = config.transform_responses_api_request(
+            model="chatgpt/gpt-5.4",
+            input=[
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Hello!"}],
+                }
+            ],
+            response_api_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert request["instructions"] == ""
 
     @pytest.mark.parametrize(
         "model_name",
@@ -228,3 +336,164 @@ class TestChatGPTResponsesAPITransformation:
         )
 
         assert parsed.output_text == "Hello!"
+
+    def test_chatgpt_non_stream_sse_reconstructs_empty_completed_output(self):
+        config = ChatGPTResponsesAPIConfig()
+        response_payload = {
+            "id": "resp_test",
+            "object": "response",
+            "created_at": 1700000000,
+            "status": "completed",
+            "model": "gpt-5.4",
+            "output": [],
+        }
+        sse_events = [
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "id": "msg_123",
+                    "type": "message",
+                    "status": "in_progress",
+                    "content": [],
+                    "role": "assistant",
+                },
+            },
+            {
+                "type": "response.content_part.added",
+                "item_id": "msg_123",
+                "output_index": 0,
+                "content_index": 0,
+                "part": {
+                    "type": "output_text",
+                    "annotations": [],
+                    "text": "",
+                },
+            },
+            {
+                "type": "response.output_text.delta",
+                "item_id": "msg_123",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "Hello",
+            },
+            {
+                "type": "response.output_text.delta",
+                "item_id": "msg_123",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "!",
+            },
+            {
+                "type": "response.completed",
+                "response": response_payload,
+            },
+        ]
+        sse_body = "\n".join(
+            [f"data: {json.dumps(event)}" for event in sse_events]
+            + ["data: [DONE]", ""]
+        )
+        raw_response = httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, text=sse_body
+        )
+        logging_obj = MagicMock()
+
+        parsed = config.transform_response_api_response(
+            model="chatgpt/gpt-5.4",
+            raw_response=raw_response,
+            logging_obj=logging_obj,
+        )
+
+        assert len(parsed.output) == 1
+        assert parsed.output[0].type == "message"
+        assert parsed.output[0].role == "assistant"
+        assert parsed.output[0].content[0].text == "Hello!"
+        assert parsed.output_text == "Hello!"
+
+    def test_chatgpt_non_stream_sse_reconstructed_output_transforms_to_chat_completion(
+        self,
+    ):
+        config = ChatGPTResponsesAPIConfig()
+        response_payload = {
+            "id": "resp_test",
+            "object": "response",
+            "created_at": 1700000000,
+            "status": "completed",
+            "model": "gpt-5.4",
+            "output": [],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "total_tokens": 12,
+            },
+        }
+        sse_events = [
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "id": "msg_456",
+                    "type": "message",
+                    "status": "in_progress",
+                    "content": [],
+                    "role": "assistant",
+                },
+            },
+            {
+                "type": "response.content_part.added",
+                "item_id": "msg_456",
+                "output_index": 0,
+                "content_index": 0,
+                "part": {
+                    "type": "output_text",
+                    "annotations": [],
+                    "text": "",
+                },
+            },
+            {
+                "type": "response.output_text.delta",
+                "item_id": "msg_456",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "Hi",
+            },
+            {
+                "type": "response.output_text.delta",
+                "item_id": "msg_456",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": " there",
+            },
+            {
+                "type": "response.completed",
+                "response": response_payload,
+            },
+        ]
+        sse_body = "\n".join(
+            [f"data: {json.dumps(event)}" for event in sse_events]
+            + ["data: [DONE]", ""]
+        )
+        raw_response = httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, text=sse_body
+        )
+        logging_obj = MagicMock()
+
+        parsed = config.transform_response_api_response(
+            model="chatgpt/gpt-5.4",
+            raw_response=raw_response,
+            logging_obj=logging_obj,
+        )
+
+        model_response = LiteLLMResponsesTransformationHandler().transform_response(
+            model="chatgpt/gpt-5.4",
+            raw_response=parsed,
+            model_response=ModelResponse(),
+            logging_obj=logging_obj,
+            request_data={},
+            messages=[{"role": "user", "content": "Hello!"}],
+            optional_params={},
+            litellm_params={},
+            encoding=None,
+        )
+
+        assert model_response.choices[0].message.content == "Hi there"
