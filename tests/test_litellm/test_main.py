@@ -712,6 +712,48 @@ def test_responses_api_bridge_check_gpt_5_4_tools_without_reasoning_stays_chat()
     assert model_info.get("mode") != "responses"
 
 
+def test_responses_api_bridge_check_chatgpt_routes_unknown_models_to_responses():
+    """ChatGPT provider is responses-native, even for models missing from model_cost."""
+    from litellm.main import responses_api_bridge_check
+
+    with patch("litellm.main._get_model_info_helper") as mock_get_model_info:
+        mock_get_model_info.side_effect = Exception("Model not found")
+
+        model_info, model = responses_api_bridge_check(
+            model="gpt-5.4-mini",
+            custom_llm_provider="chatgpt",
+        )
+
+    assert model == "gpt-5.4-mini"
+    assert model_info.get("mode") == "responses"
+
+
+@patch("litellm.completion_extras.responses_api_bridge.completion")
+def test_chatgpt_completion_without_api_key_uses_responses_bridge(
+    mock_responses_completion,
+):
+    """ChatGPT custom provider should not require CHATGPT_API_KEY for chat completions."""
+    mock_response = MagicMock()
+    mock_responses_completion.return_value = mock_response
+
+    response = litellm.completion(
+        model="gpt-5.4-mini",
+        custom_llm_provider="chatgpt",
+        chatgpt_auth_file_path="/tmp/chatgpt-auth.json",
+        messages=[{"role": "user", "content": "Ping"}],
+    )
+
+    assert response is mock_response
+    assert mock_responses_completion.called is True
+    assert mock_responses_completion.call_args.kwargs["custom_llm_provider"] == "chatgpt"
+    assert (
+        mock_responses_completion.call_args.kwargs["litellm_params"][
+            "chatgpt_auth_file_path"
+        ]
+        == "/tmp/chatgpt-auth.json"
+    )
+
+
 @patch("litellm.completion_extras.responses_api_bridge.completion")
 def test_gpt_5_4_responses_bridge_preserves_reasoning_summary_dict(
     mock_responses_completion,

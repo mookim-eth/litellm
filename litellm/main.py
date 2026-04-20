@@ -939,6 +939,19 @@ def responses_api_bridge_check(
     reasoning_effort: Optional[Any] = None,
 ) -> Tuple[dict, str]:
     model_info: Dict[str, Any] = {}
+    had_responses_prefix = model.startswith("responses/")
+    if had_responses_prefix:
+        model = model.replace("responses/", "", 1)
+        model_info["mode"] = "responses"
+
+    # ChatGPT subscription access is responses-native. Route all ChatGPT
+    # chat-completions calls through the Responses bridge, even when the model
+    # is not yet present in model_prices_and_context_window.json. This keeps
+    # per-request auth-file credentials working for dashboard test-connection
+    # flows and custom ChatGPT deployment aliases.
+    if custom_llm_provider == "chatgpt":
+        model_info["mode"] = "responses"
+
     try:
         model_info = cast(
             dict,
@@ -946,22 +959,21 @@ def responses_api_bridge_check(
                 model=model, custom_llm_provider=custom_llm_provider
             ),
         )
-        if model_info.get("mode") is None and model.startswith("responses/"):
-            model = model.replace("responses/", "")
+        if custom_llm_provider == "chatgpt":
+            model_info["mode"] = "responses"
+        elif model_info.get("mode") is None and had_responses_prefix:
             mode = "responses"
             model_info["mode"] = mode
 
         if web_search_options is not None and custom_llm_provider == "xai":
             model_info["mode"] = "responses"
-            model = model.replace("responses/", "")
 
     except Exception as e:
         verbose_logger.debug("Error getting model info: {}".format(e))
 
-        if model.startswith(
-            "responses/"
-        ):  # handle azure models - `azure/responses/<deployment-name>`
-            model = model.replace("responses/", "")
+        if custom_llm_provider == "chatgpt":
+            model_info["mode"] = "responses"
+        elif had_responses_prefix:
             mode = "responses"
             model_info["mode"] = mode
 
