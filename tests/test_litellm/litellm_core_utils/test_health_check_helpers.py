@@ -83,6 +83,36 @@ def test_get_litellm_internal_health_check_user_api_key_auth():
 
 
 @pytest.mark.asyncio
+async def test_responses_health_check_prefers_explicit_input_list_over_prompt():
+    """
+    Health checks for Responses mode should pass the provided `input` through.
+
+    This matters for ChatGPT Codex responses, whose endpoint rejects string input
+    and requires `input` to be a list of input items.
+    """
+    model_params = {"model": "chatgpt/gpt-5.4"}
+    expected_input = ["test from litellm"]
+
+    with patch("litellm.aresponses", new_callable=AsyncMock) as mock_aresponses:
+        mock_aresponses.return_value = MagicMock(
+            _hidden_params={"headers": {}},
+        )
+
+        mode_handlers = HealthCheckHelpers.get_mode_handlers(
+            model="chatgpt/gpt-5.4",
+            custom_llm_provider="chatgpt",
+            model_params=model_params,
+            prompt="this prompt should not override explicit input",
+            input=expected_input,
+        )
+
+        await mode_handlers["responses"]()
+
+    mock_aresponses.assert_awaited_once()
+    assert mock_aresponses.await_args.kwargs["input"] == expected_input
+
+
+@pytest.mark.asyncio
 async def test_ahealth_check_failure_masks_raw_request_headers():
     """
     Security test: Verify that when ahealth_check() fails, the raw_request_headers
