@@ -1538,6 +1538,51 @@ def test_get_usage_as_dict():
     )
     assert result == {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
+    # Test case 6: response tool_usage is preserved in metadata usage dict
+    result = StandardLoggingPayloadSetup.get_usage_as_dict(
+        response_obj={
+            "usage": {
+                "input_tokens": 20,
+                "output_tokens": 30,
+                "total_tokens": 50,
+            },
+            "tool_usage": {
+                "image_gen": {
+                    "input_tokens_details": {"text_tokens": 3, "image_tokens": 4},
+                    "output_tokens_details": {"text_tokens": 5, "image_tokens": 6},
+                }
+            },
+        }
+    )
+    assert result["prompt_tokens"] == 20
+    assert result["completion_tokens"] == 30
+    assert result["total_tokens"] == 50
+    assert result["tool_usage"]["image_gen"]["output_tokens_details"][
+        "image_tokens"
+    ] == 6
+
+    # Test case 7: combined_usage_object still merges response tool_usage
+    result = StandardLoggingPayloadSetup.get_usage_as_dict(
+        response_obj={
+            "tool_usage": {
+                "image_gen": {
+                    "input_tokens_details": {"text_tokens": 7, "image_tokens": 8}
+                }
+            }
+        },
+        combined_usage_object=Usage(
+            prompt_tokens=11,
+            completion_tokens=13,
+            total_tokens=24,
+        ),
+    )
+    assert result["prompt_tokens"] == 11
+    assert result["completion_tokens"] == 13
+    assert result["total_tokens"] == 24
+    assert result["tool_usage"]["image_gen"]["input_tokens_details"][
+        "image_tokens"
+    ] == 8
+
 
 def test_append_system_prompt_messages():
     """

@@ -1558,6 +1558,84 @@ def test_azure_image_generation_cost_calculator():
     assert cost > 0.079
 
 
+def test_responses_image_generation_tool_usage_cost_is_added_to_response_cost():
+    from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+
+    os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    litellm.model_cost = litellm.get_model_cost_map(url="")
+
+    model = "gpt-4.1-mini"
+    usage = ResponseAPIUsage(
+        input_tokens=1000,
+        output_tokens=100,
+        total_tokens=1100,
+    )
+    image_tool_usage = {
+        "image_gen": {
+            "input_tokens": 7,
+            "output_tokens": 11,
+            "total_tokens": 18,
+            "input_tokens_details": {
+                "text_tokens": 3,
+                "image_tokens": 4,
+            },
+            "output_tokens_details": {
+                "text_tokens": 5,
+                "image_tokens": 6,
+            },
+        }
+    }
+
+    base_response = ResponsesAPIResponse(
+        id="resp-no-image-tool",
+        created_at=1,
+        model=model,
+        object="response",
+        output=[],
+        status="completed",
+        usage=usage,
+    )
+    image_tool_response = ResponsesAPIResponse(
+        id="resp-with-image-tool",
+        created_at=1,
+        model=model,
+        object="response",
+        output=[],
+        status="completed",
+        usage=usage,
+        tool_usage=image_tool_usage,
+    )
+
+    base_cost = response_cost_calculator(
+        response_object=base_response,
+        model=model,
+        custom_llm_provider="openai",
+        call_type="completion",
+        optional_params={},
+        cache_hit=False,
+        base_model=None,
+    )
+    image_tool_cost = response_cost_calculator(
+        response_object=image_tool_response,
+        model=model,
+        custom_llm_provider="openai",
+        call_type="completion",
+        optional_params={},
+        cache_hit=False,
+        base_model=None,
+    )
+
+    expected_image_tool_cost = (
+        3 * (5.0 / 1_000_000)
+        + 4 * (8.0 / 1_000_000)
+        + 5 * (10.0 / 1_000_000)
+        + 6 * (30.0 / 1_000_000)
+    )
+    assert image_tool_cost - base_cost == pytest.approx(
+        expected_image_tool_cost, rel=1e-9
+    )
+
+
 def test_completion_cost_extracts_service_tier_from_response():
     """Test that completion_cost extracts service_tier from completion_response object."""
     from litellm import completion_cost

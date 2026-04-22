@@ -4882,27 +4882,45 @@ class StandardLoggingPayloadSetup:
         """
         _empty: dict = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         if combined_usage_object is not None:
-            return combined_usage_object.model_dump()
-        if not response_obj:
-            return _empty
-        _raw = response_obj.get("usage", None)
-        if _raw is None:
-            return _empty
-        if isinstance(_raw, ResponseAPIUsage):
-            return ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(
-                _raw
-            ).model_dump()
-        if isinstance(_raw, dict):
-            if ResponseAPILoggingUtils._is_response_api_usage(_raw):
-                return (
+            usage_dict = combined_usage_object.model_dump()
+        elif not response_obj:
+            usage_dict = dict(_empty)
+        else:
+            _raw = response_obj.get("usage", None)
+            if _raw is None:
+                usage_dict = dict(_empty)
+            elif isinstance(_raw, ResponseAPIUsage):
+                usage_dict = (
                     ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(
                         _raw
                     ).model_dump()
                 )
-            return _raw
-        if isinstance(_raw, Usage):
-            return _raw.model_dump()
-        return _empty
+            elif isinstance(_raw, dict):
+                if ResponseAPILoggingUtils._is_response_api_usage(_raw):
+                    usage_dict = (
+                        ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(
+                            _raw
+                        ).model_dump()
+                    )
+                else:
+                    usage_dict = _raw
+            elif isinstance(_raw, Usage):
+                usage_dict = _raw.model_dump()
+            else:
+                usage_dict = dict(_empty)
+
+        response_tool_usage = (
+            StandardBuiltInToolCostTracking.get_tool_usage_from_response_object(
+                response_object=response_obj
+            )
+            if response_obj is not None
+            else None
+        )
+        if isinstance(response_tool_usage, dict) and len(response_tool_usage) > 0:
+            usage_dict = dict(usage_dict)
+            usage_dict["tool_usage"] = response_tool_usage
+
+        return usage_dict
 
     @staticmethod
     def get_model_cost_information(

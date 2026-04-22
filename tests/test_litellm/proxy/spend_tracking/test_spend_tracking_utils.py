@@ -1017,6 +1017,136 @@ def test_get_logging_payload_handles_missing_overhead_gracefully():
     ), "litellm_overhead_time_ms should be None when overhead is not provided"
 
 
+@patch("litellm.proxy.proxy_server.master_key", None)
+@patch(
+    "litellm.proxy.proxy_server.general_settings",
+    {"store_prompts_in_spend_logs": False},
+)
+def test_get_logging_payload_preserves_image_tool_usage_metadata_when_response_storage_disabled():
+    """
+    Even when prompts/responses are not stored in spend logs, usage_object metadata should
+    still preserve tool_usage.image_gen for cost/debugging.
+    """
+    standard_logging_payload = StandardLoggingPayload(
+        id="test-id-image-tool",
+        call_type="completion",
+        stream=False,
+        response_cost=0.123,
+        status="success",
+        total_tokens=50,
+        prompt_tokens=20,
+        completion_tokens=30,
+        startTime=1234567890.0,
+        endTime=1234567891.0,
+        completionStartTime=None,
+        model_map_information=StandardLoggingModelInformation(
+            model_map_key="gpt-4.1-mini", model_map_value=None
+        ),
+        model="gpt-4.1-mini",
+        model_id="model-123",
+        model_group="openai",
+        custom_llm_provider="openai",
+        api_base="https://api.openai.com",
+        metadata=StandardLoggingMetadata(
+            user_api_key_hash="test_hash",
+            user_api_key_alias=None,
+            user_api_key_team_id=None,
+            user_api_key_org_id=None,
+            user_api_key_user_id=None,
+            user_api_key_team_alias=None,
+            spend_logs_metadata=None,
+            requester_ip_address=None,
+            requester_metadata=None,
+            user_api_key_end_user_id=None,
+            usage_object={
+                "prompt_tokens": 20,
+                "completion_tokens": 30,
+                "total_tokens": 50,
+                "tool_usage": {
+                    "image_gen": {
+                        "input_tokens": 7,
+                        "output_tokens": 11,
+                        "input_tokens_details": {
+                            "text_tokens": 3,
+                            "image_tokens": 4,
+                        },
+                        "output_tokens_details": {
+                            "text_tokens": 5,
+                            "image_tokens": 6,
+                        },
+                    }
+                },
+            },
+        ),
+        cache_hit=False,
+        cache_key=None,
+        saved_cache_cost=0.0,
+        request_tags=[],
+        end_user=None,
+        requester_ip_address=None,
+        messages=[],
+        response={
+            "id": "resp-image-tool",
+            "tool_usage": {
+                "image_gen": {
+                    "input_tokens_details": {"text_tokens": 3, "image_tokens": 4},
+                    "output_tokens_details": {"text_tokens": 5, "image_tokens": 6},
+                }
+            },
+        },
+        error_str=None,
+        model_parameters={},
+        hidden_params=StandardLoggingHiddenParams(
+            model_id="model-123",
+            cache_key=None,
+            api_base="https://api.openai.com",
+            response_cost="0.123",
+            litellm_overhead_time_ms=None,
+            additional_headers=None,
+            batch_models=None,
+            litellm_model_name=None,
+            usage_object=None,
+        ),
+    )
+
+    kwargs = {
+        "model": "gpt-4.1-mini",
+        "litellm_params": {
+            "metadata": {
+                "user_api_key": "sk-test-key",
+            }
+        },
+        "standard_logging_object": standard_logging_payload,
+    }
+    response_obj = {
+        "id": "resp-image-tool",
+        "usage": {
+            "input_tokens": 20,
+            "output_tokens": 30,
+            "total_tokens": 50,
+        },
+        "tool_usage": {
+            "image_gen": {
+                "input_tokens_details": {"text_tokens": 3, "image_tokens": 4},
+                "output_tokens_details": {"text_tokens": 5, "image_tokens": 6},
+            }
+        },
+    }
+
+    payload = get_logging_payload(
+        kwargs=kwargs,
+        response_obj=response_obj,
+        start_time=datetime.datetime.now(timezone.utc),
+        end_time=datetime.datetime.now(timezone.utc),
+    )
+
+    assert payload["response"] == "{}"
+    metadata = json.loads(payload["metadata"])
+    assert metadata["usage_object"]["tool_usage"]["image_gen"][
+        "output_tokens_details"
+    ]["image_tokens"] == 6
+
+
 @patch(
     "litellm.proxy.spend_tracking.spend_tracking_utils._should_store_prompts_and_responses_in_spend_logs"
 )

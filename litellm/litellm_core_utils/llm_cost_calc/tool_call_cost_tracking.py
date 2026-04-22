@@ -20,6 +20,11 @@ from litellm.types.utils import (
     Usage,
 )
 
+RESPONSES_IMAGE_GEN_TEXT_INPUT_COST_PER_TOKEN = 5.0 / 1_000_000
+RESPONSES_IMAGE_GEN_IMAGE_INPUT_COST_PER_TOKEN = 8.0 / 1_000_000
+RESPONSES_IMAGE_GEN_TEXT_OUTPUT_COST_PER_TOKEN = 10.0 / 1_000_000
+RESPONSES_IMAGE_GEN_IMAGE_OUTPUT_COST_PER_TOKEN = 30.0 / 1_000_000
+
 
 class StandardBuiltInToolCostTracking:
     """
@@ -42,39 +47,46 @@ class StandardBuiltInToolCostTracking:
         Supported tools:
         - Web Search
         - File Search
+        - Responses API Image Generation
         - Vector Store (Azure)
         - Computer Use (Azure)
         - Code Interpreter (Azure)
         """
         standard_built_in_tools_params = standard_built_in_tools_params or {}
+        total_cost = 0.0
 
-        # Handle web search
         if StandardBuiltInToolCostTracking.response_object_includes_web_search_call(
             response_object=response_object, usage=usage
         ):
-            return StandardBuiltInToolCostTracking._handle_web_search_cost(
+            total_cost += StandardBuiltInToolCostTracking._handle_web_search_cost(
                 model=model,
                 custom_llm_provider=custom_llm_provider,
                 usage=usage,
                 standard_built_in_tools_params=standard_built_in_tools_params,
             )
 
-        # Handle file search
         if StandardBuiltInToolCostTracking.response_object_includes_file_search_call(
             response_object=response_object
         ):
-            return StandardBuiltInToolCostTracking._handle_file_search_cost(
+            total_cost += StandardBuiltInToolCostTracking._handle_file_search_cost(
                 model=model,
                 custom_llm_provider=custom_llm_provider,
                 standard_built_in_tools_params=standard_built_in_tools_params,
             )
 
-        # Handle Azure assistant features
-        return StandardBuiltInToolCostTracking._handle_azure_assistant_costs(
+        if StandardBuiltInToolCostTracking.response_object_includes_image_generation_call(
+            response_object=response_object
+        ):
+            total_cost += StandardBuiltInToolCostTracking._handle_image_generation_cost(
+                response_object=response_object
+            )
+
+        total_cost += StandardBuiltInToolCostTracking._handle_azure_assistant_costs(
             model=model,
             custom_llm_provider=custom_llm_provider,
             standard_built_in_tools_params=standard_built_in_tools_params,
         )
+        return total_cost
 
     @staticmethod
     def _handle_web_search_cost(
@@ -140,6 +152,23 @@ class StandardBuiltInToolCostTracking:
             model_info=model_info_dict,
             storage_gb=storage_gb,
             days=days,
+        )
+
+    @staticmethod
+    def _handle_image_generation_cost(
+        response_object: Any,
+    ) -> float:
+        """Handle Responses API built-in image generation tool cost calculation."""
+        image_generation_usage = (
+            StandardBuiltInToolCostTracking.get_image_generation_tool_usage(
+                response_object=response_object
+            )
+        )
+        if image_generation_usage is None:
+            return 0.0
+
+        return StandardBuiltInToolCostTracking.get_cost_for_image_generation(
+            image_generation_usage=image_generation_usage
         )
 
     @staticmethod
@@ -391,6 +420,17 @@ class StandardBuiltInToolCostTracking:
         return False
 
     @staticmethod
+    def response_object_includes_image_generation_call(
+        response_object: Any,
+    ) -> bool:
+        image_generation_usage = (
+            StandardBuiltInToolCostTracking.get_image_generation_tool_usage(
+                response_object=response_object
+            )
+        )
+        return isinstance(image_generation_usage, dict)
+
+    @staticmethod
     def response_includes_annotation_type(
         response_object: ModelResponse,
         annotation_type: Literal["url_citation", "file_citation"],
@@ -430,6 +470,76 @@ class StandardBuiltInToolCostTracking:
             if _output_type == output_type:
                 return True
         return False
+
+    @staticmethod
+    def _safe_get(
+        value: Any,
+        key: str,
+        default: Any = None,
+    ) -> Any:
+        if isinstance(value, dict):
+            return value.get(key, default)
+        if hasattr(value, key):
+            return getattr(value, key, default)
+        if hasattr(value, "get"):
+            try:
+                return value.get(key, default)
+            except TypeError:
+                pass
+        return default
+
+    @staticmethod
+    def _unwrap_response_object(response_object: Any) -> Any:
+        """
+        Unwrap response container objects like ResponseCompletedEvent to the underlying
+        response payload while leaving ordinary response dicts/objects untouched.
+        """
+        nested_response = StandardBuiltInToolCostTracking._safe_get(
+            response_object, "response", None
+        )
+        if nested_response is not None and StandardBuiltInToolCostTracking._safe_get(
+            response_object, "output", None
+        ) is None:
+            return nested_response
+        return response_object
+
+    @staticmethod
+    def _coerce_to_dict(value: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(value, dict):
+            return value
+        if hasattr(value, "model_dump"):
+            dumped_value = value.model_dump()
+            if isinstance(dumped_value, dict):
+                return dumped_value
+        if hasattr(value, "__dict__"):
+            raw_dict = getattr(value, "__dict__", None)
+            if isinstance(raw_dict, dict):
+                return raw_dict
+        return None
+
+    @staticmethod
+    def get_tool_usage_from_response_object(
+        response_object: Any,
+    ) -> Optional[Dict[str, Any]]:
+        response_payload = StandardBuiltInToolCostTracking._unwrap_response_object(
+            response_object=response_object
+        )
+        tool_usage = StandardBuiltInToolCostTracking._safe_get(
+            response_payload, "tool_usage", None
+        )
+        return StandardBuiltInToolCostTracking._coerce_to_dict(tool_usage)
+
+    @staticmethod
+    def get_image_generation_tool_usage(
+        response_object: Any,
+    ) -> Optional[Dict[str, Any]]:
+        tool_usage = StandardBuiltInToolCostTracking.get_tool_usage_from_response_object(
+            response_object=response_object
+        )
+        if not isinstance(tool_usage, dict):
+            return None
+        image_generation_usage = tool_usage.get("image_gen")
+        return StandardBuiltInToolCostTracking._coerce_to_dict(image_generation_usage)
 
     @staticmethod
     def _safe_get_model_info(
@@ -490,6 +600,49 @@ class StandardBuiltInToolCostTracking:
             else SearchContextCostPerQuery()
         )
         return search_context_pricing.get("search_context_size_medium", 0.0)
+
+    @staticmethod
+    def get_cost_for_image_generation(
+        image_generation_usage: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        """
+        Calculate cost for Responses API built-in image generation tool usage.
+
+        This pricing is intentionally hardcoded for tool_usage.image_gen:
+        - input_tokens_details.text_tokens:  $5 / 1M
+        - input_tokens_details.image_tokens: $8 / 1M
+        - output_tokens_details.text_tokens: $10 / 1M
+        - output_tokens_details.image_tokens: $30 / 1M
+        """
+        if image_generation_usage is None:
+            return 0.0
+
+        input_token_details = StandardBuiltInToolCostTracking._coerce_to_dict(
+            image_generation_usage.get("input_tokens_details")
+        ) or {}
+        output_token_details = StandardBuiltInToolCostTracking._coerce_to_dict(
+            image_generation_usage.get("output_tokens_details")
+        ) or {}
+
+        input_text_tokens = StandardBuiltInToolCostTracking._safe_convert_to_int(
+            input_token_details.get("text_tokens")
+        ) or 0
+        input_image_tokens = StandardBuiltInToolCostTracking._safe_convert_to_int(
+            input_token_details.get("image_tokens")
+        ) or 0
+        output_text_tokens = StandardBuiltInToolCostTracking._safe_convert_to_int(
+            output_token_details.get("text_tokens")
+        ) or 0
+        output_image_tokens = StandardBuiltInToolCostTracking._safe_convert_to_int(
+            output_token_details.get("image_tokens")
+        ) or 0
+
+        return (
+            input_text_tokens * RESPONSES_IMAGE_GEN_TEXT_INPUT_COST_PER_TOKEN
+            + input_image_tokens * RESPONSES_IMAGE_GEN_IMAGE_INPUT_COST_PER_TOKEN
+            + output_text_tokens * RESPONSES_IMAGE_GEN_TEXT_OUTPUT_COST_PER_TOKEN
+            + output_image_tokens * RESPONSES_IMAGE_GEN_IMAGE_OUTPUT_COST_PER_TOKEN
+        )
 
     @staticmethod
     def get_cost_for_file_search(

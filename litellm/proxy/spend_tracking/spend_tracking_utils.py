@@ -23,6 +23,9 @@ from litellm.litellm_core_utils.core_helpers import (
     get_litellm_metadata_from_kwargs,
     reconstruct_model_name,
 )
+from litellm.litellm_core_utils.llm_cost_calc.tool_call_cost_tracking import (
+    StandardBuiltInToolCostTracking,
+)
 from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 from litellm.proxy._types import SpendLogsMetadata, SpendLogsPayload
 from litellm.proxy.utils import PrismaClient, hash_token
@@ -269,6 +272,12 @@ def get_logging_payload(  # noqa: PLR0915
             usage = dict(_usage)
         elif isinstance(_usage, dict):
             usage = _usage
+    response_tool_usage = StandardBuiltInToolCostTracking.get_tool_usage_from_response_object(
+        response_object=response_obj_dict
+    )
+    if isinstance(response_tool_usage, dict) and len(response_tool_usage) > 0:
+        usage = dict(usage)
+        usage["tool_usage"] = response_tool_usage
 
     id = get_spend_logs_id(call_type or "acompletion", response_obj_dict, kwargs)
     standard_logging_payload = cast(
