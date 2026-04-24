@@ -16587,7 +16587,10 @@
         "supports_function_calling": true,
         "supports_parallel_function_calling": true,
         "supports_response_schema": true,
-        "supports_vision": true
+        "supports_service_tier": true,
+        "supports_vision": true,
+        "input_cost_per_token_priority": 5e-06,
+        "output_cost_per_token_priority": 3e-05
     },
     "chatgpt/gpt-5.5": {
         "cache_read_input_token_cost": 5e-07,
@@ -16606,7 +16609,11 @@
         "supports_parallel_function_calling": true,
         "supports_prompt_caching": true,
         "supports_response_schema": true,
-        "supports_vision": true
+        "supports_service_tier": true,
+        "supports_vision": true,
+        "cache_read_input_token_cost_priority": 1.25e-06,
+        "input_cost_per_token_priority": 1.25e-05,
+        "output_cost_per_token_priority": 7.5e-05
     },
     "chatgpt/gpt-5.4-mini": {
         "cache_read_input_token_cost": 7.5e-08,

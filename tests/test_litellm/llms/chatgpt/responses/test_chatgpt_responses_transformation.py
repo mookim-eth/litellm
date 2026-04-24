@@ -282,6 +282,27 @@ class TestChatGPTResponsesAPITransformation:
 
         assert request["stream"] is True
 
+    @pytest.mark.parametrize(
+        ("input_service_tier", "expected_service_tier"),
+        [
+            ("priority", "priority"),
+            ("fast", "priority"),
+        ],
+    )
+    def test_chatgpt_preserves_priority_service_tier(
+        self, input_service_tier, expected_service_tier
+    ):
+        config = ChatGPTResponsesAPIConfig()
+        request = config.transform_responses_api_request(
+            model="chatgpt/gpt-5.5",
+            input="Hello!",
+            response_api_optional_request_params={"service_tier": input_service_tier},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert request["service_tier"] == expected_service_tier
+
     def test_chatgpt_responses_never_fake_stream_for_unknown_models(self):
         """
         Fresh ChatGPT model launches may not yet exist in model metadata, but

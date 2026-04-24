@@ -151,9 +151,13 @@ def _get_service_tier_cost_key(base_key: str, service_tier: Optional[str]) -> st
     if service_tier is None:
         return base_key
 
+    service_tier_value = service_tier.lower()
+    if service_tier_value == "fast":
+        service_tier_value = ServiceTier.PRIORITY.value
+
     # Only use service tier specific keys for "flex" and "priority"
-    if service_tier.lower() in [ServiceTier.FLEX.value, ServiceTier.PRIORITY.value]:
-        return f"{base_key}_{service_tier.lower()}"
+    if service_tier_value in [ServiceTier.FLEX.value, ServiceTier.PRIORITY.value]:
+        return f"{base_key}_{service_tier_value}"
 
     # For any other service tier, use standard pricing
     return base_key

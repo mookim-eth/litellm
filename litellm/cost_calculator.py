@@ -1088,16 +1088,21 @@ def completion_cost(  # noqa: PLR0915
         )
         rerank_billed_units: Optional[RerankBilledUnits] = None
 
-        # Extract service_tier from optional_params if not provided directly
+        # Prefer the actual service tier reported by the provider response.
+        # If a priority request is downgraded and the response says `default`,
+        # bill at standard rates instead of the requested priority rate.
+        response_service_tier: Optional[str] = None
+        if completion_response is not None:
+            if isinstance(completion_response, BaseModel):
+                response_service_tier = getattr(completion_response, "service_tier", None)
+            elif isinstance(completion_response, dict):
+                response_service_tier = completion_response.get("service_tier")
+        if response_service_tier is not None:
+            service_tier = response_service_tier
+
+        # Extract service_tier from optional_params if not provided directly or by response
         if service_tier is None and optional_params is not None:
             service_tier = optional_params.get("service_tier")
-
-        # Extract service_tier from completion_response if not provided
-        if service_tier is None and completion_response is not None:
-            if isinstance(completion_response, BaseModel):
-                service_tier = getattr(completion_response, "service_tier", None)
-            elif isinstance(completion_response, dict):
-                service_tier = completion_response.get("service_tier")
 
         # Extract service_tier from usage object if not provided
         if service_tier is None and cost_per_token_usage_object is not None:

@@ -480,6 +480,8 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             request.setdefault("instructions", "")
         request["store"] = False
         request["stream"] = True
+        if request.get("service_tier") == "fast":
+            request["service_tier"] = "priority"
         include = list(request.get("include") or [])
         if "reasoning.encrypted_content" not in include:
             include.append("reasoning.encrypted_content")
@@ -498,6 +500,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             "prompt_cache_key",
             "previous_response_id",
             "truncation",
+            "service_tier",
         }
 
         return {k: v for k, v in request.items() if k in allowed_keys}
