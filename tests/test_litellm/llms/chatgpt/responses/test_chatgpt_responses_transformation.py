@@ -246,6 +246,58 @@ class TestChatGPTResponsesAPITransformation:
 
         assert request["instructions"] == ""
 
+    def test_chatgpt_responses_wraps_string_input_in_user_message_list(self):
+        config = ChatGPTResponsesAPIConfig()
+        request = config.transform_responses_api_request(
+            model="chatgpt/gpt-5.5",
+            input="Hello!",
+            response_api_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert request["input"] == [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Hello!"}],
+            }
+        ]
+        assert request["stream"] is True
+        assert request["instructions"] == ""
+
+    def test_chatgpt_responses_preserves_stream_for_non_stream_bridge_calls(self):
+        """
+        The ChatGPT backend requires `stream=true` on responses requests even
+        when LiteLLM later aggregates the SSE response into a single object.
+        """
+        config = ChatGPTResponsesAPIConfig()
+        request = config.transform_responses_api_request(
+            model="chatgpt/gpt-5.5",
+            input="Hello!",
+            response_api_optional_request_params={"stream": False},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert request["stream"] is True
+
+    def test_chatgpt_responses_never_fake_stream_for_unknown_models(self):
+        """
+        Fresh ChatGPT model launches may not yet exist in model metadata, but
+        the provider still requires native SSE streaming.
+        """
+        config = ChatGPTResponsesAPIConfig()
+
+        assert (
+            config.should_fake_stream(
+                model="chatgpt/gpt-5.5",
+                stream=True,
+                custom_llm_provider="chatgpt",
+            )
+            is False
+        )
+
     @pytest.mark.parametrize(
         "model_name",
         [

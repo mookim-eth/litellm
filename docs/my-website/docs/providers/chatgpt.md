@@ -4,7 +4,7 @@ Use ChatGPT Pro/Max subscription models through LiteLLM with OAuth device flow a
 
 | Property | Details |
 |-------|-------|
-| Description | ChatGPT subscription access (Codex + GPT-5.3/5.4 family, including GPT-5.4 mini) via ChatGPT backend API |
+| Description | ChatGPT subscription access (Codex + GPT-5.3/5.4/5.5 family, including GPT-5.4 mini) via ChatGPT backend API |
 | Provider Route on LiteLLM | `chatgpt/` |
 | Supported Endpoints | `/responses`, `/chat/completions` (bridged to Responses for supported models) |
 | API Reference | https://chatgpt.com |
@@ -60,6 +60,11 @@ model_list:
       mode: responses
     litellm_params:
       model: chatgpt/gpt-5.4
+  - model_name: chatgpt/gpt-5.5
+    model_info:
+      mode: responses
+    litellm_params:
+      model: chatgpt/gpt-5.5
   - model_name: chatgpt/gpt-5.4-mini
     model_info:
       mode: responses

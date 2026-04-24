@@ -90,6 +90,25 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         return filtered_items, instructions
 
     @staticmethod
+    def _coerce_input_to_chatgpt_list(input_items: Any) -> Any:
+        """
+        ChatGPT's `/codex/responses` backend expects `input` to be a list of
+        items, even though the OpenAI Responses API also accepts a bare string.
+
+        Normalize string inputs into a single user message so LiteLLM can keep
+        exposing the standard OpenAI-style convenience shape.
+        """
+        if isinstance(input_items, str):
+            return [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": input_items}],
+                }
+            ]
+        return input_items
+
+    @staticmethod
     def _get_sse_output_index(
         parsed_chunk: Dict[str, Any], item_id_to_output_index: Dict[str, int]
     ) -> Optional[int]:
@@ -446,6 +465,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         headers: dict,
     ) -> dict:
         response_api_optional_request_params.pop("metadata", None)
+        input = self._coerce_input_to_chatgpt_list(input)
         input, extracted_instructions = self._extract_instructions_from_input(input)
         request = super().transform_responses_api_request(
             model,
@@ -580,4 +600,28 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
 
     def supports_native_websocket(self) -> bool:
         """ChatGPT does not support native WebSocket for Responses API"""
+        return False
+
+    def should_fake_stream(
+        self,
+        model: Optional[str],
+        stream: Optional[bool],
+        custom_llm_provider: Optional[str] = None,
+    ) -> bool:
+        """
+        ChatGPT subscription Responses calls must always go through the backend's
+        native SSE stream.
+
+        The ChatGPT backend requires `stream=true` on the request payload. If
+        LiteLLM enables fake streaming for an unknown/new ChatGPT model (for
+        example a freshly launched GPT family entry that is not yet present in
+        `model_prices_and_context_window.json`), the shared HTTP handler drops
+        the `stream` field and the provider rejects the request with:
+
+            {"detail":"Stream must be set to true"}
+
+        Since ChatGPT responses are already handled as SSE for both streaming
+        and non-streaming chat-completions bridge flows, we should never fake
+        the stream for this provider.
+        """
         return False
