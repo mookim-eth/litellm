@@ -1859,6 +1859,21 @@ async def increment_spend_counters(
     Awaited (not create_task) in the cost callback, so the counter is
     updated before the next request's auth check runs.
     """
+    reserved_counter_keys = set()
+    if budget_reservation is not None:
+        from litellm.proxy.spend_tracking.budget_reservation import (
+            get_reserved_counter_keys,
+            reconcile_budget_reservation,
+        )
+
+        reserved_counter_keys = get_reserved_counter_keys(
+            budget_reservation=budget_reservation
+        )
+        await reconcile_budget_reservation(
+            budget_reservation=budget_reservation,
+            actual_cost=response_cost or 0.0,
+        )
+
     if response_cost is None or response_cost == 0:
         return
 
@@ -1874,25 +1889,31 @@ async def increment_spend_counters(
             if isinstance(token, str) and token.startswith("sk-")
             else token
         )
-        await _init_and_increment_spend_counter(
-            counter_key=f"spend:key:{hashed_token}",
-            source_cache_key=hashed_token,
-            increment=response_cost,
-        )
+        key_counter_key = f"spend:key:{hashed_token}"
+        if key_counter_key not in reserved_counter_keys:
+            await _init_and_increment_spend_counter(
+                counter_key=key_counter_key,
+                source_cache_key=hashed_token,
+                increment=response_cost,
+            )
 
     if team_id is not None:
-        await _init_and_increment_spend_counter(
-            counter_key=f"spend:team:{team_id}",
-            source_cache_key=f"team_id:{team_id}",
-            increment=response_cost,
-        )
+        team_counter_key = f"spend:team:{team_id}"
+        if team_counter_key not in reserved_counter_keys:
+            await _init_and_increment_spend_counter(
+                counter_key=team_counter_key,
+                source_cache_key=f"team_id:{team_id}",
+                increment=response_cost,
+            )
 
     if user_id is not None and team_id is not None:
-        await _init_and_increment_spend_counter(
-            counter_key=f"spend:team_member:{user_id}:{team_id}",
-            source_cache_key=f"team_membership:{user_id}:{team_id}",
-            increment=response_cost,
-        )
+        team_member_counter_key = f"spend:team_member:{user_id}:{team_id}"
+        if team_member_counter_key not in reserved_counter_keys:
+            await _init_and_increment_spend_counter(
+                counter_key=team_member_counter_key,
+                source_cache_key=f"team_membership:{user_id}:{team_id}",
+                increment=response_cost,
+            )
 
 
 async def _init_and_increment_spend_counter(
@@ -1914,6 +1935,17 @@ async def _init_and_increment_spend_counter(
        rather than under-counting (would allow overspend).
     4. Increment atomically (both in-memory + Redis)
     """
+    await _ensure_spend_counter_initialized(
+        counter_key=counter_key,
+        source_cache_key=source_cache_key,
+    )
+    await spend_counter_cache.async_increment_cache(key=counter_key, value=increment)
+
+
+async def _ensure_spend_counter_initialized(
+    counter_key: str,
+    source_cache_key: str,
+):
     current = await spend_counter_cache.async_get_cache(key=counter_key)
     if current is None:
         source = await user_api_key_cache.async_get_cache(key=source_cache_key)
@@ -1927,8 +1959,6 @@ async def _init_and_increment_spend_counter(
             await spend_counter_cache.async_increment_cache(
                 key=counter_key, value=base_spend
             )
-
-    await spend_counter_cache.async_increment_cache(key=counter_key, value=increment)
 
 
 async def update_cache(  # noqa: PLR0915
