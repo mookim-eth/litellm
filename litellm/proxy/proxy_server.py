@@ -1939,7 +1939,24 @@ async def _init_and_increment_spend_counter(
         counter_key=counter_key,
         source_cache_key=source_cache_key,
     )
-    await spend_counter_cache.async_increment_cache(key=counter_key, value=increment)
+    await _increment_spend_counter_cache(counter_key=counter_key, increment=increment)
+
+
+async def _init_and_increment_window_spend_counter(
+    counter_key: str,
+    entity_type: str,
+    entity_id: str,
+    window_start: Optional[datetime],
+    increment: float,
+):
+    if window_start is not None:
+        await _ensure_window_spend_counter_initialized(
+            counter_key=counter_key,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            window_start=window_start,
+        )
+    await _increment_spend_counter_cache(counter_key=counter_key, increment=increment)
 
 
 async def _ensure_spend_counter_initialized(
@@ -1958,6 +1975,61 @@ async def _ensure_spend_counter_initialized(
         if base_spend > 0:
             await spend_counter_cache.async_increment_cache(
                 key=counter_key, value=base_spend
+            )
+
+
+async def _ensure_window_spend_counter_initialized(
+    counter_key: str,
+    entity_type: str,
+    entity_id: str,
+    window_start: datetime,
+):
+    current = await spend_counter_cache.async_get_cache(key=counter_key)
+    if current is None:
+        window_spend = await SpendCounterReseed.coalesced_window(
+            prisma_client=prisma_client,
+            spend_counter_cache=spend_counter_cache,
+            counter_key=counter_key,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            window_start=window_start,
+        )
+        if window_spend is None:
+            await _increment_spend_counter_cache(counter_key=counter_key, increment=0.0)
+
+
+async def _increment_spend_counter_cache(counter_key: str, increment: float):
+    if spend_counter_cache.redis_cache is not None:
+        try:
+            current_value = await spend_counter_cache.redis_cache.async_increment(
+                key=counter_key,
+                value=increment,
+            )
+        except Exception:
+            await _invalidate_spend_counter(counter_key=counter_key)
+            raise
+        spend_counter_cache.in_memory_cache.set_cache(
+            key=counter_key,
+            value=current_value,
+        )
+        return current_value
+
+    return await spend_counter_cache.async_increment_cache(
+        key=counter_key,
+        value=increment,
+    )
+
+
+async def _invalidate_spend_counter(counter_key: str):
+    spend_counter_cache.in_memory_cache.delete_cache(key=counter_key)
+    if spend_counter_cache.redis_cache is not None:
+        try:
+            await spend_counter_cache.redis_cache.async_delete_cache(key=counter_key)
+        except Exception:
+            verbose_proxy_logger.debug(
+                "Unable to delete stale spend counter %s after increment failure",
+                counter_key,
+                exc_info=True,
             )
 
 
