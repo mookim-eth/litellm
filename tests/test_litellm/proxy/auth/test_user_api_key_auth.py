@@ -97,6 +97,32 @@ def test_get_api_key():
 
 
 @pytest.mark.asyncio
+async def test_should_clear_stale_budget_reservation_when_budget_checks_skip():
+    user_api_key_auth_obj = UserAPIKeyAuth(
+        token="test_token",
+        budget_reservation={
+            "reserved_cost": 0.5,
+            "entries": [{"counter_key": "spend:key:test_token"}],
+        },
+    )
+
+    await _reserve_budget_after_common_checks(
+        user_api_key_auth_obj=user_api_key_auth_obj,
+        request_data={"model": "free-model"},
+        route="/v1/chat/completions",
+        llm_router=None,
+        team_object=None,
+        user_object=None,
+        prisma_client=None,
+        user_api_key_cache=MagicMock(),
+        proxy_logging_obj=MagicMock(),
+        skip_budget_checks=True,
+    )
+
+    assert user_api_key_auth_obj.budget_reservation is None
+
+
+@pytest.mark.asyncio
 async def test_custom_auth_does_not_enforce_key_model_access_by_default():
     valid_token = UserAPIKeyAuth(token="test_token", models=["gpt-4o-mini"])
     request_data = {"model": "gpt-4o"}
