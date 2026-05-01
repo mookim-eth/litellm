@@ -1875,6 +1875,8 @@ async def increment_spend_counters(
         )
 
     if response_cost is None or response_cost == 0:
+        if budget_reservation is not None:
+            budget_reservation["finalized"] = True
         return
 
     if token is not None:
