@@ -14,6 +14,57 @@ class PrismaDBExceptionHandler:
     """
 
     @staticmethod
+    def _exception_message(e: Exception) -> str:
+        try:
+            return str(e).lower()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def is_prisma_client_not_connected_error(e: Exception) -> bool:
+        """
+        Returns True for Prisma query-engine-not-connected failures.
+
+        In production this can surface either as prisma.errors.ClientNotConnectedError
+        or as a plain/wrapped Exception string. Treat both forms as DB transport
+        errors so auth can reconnect instead of returning a misleading 401.
+        """
+        import prisma
+
+        if isinstance(e, prisma.errors.ClientNotConnectedError):
+            return True
+
+        error_message = PrismaDBExceptionHandler._exception_message(e)
+        return (
+            "client is not connected to the query engine" in error_message
+            or "must call `connect()` before attempting to query data"
+            in error_message
+            or "must call connect() before attempting to query data" in error_message
+            or (
+                "query engine" in error_message
+                and "not connected" in error_message
+                and "connect" in error_message
+            )
+        )
+
+    @staticmethod
+    def is_prisma_http_client_closed_error(e: Exception) -> bool:
+        """
+        Returns True for Prisma HTTP client closed failures, including wrapped
+        string variants.
+        """
+        import prisma
+
+        if isinstance(e, prisma.errors.HTTPClientClosedError):
+            return True
+
+        error_message = PrismaDBExceptionHandler._exception_message(e)
+        return (
+            "http client is closed" in error_message
+            or "httpx client has been closed" in error_message
+        )
+
+    @staticmethod
     def should_allow_request_on_db_unavailable() -> bool:
         """
         Returns True if the request should be allowed to proceed despite the DB connection error
@@ -40,6 +91,10 @@ class PrismaDBExceptionHandler:
 
         if isinstance(e, DB_CONNECTION_ERROR_TYPES):
             return True
+        if PrismaDBExceptionHandler.is_prisma_client_not_connected_error(e):
+            return True
+        if PrismaDBExceptionHandler.is_prisma_http_client_closed_error(e):
+            return True
         if isinstance(e, prisma.errors.PrismaError):
             return True
         if isinstance(e, ProxyException) and e.type == ProxyErrorTypes.no_db_connection:
@@ -59,16 +114,19 @@ class PrismaDBExceptionHandler:
 
         if isinstance(e, DB_CONNECTION_ERROR_TYPES):
             return True
+        if PrismaDBExceptionHandler.is_prisma_client_not_connected_error(e):
+            return True
+        if PrismaDBExceptionHandler.is_prisma_http_client_closed_error(e):
+            return True
         if isinstance(
             e,
             (
-                prisma.errors.ClientNotConnectedError,
                 prisma.errors.HTTPClientClosedError,
             ),
         ):
             return True
         if isinstance(e, prisma.errors.PrismaError):
-            error_message = str(e).lower()
+            error_message = PrismaDBExceptionHandler._exception_message(e)
             connection_keywords = (
                 "can't reach database server",
                 "cannot reach database server",

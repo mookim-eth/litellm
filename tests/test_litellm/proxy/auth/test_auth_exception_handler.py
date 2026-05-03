@@ -113,6 +113,45 @@ async def test_handle_authentication_error_budget_exceeded():
 
 
 @pytest.mark.asyncio
+async def test_handle_authentication_error_db_transport_error_returns_503_not_401():
+    handler = UserAPIKeyAuthExceptionHandler()
+
+    mock_request = MagicMock()
+    mock_request_data = {}
+    mock_route = "/v1/responses"
+    mock_span = None
+    mock_api_key = "test-key"
+    db_error = Exception(
+        "Client is not connected to the query engine, you must call `connect()` "
+        "before attempting to query data."
+    )
+
+    with patch(
+        "litellm.proxy.proxy_server.general_settings",
+        {"allow_requests_on_db_unavailable": False},
+    ), patch(
+        "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
+        new_callable=AsyncMock,
+    ) as mock_post_call_failure_hook:
+        mock_post_call_failure_hook.return_value = None
+
+        with pytest.raises(ProxyException) as exc_info:
+            await handler._handle_authentication_error(
+                db_error,
+                mock_request,
+                mock_request_data,
+                mock_route,
+                mock_span,
+                mock_api_key,
+            )
+
+    assert exc_info.value.type == ProxyErrorTypes.no_db_connection
+    assert exc_info.value.code == str(status.HTTP_503_SERVICE_UNAVAILABLE)
+    assert "Authentication Error" not in exc_info.value.message
+    assert "Database connection error during authentication" in exc_info.value.message
+
+
+@pytest.mark.asyncio
 async def test_route_passed_to_post_call_failure_hook():
     """
     This route is used by proxy track_cost_callback's async_post_call_failure_hook to check if the route is an LLM route

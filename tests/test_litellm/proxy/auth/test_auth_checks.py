@@ -258,6 +258,41 @@ async def test_get_key_object_should_raise_if_reconnect_fails_on_db_connection_e
     assert mock_prisma_client.get_data.await_count == 1
 
 
+@pytest.mark.asyncio
+async def test_get_key_object_should_wait_for_singleflight_on_prisma_not_connected():
+    mock_prisma_client = MagicMock()
+    mock_prisma_client.get_data = AsyncMock(
+        side_effect=[
+            Exception(
+                "Client is not connected to the query engine, you must call "
+                "`connect()` before attempting to query data."
+            ),
+            UserAPIKeyAuth(token="hashed-token-3"),
+        ]
+    )
+    mock_prisma_client.attempt_db_reconnect = AsyncMock(return_value=True)
+
+    mock_cache = MagicMock()
+    mock_cache.async_get_cache = AsyncMock(return_value=None)
+    mock_cache.async_set_cache = AsyncMock()
+
+    key_obj = await get_key_object(
+        hashed_token="hashed-token-3",
+        prisma_client=mock_prisma_client,
+        user_api_key_cache=mock_cache,
+    )
+
+    assert key_obj.token == "hashed-token-3"
+    assert mock_prisma_client.get_data.await_count == 2
+    mock_prisma_client.attempt_db_reconnect.assert_awaited_once_with(
+        reason="auth_get_key_object_lookup_failure",
+        force=True,
+        timeout_seconds=2.0,
+        lock_timeout_seconds=None,
+        skip_if_connected=True,
+    )
+
+
 def test_get_cli_jwt_auth_token_default_expiration(valid_sso_user_defined_values):
     """Test generating CLI JWT token with default 24-hour expiration"""
     token = ExperimentalUIJWTToken.get_cli_jwt_auth_token(valid_sso_user_defined_values)

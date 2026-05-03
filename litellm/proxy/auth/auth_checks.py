@@ -2099,6 +2099,9 @@ async def _fetch_key_object_from_db_with_reconnect(
         if PrismaDBExceptionHandler.is_database_transport_error(e):
             did_reconnect = False
             if hasattr(prisma_client, "attempt_db_reconnect"):
+                is_client_not_connected = (
+                    PrismaDBExceptionHandler.is_prisma_client_not_connected_error(e)
+                )
                 auth_reconnect_timeout = getattr(
                     prisma_client, "_db_auth_reconnect_timeout_seconds", 2.0
                 )
@@ -2109,10 +2112,28 @@ async def _fetch_key_object_from_db_with_reconnect(
                 )
                 if not isinstance(auth_reconnect_lock_timeout, (int, float)):
                     auth_reconnect_lock_timeout = 0.1
+                if is_client_not_connected:
+                    # High-concurrency fix:
+                    # When the Prisma client is disconnected, one request should
+                    # reconnect while concurrent auth lookups wait for that
+                    # singleflight reconnect instead of timing out after the
+                    # default 0.1s and being reported as 401 Unauthorized.
+                    #
+                    # force=True bypasses reconnect cooldown for the explicit
+                    # "client is not connected" state. skip_if_connected=True
+                    # lets waiters reuse a reconnect completed by the leader
+                    # without serially performing redundant reconnect cycles.
+                    auth_reconnect_lock_timeout = None
+                reconnect_kwargs: Dict[str, Any] = {
+                    "reason": "auth_get_key_object_lookup_failure",
+                    "timeout_seconds": auth_reconnect_timeout,
+                    "lock_timeout_seconds": auth_reconnect_lock_timeout,
+                }
+                if is_client_not_connected:
+                    reconnect_kwargs["force"] = True
+                    reconnect_kwargs["skip_if_connected"] = True
                 did_reconnect = await prisma_client.attempt_db_reconnect(
-                    reason="auth_get_key_object_lookup_failure",
-                    timeout_seconds=auth_reconnect_timeout,
-                    lock_timeout_seconds=auth_reconnect_lock_timeout,
+                    **reconnect_kwargs
                 )
             if did_reconnect:
                 return await prisma_client.get_data(

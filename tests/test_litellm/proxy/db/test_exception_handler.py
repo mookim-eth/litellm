@@ -107,6 +107,24 @@ def test_is_database_connection_generic_errors():
     )
 
 
+def test_string_wrapped_prisma_not_connected_error_is_db_transport_error():
+    """
+    Prisma client-not-connected can surface as a plain/wrapped exception string.
+    It must still be treated as a DB transport error so auth reconnect logic runs.
+    """
+    wrapped_error = Exception(
+        "Client is not connected to the query engine, you must call `connect()` "
+        "before attempting to query data."
+    )
+
+    assert (
+        PrismaDBExceptionHandler.is_prisma_client_not_connected_error(wrapped_error)
+        is True
+    )
+    assert PrismaDBExceptionHandler.is_database_transport_error(wrapped_error) is True
+    assert PrismaDBExceptionHandler.is_database_connection_error(wrapped_error) is True
+
+
 # Test should_allow_request_on_db_unavailable method
 @patch(
     "litellm.proxy.proxy_server.general_settings",

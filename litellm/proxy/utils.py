@@ -2480,6 +2480,7 @@ class PrismaClient:
         self._db_reconnect_lock = asyncio.Lock()
         self._db_health_watchdog_task: Optional[asyncio.Task] = None
         self._db_last_reconnect_attempt_ts: float = 0.0
+        self._db_successful_reconnect_count: int = 0
         self._db_reconnect_cooldown_seconds: int = max(
             1, int(os.getenv("PRISMA_RECONNECT_COOLDOWN_SECONDS", "15"))
         )
@@ -4138,6 +4139,8 @@ class PrismaClient:
         force: bool,
         reason: str,
         timeout_seconds: Optional[float],
+        skip_if_connected: bool = False,
+        starting_reconnect_count: Optional[int] = None,
     ) -> bool:
         now = time.time()
         if (
@@ -4150,6 +4153,25 @@ class PrismaClient:
                 reason,
             )
             return False
+
+        if (
+            skip_if_connected
+            and starting_reconnect_count is not None
+            and self._db_successful_reconnect_count > starting_reconnect_count
+        ):
+            try:
+                if self.db.is_connected() is True:
+                    verbose_proxy_logger.debug(
+                        "Skipping DB reconnect because another reconnect already completed. reason=%s",
+                        reason,
+                    )
+                    return True
+            except Exception as is_connected_err:
+                verbose_proxy_logger.debug(
+                    "Unable to check Prisma connection state before reconnect. reason=%s error=%s",
+                    reason,
+                    is_connected_err,
+                )
 
         # Escalate to heavy reconnect after consecutive lightweight failures.
         # When the Prisma engine process is alive but not accepting connections
@@ -4173,6 +4195,7 @@ class PrismaClient:
             await self._run_reconnect_cycle(timeout_seconds=timeout_seconds)
             reconnect_succeeded = True
             self._consecutive_reconnect_failures = 0
+            self._db_successful_reconnect_count += 1
             verbose_proxy_logger.info(
                 "Prisma DB reconnect succeeded. reason=%s", reason
             )
@@ -4195,6 +4218,7 @@ class PrismaClient:
         force: bool = False,
         timeout_seconds: Optional[float] = None,
         lock_timeout_seconds: Optional[float] = None,
+        skip_if_connected: bool = False,
     ) -> bool:
         """
         Attempt to reconnect the Prisma client in a singleflight manner.
@@ -4202,6 +4226,7 @@ class PrismaClient:
         Returns:
             bool: True if reconnection succeeded, else False.
         """
+        starting_reconnect_count = self._db_successful_reconnect_count
         now = time.time()
         if (
             force is False
@@ -4217,7 +4242,11 @@ class PrismaClient:
         if lock_timeout_seconds is None:
             async with self._db_reconnect_lock:
                 return await self._attempt_reconnect_inside_lock(
-                    force, reason, timeout_seconds
+                    force,
+                    reason,
+                    timeout_seconds,
+                    skip_if_connected,
+                    starting_reconnect_count,
                 )
 
         lock_acquired_by_timeout_task = False
@@ -4268,7 +4297,11 @@ class PrismaClient:
 
         try:
             return await self._attempt_reconnect_inside_lock(
-                force, reason, timeout_seconds
+                force,
+                reason,
+                timeout_seconds,
+                skip_if_connected,
+                starting_reconnect_count,
             )
         finally:
             self._db_reconnect_lock.release()
