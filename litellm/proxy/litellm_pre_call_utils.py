@@ -342,6 +342,226 @@ def clean_headers(
     return clean_headers
 
 
+def _is_true_value(value: Any) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.lower() == "true"
+    return False
+
+
+def _should_store_raw_request_body_in_proxy_server_request(
+    general_settings: Optional[Dict[str, Any]],
+) -> bool:
+    """
+    Decide whether to retain the raw request body in proxy_server_request.
+
+    Raw-body retention preserves legacy custom-logger/cold-storage behavior, but
+    it also makes every logging object hold a second reference to large inputs.
+    Default to a summary unless prompt storage is explicitly enabled or the
+    compatibility opt-in is set.
+    """
+    if general_settings is not None:
+        if _is_true_value(
+            general_settings.get("store_raw_request_body_in_proxy_server_request")
+        ):
+            return True
+        if _is_true_value(general_settings.get("store_prompts_in_spend_logs")):
+            return True
+
+    if get_secret_bool("LITELLM_PROXY_STORE_RAW_REQUEST_BODY_IN_MEMORY") is True:
+        return True
+    if get_secret_bool("STORE_PROMPTS_IN_SPEND_LOGS") is True:
+        return True
+
+    return False
+
+
+def _get_json_like_input_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def _summarize_sequence_items(value: Any) -> Optional[int]:
+    if isinstance(value, (list, tuple)):
+        return len(value)
+    return None
+
+
+def _safe_string_length(value: Any) -> Optional[int]:
+    if isinstance(value, str):
+        return len(value)
+    return None
+
+
+def _estimate_json_like_size_bytes(
+    value: Any,
+    *,
+    max_depth: int = 4,
+    max_items: int = 100,
+) -> Optional[int]:
+    """
+    Best-effort size estimate that avoids serializing/copying the full payload.
+
+    The goal is observability, not exact accounting. Large lists/dicts are
+    sampled up to ``max_items`` so this helper does not become another
+    request-size amplification point.
+    """
+    try:
+        if value is None:
+            return 4
+        if isinstance(value, bool):
+            return 4 if value else 5
+        if isinstance(value, (int, float)):
+            return len(str(value))
+        if isinstance(value, str):
+            return len(value.encode("utf-8", errors="ignore")) + 2
+        if isinstance(value, (bytes, bytearray)):
+            return len(value)
+        if max_depth <= 0:
+            return len(str(type(value).__name__))
+        if isinstance(value, dict):
+            total = 2
+            for index, (key, item_value) in enumerate(value.items()):
+                if index >= max_items:
+                    break
+                key_size = _estimate_json_like_size_bytes(
+                    str(key),
+                    max_depth=max_depth - 1,
+                    max_items=max_items,
+                )
+                item_size = _estimate_json_like_size_bytes(
+                    item_value,
+                    max_depth=max_depth - 1,
+                    max_items=max_items,
+                )
+                total += (key_size or 0) + (item_size or 0) + 2
+            return total
+        if isinstance(value, (list, tuple)):
+            total = 2
+            for index, item_value in enumerate(value):
+                if index >= max_items:
+                    break
+                item_size = _estimate_json_like_size_bytes(
+                    item_value,
+                    max_depth=max_depth - 1,
+                    max_items=max_items,
+                )
+                total += (item_size or 0) + 1
+            return total
+    except Exception:
+        return None
+    return None
+
+
+def _summarize_input_for_proxy_server_request(input_value: Any) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {"input_type": _get_json_like_input_type(input_value)}
+
+    input_items_count = _summarize_sequence_items(input_value)
+    if input_items_count is not None:
+        summary["input_items_count"] = input_items_count
+
+    input_string_length = _safe_string_length(input_value)
+    if input_string_length is not None:
+        summary["input_string_length"] = input_string_length
+
+    if isinstance(input_value, dict):
+        summary["input_keys"] = sorted([str(k) for k in input_value.keys()])
+
+    estimated_input_size_bytes = _estimate_json_like_size_bytes(input_value)
+    if estimated_input_size_bytes is not None:
+        summary["estimated_input_size_bytes"] = estimated_input_size_bytes
+
+    return summary
+
+
+def _summarize_metadata_for_proxy_server_request(
+    metadata: Any,
+    *,
+    max_small_fields: int = 20,
+    max_string_length: int = 256,
+) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {"metadata_type": _get_json_like_input_type(metadata)}
+    if not isinstance(metadata, dict):
+        metadata_string_length = _safe_string_length(metadata)
+        if metadata_string_length is not None:
+            summary["metadata_string_length"] = metadata_string_length
+        return summary
+
+    summary["metadata_keys"] = sorted([str(k) for k in metadata.keys()])
+    small_fields: Dict[str, Any] = {}
+    for key, value in metadata.items():
+        if len(small_fields) >= max_small_fields:
+            break
+        if value is None or isinstance(value, (bool, int, float)):
+            small_fields[str(key)] = value
+        elif isinstance(value, str) and len(value) <= max_string_length:
+            small_fields[str(key)] = value
+    if small_fields:
+        summary["metadata_small_fields"] = small_fields
+    return summary
+
+
+def _build_proxy_server_request_body_summary(data: dict) -> Dict[str, Any]:
+    input_value = data.get("input")
+    metadata_value = data.get("metadata")
+    litellm_metadata_value = data.get("litellm_metadata")
+    body_summary: Dict[str, Any] = {
+        "model": data.get("model"),
+        "stream": data.get("stream"),
+        "background": data.get("background"),
+        "user": data.get("user"),
+        "request_body_keys": sorted([str(k) for k in data.keys()]),
+        "input_summary": _summarize_input_for_proxy_server_request(input_value),
+    }
+
+    # Duplicate the most frequently used input summary fields at top level for
+    # quick inspection and compatibility with the original rollout plan.
+    body_summary.update(body_summary["input_summary"])
+
+    if metadata_value is not None:
+        body_summary["metadata_summary"] = (
+            _summarize_metadata_for_proxy_server_request(metadata_value)
+        )
+    if litellm_metadata_value is not None:
+        body_summary["litellm_metadata_summary"] = (
+            _summarize_metadata_for_proxy_server_request(litellm_metadata_value)
+        )
+
+    if "messages" in data:
+        body_summary["messages_summary"] = _summarize_input_for_proxy_server_request(
+            data.get("messages")
+        )
+    if "tools" in data:
+        body_summary["tools_count"] = _summarize_sequence_items(data.get("tools"))
+
+    estimated_body_size_bytes = _estimate_json_like_size_bytes(data)
+    if estimated_body_size_bytes is not None:
+        body_summary["estimated_body_size_bytes"] = estimated_body_size_bytes
+
+    return body_summary
+
+
+def _build_proxy_server_request_body_for_memory_safe_logging(
+    data: dict,
+    general_settings: Optional[Dict[str, Any]],
+) -> dict:
+    if _should_store_raw_request_body_in_proxy_server_request(general_settings):
+        return copy.copy(data)
+    return _build_proxy_server_request_body_summary(data)
+
+
 class LiteLLMProxyRequestSetup:
     @staticmethod
     def _get_timeout_from_request(headers: dict) -> Optional[float]:
@@ -971,11 +1191,17 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     ##########################################################
     # Track arrival time for queue time metric
     arrival_time = time.time()
+    body_for_proxy_server_request = (
+        _build_proxy_server_request_body_for_memory_safe_logging(
+            data=data,
+            general_settings=general_settings,
+        )
+    )
     data["proxy_server_request"] = {
         "url": str(request.url),
         "method": request.method,
         "headers": _headers,
-        "body": copy.copy(data),  # use copy instead of deepcopy
+        "body": body_for_proxy_server_request,
         "arrival_time": arrival_time,  # Track when request arrived at proxy
     }
 

@@ -18,6 +18,7 @@ from litellm.proxy.litellm_pre_call_utils import (
     _get_dynamic_logging_metadata,
     _get_enforced_params,
     _get_metadata_variable_name,
+    _build_proxy_server_request_body_for_memory_safe_logging,
     _resolve_credential_from_model_config,
     _update_model_if_key_alias_exists,
     add_guardrails_from_policy_engine,
@@ -91,6 +92,81 @@ class TestGetMetadataVariableName:
     def test_returns_metadata_for_embeddings(self):
         request = self._make_request("/v1/embeddings")
         assert _get_metadata_variable_name(request) == "metadata"
+
+
+class TestProxyServerRequestBodyMemorySafeLogging:
+    def test_default_body_is_summary_without_raw_input(self):
+        large_input = "x" * 10_000
+        data = {
+            "model": "gpt-4.1-mini",
+            "stream": True,
+            "background": False,
+            "user": "user-123",
+            "input": [{"role": "user", "content": large_input}],
+            "metadata": {
+                "trace_id": "trace-123",
+                "large_blob": "y" * 10_000,
+            },
+            "tools": [{"type": "function", "name": "lookup"}],
+        }
+
+        body = _build_proxy_server_request_body_for_memory_safe_logging(
+            data=data,
+            general_settings={},
+        )
+
+        assert body["model"] == "gpt-4.1-mini"
+        assert body["stream"] is True
+        assert body["background"] is False
+        assert body["user"] == "user-123"
+        assert "input" not in body
+        assert body["input_type"] == "array"
+        assert body["input_items_count"] == 1
+        assert "input" in body["request_body_keys"]
+        assert body["metadata_summary"]["metadata_keys"] == [
+            "large_blob",
+            "trace_id",
+        ]
+        assert body["metadata_summary"]["metadata_small_fields"] == {
+            "trace_id": "trace-123"
+        }
+        assert body["tools_count"] == 1
+
+    @pytest.mark.parametrize(
+        "general_settings",
+        [
+            {"store_prompts_in_spend_logs": True},
+            {"store_prompts_in_spend_logs": "true"},
+            {"store_raw_request_body_in_proxy_server_request": True},
+            {"store_raw_request_body_in_proxy_server_request": "true"},
+        ],
+    )
+    def test_raw_body_is_preserved_when_explicitly_enabled(self, general_settings):
+        data = {
+            "model": "gpt-4.1-mini",
+            "input": [{"role": "user", "content": "hello"}],
+        }
+
+        body = _build_proxy_server_request_body_for_memory_safe_logging(
+            data=data,
+            general_settings=general_settings,
+        )
+
+        assert body == data
+        assert body is not data
+        assert body["input"] is data["input"]  # legacy shallow-copy behavior
+
+    def test_env_opt_in_preserves_raw_body(self, monkeypatch):
+        monkeypatch.setenv("LITELLM_PROXY_STORE_RAW_REQUEST_BODY_IN_MEMORY", "true")
+        data = {"model": "gpt-4.1-mini", "input": "hello"}
+
+        body = _build_proxy_server_request_body_for_memory_safe_logging(
+            data=data,
+            general_settings={},
+        )
+
+        assert body == data
+        assert body is not data
 
 
 def test_get_enforced_params_for_service_account_settings():
