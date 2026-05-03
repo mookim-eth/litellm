@@ -3261,6 +3261,32 @@ class Logging(LiteLLMLoggingBaseClass):
             cache_hit,
         )
 
+    def handle_sync_failure_callbacks_for_async_calls(
+        self,
+        exception: Exception,
+        traceback_exception: str,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+    ) -> None:
+        """
+        Handles calling sync failure callbacks for async calls.
+
+        Keep this behind a callback presence check so high-throughput streaming
+        paths do not enqueue no-op work items into the global, unbounded thread
+        pool while still preserving sync failure callbacks such as custom
+        loggers.
+        """
+        if self._should_run_sync_failure_callbacks_for_async_calls() is False:
+            return
+
+        executor.submit(
+            self.failure_handler,
+            exception,
+            traceback_exception,
+            start_time,
+            end_time,
+        )
+
     def _should_run_sync_callbacks_for_async_calls(self) -> bool:
         """
         Returns:
@@ -3277,6 +3303,23 @@ class Logging(LiteLLMLoggingBaseClass):
             _filtered_success_callbacks
         )
         return len(_filtered_success_callbacks) > 0
+
+    def _should_run_sync_failure_callbacks_for_async_calls(self) -> bool:
+        """
+        Returns:
+            - bool: True if sync failure callbacks should be run for async calls.
+        """
+        _combined_sync_callbacks = self.get_combined_callback_list(
+            dynamic_success_callbacks=self.dynamic_failure_callbacks,
+            global_callbacks=litellm.failure_callback,
+        )
+        _filtered_failure_callbacks = self._remove_internal_custom_logger_callbacks(
+            _combined_sync_callbacks
+        )
+        _filtered_failure_callbacks = self._remove_internal_litellm_callbacks(
+            _filtered_failure_callbacks
+        )
+        return len(_filtered_failure_callbacks) > 0
 
     def get_combined_callback_list(
         self, dynamic_success_callbacks: Optional[List], global_callbacks: List

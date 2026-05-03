@@ -20,3 +20,6 @@ litellm_settings:
   drop_params: True
   set_verbose: True
   callbacks: custom_callbacks.my_custom_logger
+
+general_settings:
+  store_raw_request_body_in_proxy_server_request: True

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import time
 import traceback
@@ -16,6 +17,7 @@ from litellm.constants import (
 from litellm.litellm_core_utils.asyncify import run_async_function
 from litellm.litellm_core_utils.core_helpers import process_response_headers
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
 from litellm.litellm_core_utils.llm_response_utils.get_api_base import get_api_base
 from litellm.litellm_core_utils.llm_response_utils.response_metadata import (
     update_response_metadata,
@@ -62,6 +64,7 @@ class BaseResponsesAPIStreamingIterator:
         self.completed_response: Optional[ResponsesAPIStreamingResponse] = None
         self.start_time = getattr(logging_obj, "start_time", datetime.now())
         self._failure_handled = False  # Track if failure handler has been called
+        self._closed = False
         self._stream_created_time: float = time.time()
 
         # track request context for hooks
@@ -89,6 +92,44 @@ class BaseResponsesAPIStreamingIterator:
         self._hidden_params["additional_headers"] = process_response_headers(
             self.response.headers or {}
         )  # GUARANTEE OPENAI HEADERS IN RESPONSE
+
+    async def aclose(self) -> None:
+        """Close the underlying HTTP response and drop the reference.
+
+        The iterator can outlive the client connection while proxy streaming
+        cleanup/logging completes. Clearing ``self.response`` breaks the chain
+        ``iterator -> httpx.Response -> httpx.Request -> request.content`` so
+        large JSON request bytes are not retained longer than needed.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        response = getattr(self, "response", None)
+        try:
+            close_fn = (
+                getattr(response, "aclose", None) if response is not None else None
+            )
+            if callable(close_fn):
+                close_result = close_fn()
+                if inspect.isawaitable(close_result):
+                    await close_result
+        finally:
+            self.response = None  # type: ignore[assignment]
+
+    def close(self) -> None:
+        """Synchronously close the underlying HTTP response and drop it."""
+        if self._closed:
+            return
+        self._closed = True
+        response = getattr(self, "response", None)
+        try:
+            close_fn = (
+                getattr(response, "close", None) if response is not None else None
+            )
+            if callable(close_fn):
+                close_fn()
+        finally:
+            self.response = None  # type: ignore[assignment]
 
     def _check_max_streaming_duration(self) -> None:
         """Raise litellm.Timeout if the stream has exceeded LITELLM_MAX_STREAMING_DURATION_SECONDS."""
@@ -415,25 +456,49 @@ class BaseResponsesAPIStreamingIterator:
         self._failure_handled = True
 
         traceback_exception = traceback.format_exc()
+        has_running_loop = False
         try:
-            run_async_function(
-                async_function=self.logging_obj.async_failure_handler,
-                exception=exception,
-                traceback_exception=traceback_exception,
-                start_time=self.start_time,
-                end_time=datetime.now(),
-            )
+            end_time = datetime.now()
+            try:
+                asyncio.get_running_loop()
+                has_running_loop = True
+                GLOBAL_LOGGING_WORKER.ensure_initialized_and_enqueue(
+                    async_coroutine=self.logging_obj.async_failure_handler(
+                        exception=exception,
+                        traceback_exception=traceback_exception,
+                        start_time=self.start_time,
+                        end_time=end_time,
+                    )
+                )
+            except RuntimeError:
+                run_async_function(
+                    async_function=self.logging_obj.async_failure_handler,
+                    exception=exception,
+                    traceback_exception=traceback_exception,
+                    start_time=self.start_time,
+                    end_time=end_time,
+                )
         except Exception:
             pass
 
         try:
-            executor.submit(
-                self.logging_obj.failure_handler,
-                exception,
-                traceback_exception,
-                self.start_time,
-                datetime.now(),
-            )
+            if has_running_loop and hasattr(
+                self.logging_obj, "handle_sync_failure_callbacks_for_async_calls"
+            ):
+                self.logging_obj.handle_sync_failure_callbacks_for_async_calls(
+                    exception=exception,
+                    traceback_exception=traceback_exception,
+                    start_time=self.start_time,
+                    end_time=datetime.now(),
+                )
+            else:
+                executor.submit(
+                    self.logging_obj.failure_handler,
+                    exception,
+                    traceback_exception,
+                    self.start_time,
+                    datetime.now(),
+                )
         except Exception:
             pass
 
@@ -506,16 +571,26 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
 
         except StopAsyncIteration:
             # Normal end of stream - don't log as failure
+            self.finished = True
+            await self.aclose()
+            raise
+        except asyncio.CancelledError:
+            # Client disconnected / task cancelled. Close the upstream response,
+            # but do not log this as an LLM/provider failure.
+            self.finished = True
+            await self.aclose()
             raise
         except httpx.HTTPError as e:
             # Handle HTTP errors
             self.finished = True
+            await self.aclose()
             self._handle_failure(e)
-            raise e
+            raise
         except Exception as e:
             self.finished = True
+            await self.aclose()
             self._handle_failure(e)
-            raise e
+            raise
 
     def _handle_logging_completed_response(self):
         """Handle logging for completed responses in async context"""
@@ -536,23 +611,36 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                 # Fallback to original if serialization fails
                 pass
 
-        asyncio.create_task(
-            self.logging_obj.async_success_handler(
+        end_time = datetime.now()
+        try:
+            asyncio.get_running_loop()
+            GLOBAL_LOGGING_WORKER.ensure_initialized_and_enqueue(
+                async_coroutine=self.logging_obj.async_success_handler(
+                    result=logging_response,
+                    start_time=self.start_time,
+                    end_time=end_time,
+                    cache_hit=None,
+                )
+            )
+        except RuntimeError:
+            run_async_function(
+                async_function=self.logging_obj.async_success_handler,
                 result=logging_response,
                 start_time=self.start_time,
-                end_time=datetime.now(),
+                end_time=end_time,
                 cache_hit=None,
             )
-        )
 
-        executor.submit(
-            self.logging_obj.success_handler,
-            result=logging_response,
-            cache_hit=None,
-            start_time=self.start_time,
-            end_time=datetime.now(),
-        )
-        self._run_post_success_hooks(end_time=datetime.now())
+        try:
+            self.logging_obj.handle_sync_success_callbacks_for_async_calls(
+                result=logging_response,
+                cache_hit=None,
+                start_time=self.start_time,
+                end_time=end_time,
+            )
+        except Exception:
+            pass
+        self._run_post_success_hooks(end_time=end_time)
 
 
 class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
@@ -613,16 +701,20 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
 
         except StopIteration:
             # Normal end of stream - don't log as failure
+            self.finished = True
+            self.close()
             raise
         except httpx.HTTPError as e:
             # Handle HTTP errors
             self.finished = True
+            self.close()
             self._handle_failure(e)
-            raise e
+            raise
         except Exception as e:
             self.finished = True
+            self.close()
             self._handle_failure(e)
-            raise e
+            raise
 
     def _handle_logging_completed_response(self):
         """Handle logging for completed responses in sync context"""
@@ -643,11 +735,12 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                 # Fallback to original if serialization fails
                 pass
 
+        end_time = datetime.now()
         run_async_function(
             async_function=self.logging_obj.async_success_handler,
             result=logging_response,
             start_time=self.start_time,
-            end_time=datetime.now(),
+            end_time=end_time,
             cache_hit=None,
         )
 
@@ -656,9 +749,9 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             result=logging_response,
             cache_hit=None,
             start_time=self.start_time,
-            end_time=datetime.now(),
+            end_time=end_time,
         )
-        self._run_post_success_hooks(end_time=datetime.now())
+        self._run_post_success_hooks(end_time=end_time)
 
 
 class MockResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
@@ -743,6 +836,7 @@ class MockResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
 
     async def __anext__(self) -> ResponsesAPIStreamingResponse:
         if self._idx >= len(self._events):
+            await self.aclose()
             raise StopAsyncIteration
         evt = self._events[self._idx]
         self._idx += 1
@@ -753,6 +847,7 @@ class MockResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
 
     def __next__(self) -> ResponsesAPIStreamingResponse:
         if self._idx >= len(self._events):
+            self.close()
             raise StopIteration
         evt = self._events[self._idx]
         self._idx += 1

@@ -15,9 +15,8 @@ response tracking and logging.
 import json
 import os
 import sys
-from datetime import datetime
-from typing import Any, Dict, Optional
-from unittest.mock import Mock, patch
+import asyncio
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -261,7 +260,6 @@ class TestBaseResponsesAPIStreamingIterator:
 
         The fix uses model_dump + model_validate instead of copy.deepcopy.
         """
-        import asyncio
         from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
 
         # Mock dependencies
@@ -270,7 +268,7 @@ class TestBaseResponsesAPIStreamingIterator:
         mock_response.aiter_lines = Mock()
         mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {"litellm_params": {}}
-        mock_logging_obj.async_success_handler = Mock()
+        mock_logging_obj.async_success_handler = AsyncMock()
         mock_logging_obj.success_handler = Mock()
         mock_config = Mock(spec=BaseResponsesAPIConfig)
 
@@ -301,9 +299,8 @@ class TestBaseResponsesAPIStreamingIterator:
 
         # This should NOT raise an exception
         # Previously it would fail with: TypeError: cannot pickle 'ValidatorIterator'
-        # Mock asyncio.create_task and executor.submit since we're not in async context
-        with patch('asyncio.create_task') as mock_create_task, \
-             patch('litellm.responses.streaming_iterator.executor') as mock_executor:
+        # Mock run_async_function since we're not in async context
+        with patch('litellm.responses.streaming_iterator.run_async_function'):
             try:
                 iterator._handle_logging_completed_response()
             except TypeError as e:
@@ -430,6 +427,132 @@ class TestBaseResponsesAPIStreamingIterator:
         # StopIteration is a normal end of stream, not a failure
         mock_logging_obj.async_failure_handler.assert_not_called()
         mock_logging_obj.failure_handler.assert_not_called()
+        mock_response.close.assert_called_once()
+        assert iterator.response is None
+
+    @pytest.mark.asyncio
+    async def test_async_iterator_closes_response_on_normal_end(self):
+        """
+        Test that a normally exhausted async stream explicitly closes and drops
+        the underlying httpx response.
+        """
+        from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
+
+        mock_response = Mock()
+        mock_response.headers = {}
+        mock_response.aclose = AsyncMock()
+
+        async def mock_aiter_lines():
+            yield 'data: {"type": "response.output_text.delta", "delta": "test"}'
+
+        mock_response.aiter_lines = mock_aiter_lines
+
+        mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
+        mock_logging_obj.model_call_details = {"litellm_params": {}}
+        mock_config = Mock(spec=BaseResponsesAPIConfig)
+        mock_delta_event = Mock()
+        mock_delta_event.type = ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA
+        mock_config.transform_streaming_response.return_value = mock_delta_event
+
+        iterator = ResponsesAPIStreamingIterator(
+            response=mock_response,
+            model="gpt-4",
+            responses_api_provider_config=mock_config,
+            logging_obj=mock_logging_obj,
+            litellm_metadata={"model_info": {"id": "model_123"}},
+            custom_llm_provider="openai",
+        )
+
+        chunks_received = []
+        async for chunk in iterator:
+            chunks_received.append(chunk)
+
+        assert len(chunks_received) == 1
+        mock_response.aclose.assert_awaited_once()
+        assert iterator.response is None
+
+    @pytest.mark.asyncio
+    async def test_async_iterator_closes_response_on_cancelled_error(self):
+        """
+        Test that client cancellation closes the upstream response without
+        invoking failure logging.
+        """
+        from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
+
+        class CancelledAsyncIterator:
+            async def __anext__(self):
+                raise asyncio.CancelledError()
+
+        mock_response = Mock()
+        mock_response.headers = {}
+        mock_response.aclose = AsyncMock()
+        mock_response.aiter_lines.return_value = CancelledAsyncIterator()
+
+        mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
+        mock_logging_obj.model_call_details = {"litellm_params": {}}
+        mock_logging_obj.async_failure_handler = Mock()
+        mock_logging_obj.failure_handler = Mock()
+        mock_config = Mock(spec=BaseResponsesAPIConfig)
+
+        iterator = ResponsesAPIStreamingIterator(
+            response=mock_response,
+            model="gpt-4",
+            responses_api_provider_config=mock_config,
+            logging_obj=mock_logging_obj,
+            litellm_metadata={"model_info": {"id": "model_123"}},
+            custom_llm_provider="openai",
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await iterator.__anext__()
+
+        mock_response.aclose.assert_awaited_once()
+        assert iterator.response is None
+        mock_logging_obj.async_failure_handler.assert_not_called()
+        mock_logging_obj.failure_handler.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_completed_logging_uses_bounded_worker(self):
+        """
+        Test that async Responses streaming success logging is enqueued through
+        the bounded logging worker instead of spawning a naked asyncio task.
+        """
+        from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
+
+        mock_response = Mock()
+        mock_response.headers = {}
+        mock_response.aiter_lines = Mock()
+        mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
+        mock_logging_obj.model_call_details = {"litellm_params": {}}
+        mock_logging_obj.async_success_handler = AsyncMock()
+        mock_logging_obj.success_handler = Mock()
+        mock_config = Mock(spec=BaseResponsesAPIConfig)
+
+        iterator = ResponsesAPIStreamingIterator(
+            response=mock_response,
+            model="gpt-4",
+            responses_api_provider_config=mock_config,
+            logging_obj=mock_logging_obj,
+            litellm_metadata={"model_info": {"id": "model_123"}},
+            custom_llm_provider="openai",
+        )
+        iterator.completed_response = Mock()
+        iterator._run_post_success_hooks = Mock()
+
+        def close_enqueued_coroutine(async_coroutine):
+            async_coroutine.close()
+
+        with patch(
+            "litellm.responses.streaming_iterator.GLOBAL_LOGGING_WORKER"
+        ) as mock_worker:
+            mock_worker.ensure_initialized_and_enqueue.side_effect = (
+                close_enqueued_coroutine
+            )
+
+            iterator._handle_logging_completed_response()
+
+            mock_worker.ensure_initialized_and_enqueue.assert_called_once()
+            mock_logging_obj.handle_sync_success_callbacks_for_async_calls.assert_called_once()
 
     def test_process_chunk_response_failed_calls_failure_handler(self):
         """
@@ -511,6 +634,71 @@ class TestBaseResponsesAPIStreamingIterator:
             submit_args = mock_executor.submit.call_args
             assert submit_args[0][0] == mock_logging_obj.failure_handler
 
+    @pytest.mark.asyncio
+    async def test_async_response_failed_logging_uses_bounded_worker(self):
+        """
+        Test that failure logging from async Responses streaming uses the
+        bounded logging worker and avoids direct executor submission unless
+        there are actual sync failure callbacks.
+        """
+        from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
+
+        mock_response = Mock()
+        mock_response.headers = {}
+        mock_response.aiter_lines = Mock()
+        mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
+        mock_logging_obj.model_call_details = {"litellm_params": {}}
+        mock_logging_obj.async_failure_handler = AsyncMock()
+        mock_logging_obj.failure_handler = Mock()
+        mock_config = Mock(spec=BaseResponsesAPIConfig)
+
+        mock_responses_api_response = Mock(spec=ResponsesAPIResponse)
+        mock_responses_api_response.id = "resp_failed_123"
+        mock_responses_api_response.error = {"message": "model failed"}
+        mock_responses_api_response.usage = None
+
+        mock_failed_event = Mock(spec=ResponseFailedEvent)
+        mock_failed_event.type = ResponsesAPIStreamEvents.RESPONSE_FAILED
+        mock_failed_event.response = mock_responses_api_response
+        mock_config.transform_streaming_response.return_value = mock_failed_event
+
+        iterator = ResponsesAPIStreamingIterator(
+            response=mock_response,
+            model="gpt-4",
+            responses_api_provider_config=mock_config,
+            logging_obj=mock_logging_obj,
+            litellm_metadata={"model_info": {"id": "model_123"}},
+            custom_llm_provider="openai",
+        )
+
+        test_chunk_data = {
+            "type": "response.failed",
+            "response": {"id": "resp_failed_123", "error": {"message": "model failed"}},
+        }
+
+        def close_enqueued_coroutine(async_coroutine):
+            async_coroutine.close()
+
+        with patch.object(
+            ResponsesAPIRequestUtils,
+            "_update_responses_api_response_id_with_model_id",
+            return_value=mock_responses_api_response,
+        ), patch(
+            "litellm.responses.streaming_iterator.GLOBAL_LOGGING_WORKER"
+        ) as mock_worker, patch(
+            "litellm.responses.streaming_iterator.executor"
+        ) as mock_executor:
+            mock_worker.ensure_initialized_and_enqueue.side_effect = (
+                close_enqueued_coroutine
+            )
+
+            result = iterator._process_chunk(json.dumps(test_chunk_data))
+
+            assert result is not None
+            mock_worker.ensure_initialized_and_enqueue.assert_called_once()
+            mock_logging_obj.handle_sync_failure_callbacks_for_async_calls.assert_called_once()
+            mock_executor.submit.assert_not_called()
+
     def test_process_chunk_response_incomplete_calls_success_handler(self):
         """
         Test that a RESPONSE_INCOMPLETE event routes to success handlers.
@@ -565,10 +753,11 @@ class TestBaseResponsesAPIStreamingIterator:
             "_update_responses_api_response_id_with_model_id",
             return_value=mock_responses_api_response,
         ), patch(
-            "asyncio.create_task"
-        ) as mock_create_task, patch(
+            "litellm.responses.streaming_iterator.run_async_function"
+        ) as mock_run_async, patch(
             "litellm.responses.streaming_iterator.executor"
         ) as mock_executor:
+            iterator._run_post_success_hooks = Mock()
             result = iterator._process_chunk(json.dumps(test_chunk_data))
 
             assert result is not None
@@ -576,10 +765,15 @@ class TestBaseResponsesAPIStreamingIterator:
             assert iterator.completed_response == result
 
             # Success handler should have been called (via _handle_logging_completed_response)
-            mock_create_task.assert_called_once()
-            mock_executor.submit.assert_called_once()
+            mock_run_async.assert_called_once()
+            call_kwargs = mock_run_async.call_args
+            assert (
+                call_kwargs[1]["async_function"]
+                == mock_logging_obj.async_success_handler
+            )
+            mock_logging_obj.handle_sync_success_callbacks_for_async_calls.assert_called_once()
+            mock_executor.submit.assert_not_called()
 
             # Failure handlers should NOT have been called
             mock_logging_obj.async_failure_handler.assert_not_called()
             mock_logging_obj.failure_handler.assert_not_called()
-
