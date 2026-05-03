@@ -964,6 +964,36 @@ async def proxy_startup_event(app: FastAPI):  # noqa: PLR0915
     ## Initialize shared aiohttp session for connection reuse
     shared_aiohttp_session = await _initialize_shared_aiohttp_session()
 
+    try:
+        from litellm.proxy.memory_debug import install as install_memory_debug
+
+        install_memory_debug(
+            context_provider=lambda: {
+                "llm_router_model_count": len(llm_router.model_list)
+                if llm_router is not None
+                else None,
+                "llm_model_list_count": len(llm_model_list)
+                if llm_model_list is not None
+                else None,
+                "user_api_key_cache_items": len(
+                    user_api_key_cache.in_memory_cache.cache_dict
+                )
+                if user_api_key_cache.in_memory_cache is not None
+                else None,
+                "spend_counter_cache_items": len(
+                    spend_counter_cache.in_memory_cache.cache_dict
+                )
+                if spend_counter_cache.in_memory_cache is not None
+                else None,
+                "redis_usage_cache_enabled": redis_usage_cache is not None,
+                "prisma_client_enabled": prisma_client is not None,
+                "shared_aiohttp_session_enabled": shared_aiohttp_session is not None,
+                "background_health_checks": bool(use_background_health_checks),
+            }
+        )
+    except Exception as e:
+        verbose_proxy_logger.warning(f"Failed to install memory debug handler: {e}")
+
     # End of startup event
     yield
 
