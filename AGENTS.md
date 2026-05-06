@@ -288,11 +288,12 @@ When asked to ship the current repo changes to the local LiteLLM deployment:
    git push
    ```
 
-4. Build the local Docker image from the repo root after the commit is created:
+4. Build the local Docker image from the repo root after the commit is created. Use an immutable commit-specific tag by default: replace `<commit>` with the real short commit SHA from `git rev-parse --short=12 HEAD`. Only use the literal tag `litellm:commit` if the user explicitly asks for that exact tag.
 
    ```bash
-   docker build -t litellm:commit .
-   docker image ls litellm:commit
+   COMMIT_TAG="$(git rev-parse --short=12 HEAD)"
+   docker build -t "litellm:${COMMIT_TAG}" .
+   docker image ls "litellm:${COMMIT_TAG}"
    ```
 
 5. Use the deployment script in `~/litellm` for traffic switching. Do **not** manually stop LiteLLM containers with `docker stop`; let the deployment script manage blue/green cutover, drain, and old-service shutdown.
@@ -300,12 +301,12 @@ When asked to ship the current repo changes to the local LiteLLM deployment:
    ```bash
    cd ~/litellm
    ./deploy-litellm.sh status
-   ./deploy-litellm.sh switch --image litellm:commit
+   ./deploy-litellm.sh switch --image "litellm:${COMMIT_TAG}"
    ./deploy-litellm.sh status
    ```
 
    Notes:
-   - `deploy-litellm.sh` does not build images; pass `--image litellm:commit` after building the image separately.
+   - `deploy-litellm.sh` does not build images; pass the exact image tag built in the previous step after `--image`.
    - The script starts the inactive `litellm_blue`/`litellm_green` service, waits for `/health/readiness`, rewrites Traefik `ai-svc` to the new backend port, waits `DRAIN_SECONDS` (default `600`), then stops the old compose service itself.
    - Only set `STOP_OLD=0` if explicitly asked to keep the old backend running.
 
