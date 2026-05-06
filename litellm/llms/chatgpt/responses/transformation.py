@@ -430,6 +430,57 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         except Exception:
             return ResponsesAPIResponse.model_construct(**response_payload)
 
+    @staticmethod
+    def _status_code_from_sse_error_payload(
+        error_obj: Any,
+        fallback_status_code: int,
+        event_status_code: Optional[Any] = None,
+    ) -> int:
+        def _coerce_status_code(status_value: Any) -> Optional[int]:
+            if isinstance(status_value, int):
+                return status_value
+            if isinstance(status_value, str) and status_value.isdigit():
+                return int(status_value)
+            return None
+
+        if not isinstance(error_obj, dict):
+            coerced_event_status = _coerce_status_code(event_status_code)
+            if coerced_event_status is not None:
+                return coerced_event_status
+            return fallback_status_code if fallback_status_code >= 400 else 500
+
+        for status_key in ("status", "status_code"):
+            coerced_status_code = _coerce_status_code(error_obj.get(status_key))
+            if coerced_status_code is not None:
+                return coerced_status_code
+
+        coerced_event_status = _coerce_status_code(event_status_code)
+        if coerced_event_status is not None:
+            return coerced_event_status
+
+        error_code = error_obj.get("code")
+        if error_code in {"server_is_overloaded", "slow_down"}:
+            return 503
+        if error_code in {"rate_limit_exceeded", "usage_limit_reached"}:
+            return 429
+        if error_code in {"context_length_exceeded", "invalid_prompt"}:
+            return 400
+
+        error_type = error_obj.get("type")
+        return {
+            "invalid_request_error": 400,
+            "authentication_error": 401,
+            "permission_error": 403,
+            "not_found_error": 404,
+            "timeout_error": 408,
+            "rate_limit_error": 429,
+            "usage_limit_reached": 429,
+            "service_unavailable_error": 503,
+        }.get(
+            error_type,
+            fallback_status_code if fallback_status_code >= 400 else 500,
+        )
+
     def validate_environment(
         self,
         headers: dict,
@@ -534,6 +585,8 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
 
         completed_response = None
         error_message = None
+        error_payload = None
+        error_status_code = raw_response.status_code
         reconstructed_output = self._reconstruct_output_from_sse(body_text)
         for chunk in body_text.splitlines():
             stripped_chunk = CustomStreamWrapper._strip_sse_data_from_chunk(chunk)
@@ -568,14 +621,30 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
                 ).get("error")
                 if error_obj is not None:
                     if isinstance(error_obj, dict):
+                        error_payload = error_obj
                         error_message = error_obj.get("message") or str(error_obj)
+                        error_status_code = (
+                            self._status_code_from_sse_error_payload(
+                                error_obj=error_obj,
+                                fallback_status_code=raw_response.status_code,
+                                event_status_code=parsed_chunk.get("status"),
+                            )
+                        )
                     else:
                         error_message = str(error_obj)
+                        error_status_code = (
+                            raw_response.status_code
+                            if raw_response.status_code >= 400
+                            else 500
+                        )
 
         if completed_response is None:
             raise OpenAIError(
                 message=error_message or raw_response.text,
-                status_code=raw_response.status_code,
+                status_code=error_status_code,
+                response=raw_response,
+                headers=raw_response.headers,
+                body={"error": error_payload} if isinstance(error_payload, dict) else None,
             )
 
         raw_headers = dict(raw_response.headers)

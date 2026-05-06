@@ -17,6 +17,7 @@ from litellm import ModelResponse
 from litellm.completion_extras.litellm_responses_transformation.transformation import (
     LiteLLMResponsesTransformationHandler,
 )
+from litellm.llms.openai.common_utils import OpenAIError
 from litellm.llms.chatgpt.responses.transformation import ChatGPTResponsesAPIConfig
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.utils import LlmProviders
@@ -570,3 +571,144 @@ class TestChatGPTResponsesAPITransformation:
         )
 
         assert model_response.choices[0].message.content == "Hi there"
+
+    def test_chatgpt_non_stream_sse_failed_server_overloaded_is_retryable(self):
+        config = ChatGPTResponsesAPIConfig()
+        sse_events = [
+            {
+                "type": "response.failed",
+                "response": {
+                    "id": "resp_failed",
+                    "status": "failed",
+                    "error": {
+                        "code": "server_is_overloaded",
+                        "message": "Selected model is at capacity. Please try a different model.",
+                    },
+                },
+            }
+        ]
+        sse_body = "\n".join(
+            [f"data: {json.dumps(event)}" for event in sse_events]
+            + ["data: [DONE]", ""]
+        )
+        raw_response = httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, text=sse_body
+        )
+        logging_obj = MagicMock()
+
+        with pytest.raises(OpenAIError) as exc_info:
+            config.transform_response_api_response(
+                model="chatgpt/gpt-5.4",
+                raw_response=raw_response,
+                logging_obj=logging_obj,
+            )
+
+        assert exc_info.value.status_code == 503
+        assert "Selected model is at capacity" in exc_info.value.message
+
+    def test_chatgpt_non_stream_sse_failed_preserves_retry_after_headers(self):
+        config = ChatGPTResponsesAPIConfig()
+        sse_events = [
+            {
+                "type": "response.failed",
+                "response": {
+                    "id": "resp_failed",
+                    "status": "failed",
+                    "error": {
+                        "code": "server_is_overloaded",
+                        "message": "Selected model is at capacity. Please try a different model.",
+                    },
+                },
+            }
+        ]
+        sse_body = "\n".join(
+            [f"data: {json.dumps(event)}" for event in sse_events]
+            + ["data: [DONE]", ""]
+        )
+        raw_response = httpx.Response(
+            200,
+            headers={
+                "content-type": "text/event-stream",
+                "retry-after": "60",
+            },
+            text=sse_body,
+            request=httpx.Request("POST", "https://chatgpt.example.com/responses"),
+        )
+        logging_obj = MagicMock()
+
+        with pytest.raises(OpenAIError) as exc_info:
+            config.transform_response_api_response(
+                model="chatgpt/gpt-5.4",
+                raw_response=raw_response,
+                logging_obj=logging_obj,
+            )
+
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.response.headers["retry-after"] == "60"
+        assert exc_info.value.headers is not None
+        assert exc_info.value.headers["retry-after"] == "60"
+
+    def test_chatgpt_non_stream_sse_failed_invalid_prompt_stays_bad_request(self):
+        config = ChatGPTResponsesAPIConfig()
+        sse_events = [
+            {
+                "type": "response.failed",
+                "response": {
+                    "id": "resp_failed",
+                    "status": "failed",
+                    "error": {
+                        "code": "invalid_prompt",
+                        "message": "Invalid request.",
+                    },
+                },
+            }
+        ]
+        sse_body = "\n".join(
+            [f"data: {json.dumps(event)}" for event in sse_events]
+            + ["data: [DONE]", ""]
+        )
+        raw_response = httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, text=sse_body
+        )
+        logging_obj = MagicMock()
+
+        with pytest.raises(OpenAIError) as exc_info:
+            config.transform_response_api_response(
+                model="chatgpt/gpt-5.4",
+                raw_response=raw_response,
+                logging_obj=logging_obj,
+            )
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.message == "Invalid request."
+
+    def test_chatgpt_non_stream_error_event_uses_top_level_status_code(self):
+        config = ChatGPTResponsesAPIConfig()
+        sse_events = [
+            {
+                "type": "error",
+                "status": 429,
+                "error": {
+                    "type": "rate_limit_error",
+                    "message": "Too many requests.",
+                },
+            }
+        ]
+        sse_body = "\n".join(
+            [f"data: {json.dumps(event)}" for event in sse_events]
+            + ["data: [DONE]", ""]
+        )
+        raw_response = httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, text=sse_body
+        )
+        logging_obj = MagicMock()
+
+        with pytest.raises(OpenAIError) as exc_info:
+            config.transform_response_api_response(
+                model="chatgpt/gpt-5.4",
+                raw_response=raw_response,
+                logging_obj=logging_obj,
+            )
+
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.message == "Too many requests."
