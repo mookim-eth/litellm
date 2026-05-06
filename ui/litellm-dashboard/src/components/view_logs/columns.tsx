@@ -1,13 +1,13 @@
 import { getSpendString } from "@/utils/dataUtils";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Badge, Button } from "@tremor/react";
+import { Badge } from "@tremor/react";
 import { Tooltip } from "antd";
 import React, { useState } from "react";
 import { getProviderLogoAndName } from "../provider_info_helpers";
 import { TableHeaderSortDropdown } from "../common_components/TableHeaderSortDropdown/TableHeaderSortDropdown";
 import { TimeCell } from "./time_cell";
 import { AGENT_CALL_TYPES, MCP_CALL_TYPES } from "./constants";
-import { AgentBadge, AgentIcon, LlmBadge, McpBadge, SparkleIcon, WrenchIcon } from "./TypeBadges";
+import { AgentBadge, LlmBadge, McpBadge } from "./TypeBadges";
 
 /** API sort field mapping for /spend/logs/ui endpoint */
 export const LOGS_SORT_FIELD_MAP = {
@@ -72,7 +72,6 @@ export type LogEntry = {
   session_mcp_count?: number;
   session_agent_count?: number;
   onKeyHashClick?: (keyHash: string) => void;
-  onSessionClick?: (sessionId: string) => void;
 };
 
 const SortableHeader = ({
@@ -124,47 +123,12 @@ export const createColumns = (sortProps?: LogsSortProps): ColumnDef<LogEntry>[] 
     id: "type",
     cell: (info: any) => {
       const row = info.row.original;
-      const sessionCount = row.session_total_count || 1;
       const isMcp = MCP_CALL_TYPES.includes(row.call_type);
       const isAgent = AGENT_CALL_TYPES.includes(row.call_type);
-      const sessionLlmCount = row.session_llm_count ?? (isMcp || isAgent ? 0 : sessionCount);
-      const sessionAgentCount = row.session_agent_count ?? (isAgent ? sessionCount : 0);
-      const sessionMcpCount = row.session_mcp_count ?? (isMcp ? sessionCount : 0);
 
       if (isMcp) return <McpBadge />;
-      if (isAgent && sessionCount <= 1) return <AgentBadge />;
-      if (sessionCount <= 1) return <LlmBadge />;
-
-      // Multi-call session — show total count, plus Agent/MCP indicators when mixed.
-      const sessionTypeBadge = (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-full text-[11px] font-medium whitespace-nowrap">
-          <SparkleIcon />
-          <span>{sessionCount}</span>
-          {sessionAgentCount > 0 && (
-            <>
-              <span className="text-blue-300">·</span>
-              <AgentIcon size={10} />
-            </>
-          )}
-          {sessionMcpCount > 0 && (
-            <>
-              <span className="text-blue-300">·</span>
-              <WrenchIcon />
-            </>
-          )}
-        </span>
-      );
-
-      const tooltipParts = [
-        sessionLlmCount > 0 && `${sessionLlmCount} LLM`,
-        sessionAgentCount > 0 && `${sessionAgentCount} Agent`,
-        sessionMcpCount > 0 && `${sessionMcpCount} MCP`,
-      ].filter(Boolean);
-      return (
-        <Tooltip title={tooltipParts.join(" • ")}>
-          {sessionTypeBadge}
-        </Tooltip>
-      );
+      if (isAgent) return <AgentBadge />;
+      return <LlmBadge />;
     },
   },
   {
@@ -190,17 +154,9 @@ export const createColumns = (sortProps?: LogsSortProps): ColumnDef<LogEntry>[] 
     accessorKey: "session_id",
     cell: (info: any) => {
       const value = String(info.getValue() || "");
-      const onSessionClick = info.row.original.onSessionClick;
       return (
-        <Tooltip title={String(info.getValue() || "")}>
-          <Button
-            size="xs"
-            variant="light"
-            className="font-mono text-blue-500 bg-blue-50 hover:bg-blue-100 text-xs font-normal text-xs max-w-[15ch] truncate block"
-            onClick={() => onSessionClick?.(value)}
-          >
-            {String(info.getValue() || "")}
-          </Button>
+        <Tooltip title={value}>
+          <span className="font-mono text-xs max-w-[15ch] truncate block">{value}</span>
         </Tooltip>
       );
     },

@@ -20,7 +20,7 @@ import KeyInfoView from "../templates/key_info_view";
 import AuditLogs from "./audit_logs";
 import { createColumns, LogEntry, type LogsSortField } from "./columns";
 import { ConfigInfoMessage } from "./ConfigInfoMessage";
-import { AGENT_CALL_TYPES, ERROR_CODE_OPTIONS, MCP_CALL_TYPES, QUICK_SELECT_OPTIONS } from "./constants";
+import { ERROR_CODE_OPTIONS, QUICK_SELECT_OPTIONS } from "./constants";
 import { CostBreakdownViewer } from "./CostBreakdownViewer";
 import { ErrorViewer } from "./ErrorViewer";
 import { useLogFilterLogic } from "./log_filter_logic";
@@ -309,58 +309,14 @@ export default function SpendLogsTable({
     return matchesSearch;
   });
 
-  const sessionCompositionById = searchedLogs.reduce<Record<string, { llm: number; agent: number; mcp: number }>>((acc, log) => {
-    if (!log.session_id) return acc;
-    if (!acc[log.session_id]) {
-      acc[log.session_id] = { llm: 0, agent: 0, mcp: 0 };
-    }
-    if (MCP_CALL_TYPES.includes(log.call_type)) {
-      acc[log.session_id].mcp += 1;
-    } else if (AGENT_CALL_TYPES.includes(log.call_type)) {
-      acc[log.session_id].agent += 1;
-    } else {
-      acc[log.session_id].llm += 1;
-    }
-    return acc;
-  }, {});
-
-  // Build a single-pass map of session_id → representative request_id.
-  // Prefers an LLM row over an MCP row as the representative.
-  const sessionRepresentativeMap = new Map<string, { requestId: string; isMcp: boolean }>();
-  for (const log of searchedLogs) {
-    if (!log.session_id || (log.session_total_count || 1) <= 1) continue;
-    const isMcp = MCP_CALL_TYPES.includes(log.call_type);
-    const existing = sessionRepresentativeMap.get(log.session_id);
-    if (!existing || (existing.isMcp && !isMcp)) {
-      sessionRepresentativeMap.set(log.session_id, { requestId: log.request_id, isMcp });
-    }
-  }
-
   const filteredData =
-    searchedLogs
-      .map((log) => {
-        const sessionComposition = log.session_id ? sessionCompositionById[log.session_id] : undefined;
-        return {
-          ...log,
-          request_duration_ms: log.request_duration_ms,
-          session_llm_count: sessionComposition?.llm ?? undefined,
-          session_mcp_count: sessionComposition?.mcp ?? undefined,
-          session_agent_count: sessionComposition?.agent ?? undefined,
-          onKeyHashClick: (keyHash: string) => setSelectedKeyIdInfoView(keyHash),
-          onSessionClick: (sessionId: string) => {
-            if (sessionId) {
-              setSelectedSessionId(sessionId);
-              setSelectedLog(log);
-              setIsDrawerOpen(true);
-            }
-          },
-        };
-      })
-      // Deduplicate multi-call sessions using the pre-built map (O(1) per row).
-      .filter((log) => {
-        if (!log.session_id || (log.session_total_count || 1) <= 1) return true;
-        return sessionRepresentativeMap.get(log.session_id)?.requestId === log.request_id;
-      }) || [];
+    searchedLogs.map((log) => {
+      return {
+        ...log,
+        request_duration_ms: log.request_duration_ms,
+        onKeyHashClick: (keyHash: string) => setSelectedKeyIdInfoView(keyHash),
+      };
+    }) || [];
 
   // Add this function to handle manual refresh
   const handleRefresh = () => {
@@ -368,14 +324,8 @@ export default function SpendLogsTable({
   };
 
   const handleRowClick = (log: LogEntry) => {
-    // Multi-call session row: open in the same right-side drawer (session mode)
-    if (log.session_id && (log.session_total_count || 1) > 1) {
-      setSelectedSessionId(log.session_id);
-      setSelectedLog(log);
-      setIsDrawerOpen(true);
-      return;
-    }
-    // Single-call row: open the detail drawer
+    // Always open the clicked request as an individual log entry.
+    // Do not aggregate rows by session_id in the logs table.
     setSelectedSessionId(null);
     setSelectedLog(log);
     setIsDrawerOpen(true);
@@ -572,8 +522,9 @@ export default function SpendLogsTable({
                                   {QUICK_SELECT_OPTIONS.map((option) => (
                                     <button
                                       key={option.label}
-                                      className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded-md ${displayLabel === option.label ? "bg-blue-50 text-blue-600" : ""
-                                        }`}
+                                      className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded-md ${
+                                        displayLabel === option.label ? "bg-blue-50 text-blue-600" : ""
+                                      }`}
                                       onClick={() => {
                                         setCurrentPage(1);
                                         setEndTime(moment().format("YYYY-MM-DDTHH:mm"));
@@ -592,8 +543,9 @@ export default function SpendLogsTable({
                                   ))}
                                   <div className="border-t my-2" />
                                   <button
-                                    className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded-md ${isCustomDate ? "bg-blue-50 text-blue-600" : ""
-                                      }`}
+                                    className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded-md ${
+                                      isCustomDate ? "bg-blue-50 text-blue-600" : ""
+                                    }`}
                                     onClick={() => setIsCustomDate(!isCustomDate)}
                                   >
                                     Custom Range
@@ -719,8 +671,12 @@ export default function SpendLogsTable({
               premiumUser={premiumUser}
             />
           </TabPanel>
-          <TabPanel><DeletedKeysPage /></TabPanel>
-          <TabPanel><DeletedTeamsPage /></TabPanel>
+          <TabPanel>
+            <DeletedKeysPage />
+          </TabPanel>
+          <TabPanel>
+            <DeletedTeamsPage />
+          </TabPanel>
         </TabPanels>
       </TabGroup>
 
@@ -917,10 +873,11 @@ export function RequestViewer({ row, onOpenSettings }: { row: Row<LogEntry>; onO
             <div className="flex">
               <span className="font-medium w-1/3">Status:</span>
               <span
-                className={`px-2 py-1 rounded-md text-xs font-medium inline-block text-center w-16 ${(row.original.metadata?.status || "Success").toLowerCase() !== "failure"
-                  ? "bg-green-100 text-green-800"
-                  : "bg-red-100 text-red-800"
-                  }`}
+                className={`px-2 py-1 rounded-md text-xs font-medium inline-block text-center w-16 ${
+                  (row.original.metadata?.status || "Success").toLowerCase() !== "failure"
+                    ? "bg-green-100 text-green-800"
+                    : "bg-red-100 text-red-800"
+                }`}
               >
                 {(row.original.metadata?.status || "Success").toLowerCase() !== "failure" ? "Success" : "Failure"}
               </span>
@@ -935,7 +892,10 @@ export function RequestViewer({ row, onOpenSettings }: { row: Row<LogEntry>; onO
             </div>
             <div className="flex">
               <span className="font-medium w-1/3">Duration:</span>
-              <span>{row.original.request_duration_ms != null ? (row.original.request_duration_ms / 1000).toFixed(3) : "-"} s.</span>
+              <span>
+                {row.original.request_duration_ms != null ? (row.original.request_duration_ms / 1000).toFixed(3) : "-"}{" "}
+                s.
+              </span>
             </div>
             {row.original.metadata?.litellm_overhead_time_ms !== undefined && (
               <div className="flex">
@@ -946,11 +906,16 @@ export function RequestViewer({ row, onOpenSettings }: { row: Row<LogEntry>; onO
             <div className="flex">
               <span className="font-medium w-1/3">Retries:</span>
               <span>
-                {row.original.metadata?.attempted_retries !== undefined && row.original.metadata?.attempted_retries !== null
-                  ? row.original.metadata.attempted_retries > 0
-                    ? `${row.original.metadata.attempted_retries}${row.original.metadata.max_retries !== undefined && row.original.metadata.max_retries !== null ? ` / ${row.original.metadata.max_retries}` : ''}`
-                    : <Tag color="green">None</Tag>
-                  : '-'}
+                {row.original.metadata?.attempted_retries !== undefined &&
+                row.original.metadata?.attempted_retries !== null ? (
+                  row.original.metadata.attempted_retries > 0 ? (
+                    `${row.original.metadata.attempted_retries}${row.original.metadata.max_retries !== undefined && row.original.metadata.max_retries !== null ? ` / ${row.original.metadata.max_retries}` : ""}`
+                  ) : (
+                    <Tag color="green">None</Tag>
+                  )
+                ) : (
+                  "-"
+                )}
               </span>
             </div>
           </div>

@@ -7,15 +7,21 @@ import type { Row } from "@tanstack/react-table";
 import type { Team } from "../key_team_helpers/key_list";
 import { renderWithProviders } from "../../../tests/test-utils";
 
-const mockHandleFilterResetFromHook = vi.fn();
-vi.mock("./log_filter_logic", () => ({
-  useLogFilterLogic: vi.fn(() => ({
+const { mockHandleFilterResetFromHook, mockUseLogFilterLogic } = vi.hoisted(() => {
+  const mockHandleFilterResetFromHook = vi.fn();
+  const mockUseLogFilterLogic = vi.fn(() => ({
     filters: {},
     filteredLogs: { data: [], total: 0, page: 1, page_size: 50, total_pages: 1 },
     allTeams: [],
     handleFilterChange: vi.fn(),
     handleFilterReset: mockHandleFilterResetFromHook,
-  })),
+  }));
+
+  return { mockHandleFilterResetFromHook, mockUseLogFilterLogic };
+});
+
+vi.mock("./log_filter_logic", () => ({
+  useLogFilterLogic: mockUseLogFilterLogic,
 }));
 
 vi.mock("../networking", async (importOriginal) => {
@@ -184,6 +190,13 @@ describe("SpendLogsTable", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseLogFilterLogic.mockReturnValue({
+      filters: {},
+      filteredLogs: { data: [], total: 0, page: 1, page_size: 50, total_pages: 1 },
+      allTeams: [],
+      handleFilterChange: vi.fn(),
+      handleFilterReset: mockHandleFilterResetFromHook,
+    });
     // Clear sessionStorage to avoid isLiveTail state from previous tests
     sessionStorage.clear();
   });
@@ -205,7 +218,9 @@ describe("SpendLogsTable", () => {
     renderWithProviders(<SpendLogsTable {...defaultProps} />);
 
     // Open the time range quick select dropdown (button shows current range like "Last 24 Hours")
-    const quickSelectButton = screen.getByRole("button", { name: /Last 24 Hours|Last 15 Minutes|Last Hour|Last 4 Hours|Last 7 Days/i });
+    const quickSelectButton = screen.getByRole("button", {
+      name: /Last 24 Hours|Last 15 Minutes|Last Hour|Last 4 Hours|Last 7 Days/i,
+    });
     await user.click(quickSelectButton);
 
     // Click "Custom Range" to enable custom date selection
@@ -229,5 +244,40 @@ describe("SpendLogsTable", () => {
       const inputsAfterReset = document.querySelectorAll('input[type="datetime-local"]');
       expect(inputsAfterReset.length).toBe(0);
     });
+  });
+
+  it("should render logs with the same session id as separate request rows", async () => {
+    mockUseLogFilterLogic.mockReturnValue({
+      filters: {},
+      filteredLogs: {
+        data: [
+          {
+            ...baseLogEntry,
+            request_id: "request-one",
+            session_id: "shared-session",
+            session_total_count: 2,
+          },
+          {
+            ...baseLogEntry,
+            request_id: "request-two",
+            session_id: "shared-session",
+            session_total_count: 2,
+          },
+        ],
+        total: 2,
+        page: 1,
+        page_size: 50,
+        total_pages: 1,
+      },
+      allTeams: [],
+      handleFilterChange: vi.fn(),
+      handleFilterReset: mockHandleFilterResetFromHook,
+    });
+
+    renderWithProviders(<SpendLogsTable {...defaultProps} />);
+
+    expect(await screen.findByText("request-one")).toBeInTheDocument();
+    expect(screen.getByText("request-two")).toBeInTheDocument();
+    expect(screen.getAllByText("shared-session")).toHaveLength(2);
   });
 });
