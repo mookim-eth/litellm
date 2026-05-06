@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from types import SimpleNamespace
 
 import litellm
 import pytest
@@ -7923,6 +7924,86 @@ async def test_update_key_max_budget_rejected_for_internal_user(monkeypatch):
 
     assert str(exc.value.code) == "403"
     assert "Only proxy admins, team admins, or org admins" in str(exc.value.message)
+
+
+@pytest.mark.asyncio
+async def test_update_key_spend_rejected_for_internal_user():
+    """Internal users should not be able to lower their own key spend."""
+
+    test_hashed_token = (
+        "a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
+    )
+    existing_key_row = SimpleNamespace(
+        token=test_hashed_token,
+        user_id="internal_user",
+        team_id=None,
+        project_id=None,
+        organization_id=None,
+        max_budget=10.0,
+        spend=100.0,
+        models=[],
+    )
+
+    mock_prisma_client = AsyncMock()
+    mock_prisma_client.db.litellm_verificationtoken.find_unique = AsyncMock(
+        return_value=existing_key_row
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await _validate_update_key_data(
+            data=UpdateKeyRequest(key=test_hashed_token, spend=0.0),
+            existing_key_row=existing_key_row,
+            user_api_key_dict=UserAPIKeyAuth(
+                user_role=LitellmUserRoles.INTERNAL_USER,
+                api_key="sk-internal",
+                user_id="internal_user",
+            ),
+            llm_router=None,
+            premium_user=True,
+            prisma_client=mock_prisma_client,
+            user_api_key_cache=MagicMock(),
+        )
+
+    assert exc.value.status_code == 403
+    assert "Only proxy admins, team admins, or org admins" in str(exc.value.detail)
+    assert "/key/update (spend)" in str(exc.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_update_key_spend_allowed_for_proxy_admin():
+    """Proxy admins should still be able to correct key spend via /key/update."""
+
+    test_hashed_token = (
+        "a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
+    )
+    existing_key_row = SimpleNamespace(
+        token=test_hashed_token,
+        user_id="internal_user",
+        team_id=None,
+        project_id=None,
+        organization_id=None,
+        max_budget=10.0,
+        spend=100.0,
+        models=[],
+    )
+
+    mock_prisma_client = AsyncMock()
+
+    await _validate_update_key_data(
+        data=UpdateKeyRequest(key=test_hashed_token, spend=0.0),
+        existing_key_row=existing_key_row,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            api_key="sk-admin",
+            user_id="admin_user",
+        ),
+        llm_router=None,
+        premium_user=True,
+        prisma_client=mock_prisma_client,
+        user_api_key_cache=MagicMock(),
+    )
+
+    mock_prisma_client.db.litellm_verificationtoken.find_unique.assert_not_called()
 
 
 @pytest.mark.asyncio

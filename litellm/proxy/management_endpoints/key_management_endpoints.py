@@ -1973,6 +1973,21 @@ async def _validate_update_key_data(
                 route="/key/update (max_budget)",
             )
 
+    # Admin-only: spend is an authoritative accounting value. Non-admin users
+    # must not be able to lower their own key spend through /key/update and
+    # bypass budget checks. Use /key/{key}/reset_spend for the controlled admin
+    # reset flow.
+    if data.spend is not None and data.spend != getattr(existing_key_row, "spend", None):
+        if prisma_client is not None:
+            hashed_key = existing_key_row.token
+            await _check_key_admin_access(
+                user_api_key_dict=user_api_key_dict,
+                hashed_token=hashed_key,
+                prisma_client=prisma_client,
+                user_api_key_cache=user_api_key_cache,
+                route="/key/update (spend)",
+            )
+
     # Check team limits if key has a team_id (from request or existing key)
     team_obj: Optional[LiteLLM_TeamTableCachedObj] = None
     _team_id_to_check = data.team_id or getattr(existing_key_row, "team_id", None)
