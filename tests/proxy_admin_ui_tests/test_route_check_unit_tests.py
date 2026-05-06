@@ -176,6 +176,40 @@ def test_llm_api_route(route_checks):
     )
 
 
+def test_llm_api_allowed_routes_include_user_info(route_checks):
+    """
+    Virtual keys limited to `llm_api_routes` can call /user/info.
+
+    /user/info intentionally remains an info route (not RouteChecks.is_llm_api_route)
+    so non-admin user_id scoping checks still run before the virtual-key
+    allowed_routes bucket check.
+    """
+    token = UserAPIKeyAuth(
+        api_key="test_key",
+        user_id="test_user",
+        allowed_routes=["llm_api_routes"],
+    )
+
+    assert (
+        route_checks.non_proxy_admin_allowed_routes_check(
+            user_obj=None,
+            _user_role=LitellmUserRoles.INTERNAL_USER.value,
+            route="/user/info",
+            request=MockRequest(query_params={"user_id": "test_user"}),
+            valid_token=token,
+            request_data={},
+        )
+        is None
+    )
+    assert (
+        route_checks.is_virtual_key_allowed_to_call_route(
+            route="/user/info",
+            valid_token=token,
+        )
+        is True
+    )
+
+
 def test_key_info_route_allowed(route_checks):
     """
     Internal User is allowed to access /key/info route

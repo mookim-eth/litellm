@@ -480,6 +480,10 @@ class LiteLLMRoutes(enum.Enum):
         + mcp_routes
         + litellm_native_routes
         + agent_routes
+        # Let LLM API virtual keys read their own user metadata. The
+        # /user/info handler remains in info_routes too, so the existing
+        # non-admin route check still prevents reading a different user_id.
+        + ["/user/info"]
     )
     info_routes = [
         "/key/info",
