@@ -262,6 +262,61 @@ See `CLAUDE.md` and the `Makefile` for standard commands. Key notes:
 - Black `--check` may report pre-existing formatting issues; this does not block test runs.
 - If `poetry install` fails with "pyproject.toml changed significantly since poetry.lock was last generated", run `poetry lock` first to regenerate the lock file.
 
+### Commit, image build, and local blue/green deployment
+
+When asked to ship the current repo changes to the local LiteLLM deployment:
+
+1. Inspect the worktree first:
+
+   ```bash
+   git status --short --branch
+   git diff --stat
+   git diff
+   ```
+
+2. Run the most relevant targeted tests before committing. For route-check changes, for example:
+
+   ```bash
+   .venv/bin/pytest tests/proxy_admin_ui_tests/test_route_check_unit_tests.py -q
+   ```
+
+3. Commit and push the current branch:
+
+   ```bash
+   git add <changed files>
+   git commit -m "<descriptive message>"
+   git push
+   ```
+
+4. Build the local Docker image from the repo root after the commit is created:
+
+   ```bash
+   docker build -t litellm:commit .
+   docker image ls litellm:commit
+   ```
+
+5. Use the deployment script in `~/litellm` for traffic switching. Do **not** manually stop LiteLLM containers with `docker stop`; let the deployment script manage blue/green cutover, drain, and old-service shutdown.
+
+   ```bash
+   cd ~/litellm
+   ./deploy-litellm.sh status
+   ./deploy-litellm.sh switch --image litellm:commit
+   ./deploy-litellm.sh status
+   ```
+
+   Notes:
+   - `deploy-litellm.sh` does not build images; pass `--image litellm:commit` after building the image separately.
+   - The script starts the inactive `litellm_blue`/`litellm_green` service, waits for `/health/readiness`, rewrites Traefik `ai-svc` to the new backend port, waits `DRAIN_SECONDS` (default `600`), then stops the old compose service itself.
+   - Only set `STOP_OLD=0` if explicitly asked to keep the old backend running.
+
+6. Verify the active backend and readiness after the switch:
+
+   ```bash
+   cd ~/litellm
+   ./deploy-litellm.sh status
+   curl -fsS http://127.0.0.1:<active-port>/health/readiness
+   ```
+
 ### Container hotpatching
 
 When using `docker cp` to hotpatch LiteLLM Python files in the running containers, copy the file to both code locations inside each container:
