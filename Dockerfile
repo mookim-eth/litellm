@@ -17,29 +17,31 @@ RUN apk add --no-cache bash gcc py3-pip python3 python3-dev openssl openssl-dev
 
 RUN python -m pip install build==1.4.2
 
-# Copy the current directory contents into the container at /app
-COPY . .
+# Build dependency wheels before copying the full source tree.  This keeps the
+# expensive dependency-resolution/download layer reusable when only LiteLLM
+# Python sources change.
+COPY requirements.txt .
+RUN pip wheel --no-cache-dir --wheel-dir=/wheels/ -r requirements.txt
+
+# Copy only the Admin UI inputs before the full source tree.  This allows
+# Docker to reuse the UI-build layer for Python-only changes.
+COPY docker/build_admin_ui.sh docker/build_admin_ui.sh
+COPY enterprise/enterprise_ui/ enterprise/enterprise_ui/
+COPY ui/litellm-dashboard/ ui/litellm-dashboard/
 
 # Build Admin UI
 # Convert Windows line endings to Unix and make executable
 RUN sed -i 's/\r$//' docker/build_admin_ui.sh && chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
+
+# Copy the current directory contents into the container at /app after cached
+# dependency/UI layers are complete.
+COPY . .
 
 # Build the package
 RUN rm -rf dist/* && python -m build
 
 # There should be only one wheel file now, assume the build only creates one
 RUN ls -1 dist/*.whl | head -1
-
-# Install the package
-RUN pip install dist/*.whl
-
-# install dependencies as wheels
-RUN pip wheel --no-cache-dir --wheel-dir=/wheels/ -r requirements.txt
-
-# ensure pyjwt is used, not jwt
-RUN pip uninstall jwt -y
-RUN pip uninstall PyJWT -y
-RUN pip install PyJWT==2.12.0 --no-cache-dir
 
 # Runtime stage
 FROM $LITELLM_RUNTIME_IMAGE AS runtime
@@ -81,16 +83,22 @@ RUN apk add --no-cache bash openssl tzdata nodejs npm python3 py3-pip libsndfile
     { apk del --no-cache npm 2>/dev/null || true; }
 
 WORKDIR /app
-# Copy the current directory contents into the container at /app
-COPY . .
-RUN ls -la /app
 
-# Copy the built wheel from the builder stage to the runtime stage; assumes only one wheel file is present
-COPY --from=builder /app/dist/*.whl .
+# Copy and normalize runtime scripts/config that do not change with LiteLLM
+# Python sources.  Keep these before the app wheel install so Python-only
+# changes do not invalidate later static setup layers.
+COPY docker/entrypoint.sh docker/entrypoint.sh
+COPY docker/prod_entrypoint.sh docker/prod_entrypoint.sh
+COPY docker/install_auto_router.sh docker/install_auto_router.sh
+COPY docker/supervisord.conf /etc/supervisord.conf
+COPY litellm/proxy/schema.prisma litellm/proxy/schema.prisma
+
 COPY --from=builder /wheels/ /wheels/
 
-# Install the built wheel using pip; again using a wildcard if it's the only file
-RUN pip install *.whl /wheels/* --no-index --find-links=/wheels/ --no-deps && rm -f *.whl && rm -rf /wheels
+# Install dependency wheels before copying the app wheel.  This is the main
+# runtime cache boundary: editing LiteLLM .py files rebuilds/reinstalls only the
+# application wheel instead of reinstalling all third-party dependencies.
+RUN pip install /wheels/* --no-index --find-links=/wheels/ --no-deps && rm -rf /wheels
 
 # Replace the nodejs-wheel-binaries bundled node with the system node (fixes CVE-2025-55130)
 RUN NODEJS_WHEEL_NODE=$(find /usr/lib -path "*/nodejs_wheel/bin/node" 2>/dev/null) && \
@@ -127,14 +135,24 @@ RUN sed -i 's/\r$//' docker/install_auto_router.sh && chmod +x docker/install_au
 
 # Generate prisma client using the correct schema
 RUN prisma generate --schema=./litellm/proxy/schema.prisma
+
+# Copy the built wheel from the builder stage to the runtime stage and install
+# it last so Python-only source edits reuse all dependency/runtime setup above.
+COPY --from=builder /app/dist/*.whl .
+RUN pip install *.whl --no-index --no-deps && rm -f *.whl
+
+# Preserve the historical runtime layout where the repository is available at
+# /app (configs, static assets, and source-tree imports from the working
+# directory).  Keep this as late as possible: Python-only edits now invalidate
+# this cheap copy/chmod tail rather than dependency, Prisma, or CVE-patch layers.
+COPY . .
+RUN ls -la /app
+
 # Convert Windows line endings to Unix for entrypoint scripts
 RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh
 RUN sed -i 's/\r$//' docker/prod_entrypoint.sh && chmod +x docker/prod_entrypoint.sh
 
 EXPOSE 4000/tcp
-
-RUN apk add --no-cache supervisor
-COPY docker/supervisord.conf /etc/supervisord.conf
 
 ENTRYPOINT ["docker/prod_entrypoint.sh"]
 
