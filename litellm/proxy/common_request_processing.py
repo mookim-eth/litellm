@@ -754,6 +754,9 @@ class ProxyBaseLLMRequestProcessing:
             or model  # for azure deployments
             or self.data.get("model", None)  # default passed in http request
         )
+        skip_model_alias_mapping = bool(
+            self.data.pop("_litellm_skip_model_alias_mapping", False)
+        )
 
         # override with user settings, these are params passed via cli
         if user_temperature:
@@ -769,14 +772,16 @@ class ProxyBaseLLMRequestProcessing:
         # check if model name in model alias map
         # get the actual model name
         if (
-            isinstance(self.data["model"], str)
+            not skip_model_alias_mapping
+            and isinstance(self.data["model"], str)
             and self.data["model"] in litellm.model_alias_map
         ):
             self.data["model"] = litellm.model_alias_map[self.data["model"]]
 
         # Check key-specific aliases
         if (
-            isinstance(self.data["model"], str)
+            not skip_model_alias_mapping
+            and isinstance(self.data["model"], str)
             and user_api_key_dict.aliases
             and isinstance(user_api_key_dict.aliases, dict)
             and self.data["model"] in user_api_key_dict.aliases

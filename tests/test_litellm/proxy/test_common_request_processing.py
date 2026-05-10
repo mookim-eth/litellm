@@ -82,6 +82,59 @@ class TestProxyBaseLLMRequestProcessing:
             pytest.fail("litellm_call_id is not a valid UUID")
         assert data_passed["litellm_call_id"] == returned_data["litellm_call_id"]
 
+    @pytest.mark.asyncio
+    async def test_common_processing_skips_model_aliases_for_pro_header_override(
+        self, monkeypatch
+    ):
+        processing_obj = ProxyBaseLLMRequestProcessing(
+            data={
+                "model": "pro1-gpt-5.5",
+                "_litellm_skip_model_alias_mapping": True,
+            }
+        )
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = {}
+
+        async def mock_add_litellm_data_to_request(*args, **kwargs):
+            return processing_obj.data
+
+        async def mock_common_processing_pre_call_logic(
+            user_api_key_dict, data, call_type
+        ):
+            return data
+
+        monkeypatch.setattr(
+            litellm.proxy.common_request_processing,
+            "add_litellm_data_to_request",
+            mock_add_litellm_data_to_request,
+        )
+        monkeypatch.setitem(
+            litellm.model_alias_map,
+            "pro1-gpt-5.5",
+            "should-not-use-global-alias",
+        )
+
+        mock_proxy_logging_obj = MagicMock(spec=ProxyLogging)
+        mock_proxy_logging_obj.pre_call_hook = AsyncMock(
+            side_effect=mock_common_processing_pre_call_logic
+        )
+        mock_user_api_key_dict = MagicMock(spec=UserAPIKeyAuth)
+        mock_user_api_key_dict.aliases = {
+            "pro1-gpt-5.5": "should-not-use-key-alias"
+        }
+
+        returned_data, _ = await processing_obj.common_processing_pre_call_logic(
+            request=mock_request,
+            general_settings={},
+            user_api_key_dict=mock_user_api_key_dict,
+            proxy_logging_obj=mock_proxy_logging_obj,
+            proxy_config=MagicMock(spec=ProxyConfig),
+            route_type="acompletion",
+        )
+
+        assert returned_data["model"] == "pro1-gpt-5.5"
+        assert "_litellm_skip_model_alias_mapping" not in returned_data
+
     def test_add_dd_apm_tags_for_litellm_call_id_uses_dd_tracing_helper(self, monkeypatch):
         mock_set_active_span_tag = MagicMock(return_value=True)
         import litellm.proxy.dd_span_tagger

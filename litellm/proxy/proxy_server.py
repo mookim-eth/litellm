@@ -611,6 +611,39 @@ from fastapi.staticfiles import StaticFiles
 
 from litellm.types.agents import AgentConfig
 
+PRO_HEADER_MODEL_OVERRIDE_SKIP_ALIAS_KEY = "_litellm_skip_model_alias_mapping"
+PRO_HEADER_SOURCE_MODEL = "gpt-5.5"
+PRO_HEADER_TARGET_MODEL = "pro1-gpt-5.5"
+
+
+def _is_pro_header_enabled(request: Request) -> bool:
+    return request.headers.get("pro", "").strip() == "1"
+
+
+def apply_pro_header_model_override(
+    data: dict, request: Request, model: Optional[str] = None
+) -> Optional[str]:
+    """Route gpt-5.5 to pro1-gpt-5.5 when the client sends pro=1.
+
+    This runs before normal alias mapping so the pro request targets the pro1
+    model group directly instead of following gpt-5.5's alias/fallback path.
+    """
+
+    if not _is_pro_header_enabled(request=request):
+        return model
+
+    if data.get("model") == PRO_HEADER_SOURCE_MODEL:
+        data["model"] = PRO_HEADER_TARGET_MODEL
+        data[PRO_HEADER_MODEL_OVERRIDE_SKIP_ALIAS_KEY] = True
+        return model
+
+    if data.get("model") is None and model == PRO_HEADER_SOURCE_MODEL:
+        data[PRO_HEADER_MODEL_OVERRIDE_SKIP_ALIAS_KEY] = True
+        return PRO_HEADER_TARGET_MODEL
+
+    return model
+
+
 # import enterprise folder
 enterprise_router = APIRouter()
 try:
@@ -7156,6 +7189,7 @@ async def chat_completion(  # noqa: PLR0915
     global general_settings, user_debug, proxy_logging_obj, llm_model_list
     global user_temperature, user_request_timeout, user_max_tokens, user_api_base
     data = await _read_request_body(request=request)
+    model = apply_pro_header_model_override(data=data, request=request, model=model)
     if user_api_key_dict is not None:
         if data.get("metadata") is None:
             data["metadata"] = {}

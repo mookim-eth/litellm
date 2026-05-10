@@ -320,6 +320,7 @@ async def cursor_chat_completions(
     from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
     from litellm.proxy.proxy_server import (
         _read_request_body,
+        apply_pro_header_model_override,
         async_data_generator,
         general_settings,
         llm_router,
@@ -337,6 +338,7 @@ async def cursor_chat_completions(
     from litellm.types.utils import ModelResponse
 
     data = await _read_request_body(request=request)
+    apply_pro_header_model_override(data=data, request=request)
 
     # Convert 'messages' to 'input' for Responses API compatibility
     # Cursor sends 'messages' but Responses API expects 'input'

@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from litellm.proxy.proxy_server import chat_completion, completion, embeddings
+from litellm.proxy.response_api_endpoints.endpoints import cursor_chat_completions
 from litellm.proxy._types import UserAPIKeyAuth
 from fastapi import Request, Response
 
@@ -48,6 +49,75 @@ async def test_chat_completion_metadata_population():
             assert data_arg["metadata"]["user_api_key_user_id"] == "test_user_id"
             assert data_arg["metadata"]["user_api_key_team_id"] == "test_team_id"
             assert data_arg["metadata"]["user_api_key_org_id"] == "test_org_id"
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_pro_header_routes_gpt_55_to_pro1_model():
+    request = MagicMock(spec=Request)
+    request.headers = {"pro": "1"}
+
+    with patch(
+        "litellm.proxy.proxy_server._read_request_body", new_callable=AsyncMock
+    ) as mock_read_body:
+        mock_read_body.return_value = {"model": "gpt-5.5", "messages": []}
+
+        user_api_key_dict = UserAPIKeyAuth()
+        fastapi_response = MagicMock(spec=Response)
+
+        with patch(
+            "litellm.proxy.proxy_server.ProxyBaseLLMRequestProcessing"
+        ) as MockProcessor:
+            mock_instance = MockProcessor.return_value
+            mock_instance.base_process_llm_request = AsyncMock(
+                return_value={"choices": []}
+            )
+
+            await chat_completion(
+                request=request,
+                fastapi_response=fastapi_response,
+                user_api_key_dict=user_api_key_dict,
+            )
+
+            data_arg = MockProcessor.call_args.kwargs["data"]
+            assert data_arg["model"] == "pro1-gpt-5.5"
+            assert data_arg["_litellm_skip_model_alias_mapping"] is True
+
+
+@pytest.mark.asyncio
+async def test_cursor_chat_completion_pro_header_routes_gpt_55_to_pro1_model():
+    request = MagicMock(spec=Request)
+    request.headers = {"pro": "1"}
+
+    with patch(
+        "litellm.proxy.proxy_server._read_request_body", new_callable=AsyncMock
+    ) as mock_read_body:
+        mock_read_body.return_value = {
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+
+        user_api_key_dict = UserAPIKeyAuth()
+        fastapi_response = MagicMock(spec=Response)
+
+        with patch(
+            "litellm.proxy.response_api_endpoints.endpoints.ProxyBaseLLMRequestProcessing"
+        ) as MockProcessor:
+            mock_instance = MockProcessor.return_value
+            mock_instance.base_process_llm_request = AsyncMock(
+                return_value={"choices": []}
+            )
+
+            await cursor_chat_completions(
+                request=request,
+                fastapi_response=fastapi_response,
+                user_api_key_dict=user_api_key_dict,
+            )
+
+            data_arg = MockProcessor.call_args.kwargs["data"]
+            assert data_arg["model"] == "pro1-gpt-5.5"
+            assert data_arg["_litellm_skip_model_alias_mapping"] is True
+            assert "messages" not in data_arg
+            assert data_arg["input"] == [{"role": "user", "content": "hi"}]
 
 
 @pytest.mark.asyncio
