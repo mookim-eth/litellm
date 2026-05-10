@@ -1413,9 +1413,22 @@ class LiteLLMProxyRequestSetup:
         ``common_checks``. Mutates ``request_data`` in place; idempotent
         when followed by ``add_litellm_data_to_request``.
         """
-        # No allow_client_tags opt-in: caller-supplied tags always flow
-        # into metadata.tags (see add_litellm_data_to_request). The pre-auth
-        # merge mirrors that so _tag_max_budget_check sees the same tags.
+        allow_client_tags = any(
+            isinstance(metadata, dict)
+            and metadata.get("allow_client_tags") is True
+            for metadata in (
+                user_api_key_dict.metadata,
+                user_api_key_dict.team_metadata,
+            )
+        )
+        if not allow_client_tags:
+            for metadata_key in ("metadata", "litellm_metadata"):
+                metadata = request_data.get(metadata_key)
+                if isinstance(metadata, dict):
+                    metadata.pop("tags", None)
+            request_data.pop("tags", None)
+            return
+
         headers = _safe_get_request_headers(request=request)
         raw_header_tags = headers.get("x-litellm-tags")
         if not raw_header_tags:
