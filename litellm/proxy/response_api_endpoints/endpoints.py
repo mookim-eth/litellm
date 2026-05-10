@@ -73,6 +73,7 @@ async def responses_api(
     """
     from litellm.proxy.proxy_server import (
         _read_request_body,
+        apply_pro_header_model_override,
         general_settings,
         llm_router,
         native_background_mode,
@@ -91,6 +92,7 @@ async def responses_api(
     )
 
     data = await _read_request_body(request=request)
+    apply_pro_header_model_override(data=data, request=request)
 
     # Check if polling via cache should be used for this request
     from litellm.proxy.response_polling.polling_handler import (
