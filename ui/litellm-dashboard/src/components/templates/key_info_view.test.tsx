@@ -194,6 +194,29 @@ describe("KeyInfoView", () => {
     });
   });
 
+  it("should enable regenerate key for non-premium proxy admin", async () => {
+    vi.mocked(useTeams).mockReturnValue({
+      teams: [],
+      setTeams: vi.fn(),
+    });
+
+    vi.mocked(useAuthorized).mockReturnValue({
+      ...baseUseAuthorizedMock,
+      userId: "proxy-admin-user",
+      userRole: "proxy_admin",
+      premiumUser: false,
+    });
+
+    const keyData = { ...MOCK_KEY_DATA, user_id: "other-user-id" };
+    renderWithProviders(
+      <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /regenerate key/i })).not.toBeDisabled();
+    });
+  });
+
   it("should allow team admin to modify key", async () => {
     const teamId = "test-team-id";
     const teamAdminUserId = "team-admin-user";

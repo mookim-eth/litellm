@@ -3822,26 +3822,18 @@ async def regenerate_key_fn(  # noqa: PLR0915
     }'
     ```
 
-    Note: This is an Enterprise feature. It requires a premium license to use.
+    Note: Regenerating virtual keys is available to authorized key owners,
+    team admins, and proxy admins. Team member permission checks still apply
+    for team keys.
     """
     try:
         from litellm.proxy.proxy_server import (
             hash_token,
             master_key,
-            premium_user,
             prisma_client,
             proxy_logging_obj,
             user_api_key_cache,
         )
-
-        is_master_key_regeneration = data and data.new_master_key is not None
-
-        if (
-            premium_user is not True and not is_master_key_regeneration
-        ):  # allow master key regeneration for non-premium users
-            raise ValueError(
-                f"Regenerating Virtual Keys is an Enterprise feature, {CommonProxyErrors.not_premium_user.value}"
-            )
 
         # Check if key exists, raise exception if key is not in the DB
         key = data.key if data and data.key else key
