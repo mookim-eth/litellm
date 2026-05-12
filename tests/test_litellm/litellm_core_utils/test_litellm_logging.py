@@ -1583,6 +1583,19 @@ def test_get_usage_as_dict():
         "image_tokens"
     ] == 8
 
+    # Test case 8: OpenAI-compatible cached_tokens is normalized for usage analytics
+    result = StandardLoggingPayloadSetup.get_usage_as_dict(
+        response_obj={
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 10,
+                "total_tokens": 110,
+                "prompt_tokens_details": {"cached_tokens": 42},
+            }
+        }
+    )
+    assert result["cache_read_input_tokens"] == 42
+
 
 def test_append_system_prompt_messages():
     """

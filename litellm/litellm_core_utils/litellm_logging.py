@@ -70,6 +70,9 @@ from litellm.litellm_core_utils.redact_messages import (
     redact_message_input_output_from_custom_logger,
     redact_message_input_output_from_logging,
 )
+from litellm.litellm_core_utils.usage_token_utils import (
+    normalize_usage_dict_for_cache_read_tokens,
+)
 from litellm.llms.base_llm.ocr.transformation import OCRResponse
 from litellm.llms.base_llm.search.transformation import SearchResponse
 from litellm.responses.utils import ResponseAPILoggingUtils
@@ -4962,6 +4965,8 @@ class StandardLoggingPayloadSetup:
         if isinstance(response_tool_usage, dict) and len(response_tool_usage) > 0:
             usage_dict = dict(usage_dict)
             usage_dict["tool_usage"] = response_tool_usage
+
+        usage_dict = normalize_usage_dict_for_cache_read_tokens(usage_dict)
 
         return usage_dict
 

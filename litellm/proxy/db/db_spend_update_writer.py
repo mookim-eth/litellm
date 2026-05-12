@@ -30,6 +30,9 @@ from litellm._logging import verbose_proxy_logger
 from litellm.caching import DualCache, RedisCache
 from litellm.constants import DB_SPEND_UPDATE_JOB_NAME,DB_DAILY_TAG_SPEND_UPDATE_JOB_NAME
 from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
+from litellm.litellm_core_utils.usage_token_utils import (
+    get_cache_read_input_tokens_from_usage,
+)
 from litellm.proxy._types import (
     DB_CONNECTION_ERROR_TYPES,
     BaseDailySpendTransaction,
@@ -1976,8 +1979,9 @@ class DBSpendUpdateWriter:
                 api_requests=1,
                 successful_requests=1 if request_status == "success" else 0,
                 failed_requests=1 if request_status != "success" else 0,
-                cache_read_input_tokens=usage_obj.get("cache_read_input_tokens", 0)
-                or 0,
+                cache_read_input_tokens=get_cache_read_input_tokens_from_usage(
+                    usage_obj
+                ),
                 cache_creation_input_tokens=usage_obj.get(
                     "cache_creation_input_tokens", 0
                 )

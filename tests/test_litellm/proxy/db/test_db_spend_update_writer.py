@@ -1015,6 +1015,55 @@ async def test_endpoint_field_is_correctly_mapped_from_call_type():
 
 
 @pytest.mark.asyncio
+async def test_daily_spend_uses_prompt_tokens_details_cached_tokens_for_cache_read():
+    """
+    ChatGPT/OpenAI-compatible backends return cache reads as
+    usage.prompt_tokens_details.cached_tokens. Ensure that value is counted in
+    daily spend cache_read_input_tokens for the new usage UI.
+    """
+    writer = DBSpendUpdateWriter()
+    mock_prisma = MagicMock()
+    mock_prisma.get_request_status = MagicMock(return_value="success")
+
+    payload = {
+        "request_id": "req-cache-read-test",
+        "user": "test-user",
+        "call_type": "acompletion",
+        "startTime": "2024-01-01T12:00:00",
+        "api_key": "test-key",
+        "model": "gpt-4",
+        "custom_llm_provider": "openai",
+        "model_group": "gpt-4-group",
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "spend": 0.15,
+        "metadata": json.dumps(
+            {
+                "usage_object": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "total_tokens": 150,
+                    "prompt_tokens_details": {"cached_tokens": 42},
+                }
+            }
+        ),
+    }
+
+    writer.daily_spend_update_queue.add_update = AsyncMock()
+
+    await writer.add_spend_log_transaction_to_daily_user_transaction(
+        payload=payload,
+        prisma_client=mock_prisma,
+    )
+
+    writer.daily_spend_update_queue.add_update.assert_called_once()
+    call_args = writer.daily_spend_update_queue.add_update.call_args[1]
+    update_dict = call_args["update"]
+    transaction = next(iter(update_dict.values()))
+    assert transaction["cache_read_input_tokens"] == 42
+
+
+@pytest.mark.asyncio
 async def test_update_daily_spend_logs_detailed_error_on_batch_upsert_failure():
     """
     Test that when batch upsert fails, detailed error information is logged.
