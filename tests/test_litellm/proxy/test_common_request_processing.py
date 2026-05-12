@@ -439,6 +439,87 @@ class TestProxyBaseLLMRequestProcessing:
         assert result_data["litellm_trace_id"] == "hermes-http-session"
 
     @pytest.mark.asyncio
+    async def test_add_litellm_data_to_request_responses_client_request_id_header_sets_chain_id(
+        self,
+    ):
+        """
+        Test that X-Client-Request-Id is used as the session chain id when
+        LiteLLM and Hermes session headers are absent.
+        """
+        from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
+
+        test_data = {
+            "model": "chatgpt/gpt-5.4",
+            "input": "hello",
+        }
+
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = {"X-Client-Request-Id": "client-request-session"}
+        mock_request.url = MagicMock()
+        mock_request.url.path = "/v1/responses"
+        mock_request.url.__str__.return_value = "http://testserver/v1/responses"
+        mock_request.method = "POST"
+        mock_request.query_params = {}
+        mock_request.client = None
+
+        result_data = await add_litellm_data_to_request(
+            data=test_data,
+            request=mock_request,
+            general_settings={},
+            user_api_key_dict=ProxyUserAPIKeyAuth(
+                api_key="test_api_key_hash", user_id="fallback-user"
+            ),
+            version=None,
+            proxy_config=MagicMock(),
+        )
+
+        assert result_data["litellm_metadata"]["session_id"] == "client-request-session"
+        assert result_data["litellm_metadata"]["trace_id"] == "client-request-session"
+        assert result_data["litellm_session_id"] == "client-request-session"
+        assert result_data["litellm_trace_id"] == "client-request-session"
+
+    @pytest.mark.asyncio
+    async def test_add_litellm_data_to_request_responses_prompt_cache_key_sets_session_fallback(
+        self,
+    ):
+        """
+        Test that responses JSON prompt_cache_key is used as the stable session
+        fallback before the authenticated LiteLLM user id.
+        """
+        from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
+
+        test_data = {
+            "model": "chatgpt/gpt-5.4",
+            "input": "hello",
+            "prompt_cache_key": "prompt-cache-session",
+        }
+
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = {}
+        mock_request.url = MagicMock()
+        mock_request.url.path = "/v1/responses"
+        mock_request.url.__str__.return_value = "http://testserver/v1/responses"
+        mock_request.method = "POST"
+        mock_request.query_params = {}
+        mock_request.client = None
+
+        result_data = await add_litellm_data_to_request(
+            data=test_data,
+            request=mock_request,
+            general_settings={},
+            user_api_key_dict=ProxyUserAPIKeyAuth(
+                api_key="test_api_key_hash", user_id="user-session-fallback"
+            ),
+            version=None,
+            proxy_config=MagicMock(),
+        )
+
+        assert result_data["litellm_metadata"]["session_id"] == "prompt-cache-session"
+        assert result_data["litellm_metadata"]["trace_id"] == "prompt-cache-session"
+        assert result_data["litellm_session_id"] == "prompt-cache-session"
+        assert result_data["litellm_trace_id"] == "prompt-cache-session"
+
+    @pytest.mark.asyncio
     async def test_add_litellm_data_to_request_responses_user_id_sets_session_fallback(
         self,
     ):

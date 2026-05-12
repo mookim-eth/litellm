@@ -1278,6 +1278,19 @@ def test_add_litellm_metadata_from_request_headers_hermes_session_id_sets_chain_
     assert data["litellm_trace_id"] == "hermes-session"
 
 
+def test_add_litellm_metadata_from_request_headers_client_request_id_sets_chain_id():
+    """x-client-request-id is used as a session fallback after LiteLLM/Hermes session headers."""
+    headers = {"x-client-request-id": "client-request-session"}
+    data = {"metadata": {}}
+    LiteLLMProxyRequestSetup.add_litellm_metadata_from_request_headers(
+        headers=headers, data=data, _metadata_variable_name="metadata"
+    )
+    assert data["metadata"]["trace_id"] == "client-request-session"
+    assert data["metadata"]["session_id"] == "client-request-session"
+    assert data["litellm_session_id"] == "client-request-session"
+    assert data["litellm_trace_id"] == "client-request-session"
+
+
 def test_add_litellm_metadata_from_request_headers_user_id_fallback_sets_chain_id():
     """When no session header is present, authenticated user_id is used as a stable session fallback."""
     headers = {}
@@ -1292,6 +1305,22 @@ def test_add_litellm_metadata_from_request_headers_user_id_fallback_sets_chain_i
     assert data["metadata"]["session_id"] == "user-123"
     assert data["litellm_session_id"] == "user-123"
     assert data["litellm_trace_id"] == "user-123"
+
+
+def test_add_litellm_metadata_from_request_headers_prompt_cache_key_prevents_user_id_fallback():
+    """responses prompt_cache_key is used as a stable session fallback before user_id."""
+    headers = {}
+    data = {"metadata": {}, "prompt_cache_key": "prompt-cache-session"}
+    LiteLLMProxyRequestSetup.add_litellm_metadata_from_request_headers(
+        headers=headers,
+        data=data,
+        _metadata_variable_name="metadata",
+        fallback_session_id="user-123",
+    )
+    assert data["metadata"]["trace_id"] == "prompt-cache-session"
+    assert data["metadata"]["session_id"] == "prompt-cache-session"
+    assert data["litellm_session_id"] == "prompt-cache-session"
+    assert data["litellm_trace_id"] == "prompt-cache-session"
 
 
 def test_add_litellm_metadata_from_request_headers_existing_session_prevents_user_id_fallback():
@@ -1331,12 +1360,25 @@ def test_get_chain_id_from_headers_uses_hermes_session_id_case_insensitively():
     assert get_chain_id_from_headers(headers) == "hermes-session"
 
 
+def test_get_chain_id_from_headers_uses_client_request_id_case_insensitively():
+    headers = {"X-Client-Request-Id": "client-request-session"}
+    assert get_chain_id_from_headers(headers) == "client-request-session"
+
+
 def test_get_chain_id_from_headers_prefers_litellm_session_over_hermes_session():
     headers = {
         "X-Hermes-Session-Id": "hermes-session",
         "x-litellm-session-id": "litellm-session",
     }
     assert get_chain_id_from_headers(headers) == "litellm-session"
+
+
+def test_get_chain_id_from_headers_prefers_hermes_session_over_client_request_id():
+    headers = {
+        "X-Hermes-Session-Id": "hermes-session",
+        "X-Client-Request-Id": "client-request-session",
+    }
+    assert get_chain_id_from_headers(headers) == "hermes-session"
 
 
 def test_get_internal_user_header_from_mapping_returns_expected_header():

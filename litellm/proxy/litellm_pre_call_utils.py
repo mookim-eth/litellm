@@ -66,6 +66,7 @@ CHAIN_ID_HEADER_NAMES = (
     "x-litellm-session-id",
     "session_id",
     "x-hermes-session-id",
+    "x-client-request-id",
 )
 
 
@@ -124,11 +125,11 @@ def get_chain_id_from_headers(headers: Optional[Dict[str, str]]) -> Optional[str
     """
     Extract chain id for call chaining from request headers.
 
-    x-litellm-trace-id, x-litellm-session-id, session_id, and
-    x-hermes-session-id are treated as the same chain identifier. When multiple
-    are present, earlier entries in CHAIN_ID_HEADER_NAMES take precedence. Header
-    keys are matched case-insensitively so this works with raw header dicts from
-    any transport.
+    x-litellm-trace-id, x-litellm-session-id, session_id,
+    x-hermes-session-id, and x-client-request-id are treated as the same chain
+    identifier. When multiple are present, earlier entries in
+    CHAIN_ID_HEADER_NAMES take precedence. Header keys are matched
+    case-insensitively so this works with raw header dicts from any transport.
 
     Used by MCP (and other paths that have raw_headers but no Request) to set
     litellm_trace_id/litellm_session_id for spend logs and logging consistency.
@@ -879,11 +880,12 @@ class LiteLLMProxyRequestSetup:
         #########################################################################################
 
         agent_id_from_header = headers.get("x-litellm-agent-id")
-        # x-litellm-trace-id, x-litellm-session-id, session_id, and
-        # x-hermes-session-id all identify the same request/session chain for
-        # downstream provider calls and spend logging. If the client did not
-        # provide a session header, fall back to an existing request session id
-        # (e.g. body metadata), then to the authenticated user's id so ChatGPT
+        # x-litellm-trace-id, x-litellm-session-id, session_id,
+        # x-hermes-session-id, and x-client-request-id all identify the same
+        # request/session chain for downstream provider calls and spend logging.
+        # If the client did not provide a session header, fall back to an
+        # existing request session id (e.g. body metadata), then to responses
+        # prompt_cache_key, then to the authenticated user's id so ChatGPT
         # provider calls can reuse a stable session for prompt caching.
         chain_id = get_chain_id_from_headers(headers)
         if not chain_id:
@@ -906,7 +908,7 @@ class LiteLLMProxyRequestSetup:
             data["litellm_session_id"] = chain_id
             data["litellm_trace_id"] = chain_id
             verbose_proxy_logger.debug(
-                f"Resolved chain_id for request (trace-id/session-id/session_id/x-hermes-session-id/user_id): {chain_id}"
+                f"Resolved chain_id for request (trace-id/session-id/session_id/x-hermes-session-id/x-client-request-id/prompt_cache_key/user_id): {chain_id}"
             )
 
         if isinstance(data[_metadata_variable_name], dict):
@@ -937,6 +939,10 @@ class LiteLLMProxyRequestSetup:
                 value = metadata.get(key)
                 if value:
                     return str(value)
+
+        prompt_cache_key = data.get("prompt_cache_key")
+        if prompt_cache_key:
+            return str(prompt_cache_key)
         return None
 
     @staticmethod
