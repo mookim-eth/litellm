@@ -24,6 +24,7 @@ from litellm.proxy.litellm_pre_call_utils import (
     add_guardrails_from_policy_engine,
     add_litellm_data_to_request,
     check_if_token_is_service_account,
+    get_chain_id_from_headers,
 )
 from litellm.types.utils import CredentialItem
 
@@ -1264,6 +1265,51 @@ def test_add_litellm_metadata_from_request_headers_session_id_sets_chain_id():
     assert data["litellm_trace_id"] == "codex-session"
 
 
+def test_add_litellm_metadata_from_request_headers_hermes_session_id_sets_chain_id():
+    """X-Hermes-Session-Id is used as a session fallback after LiteLLM session headers."""
+    headers = {"X-Hermes-Session-Id": "hermes-session"}
+    data = {"metadata": {}}
+    LiteLLMProxyRequestSetup.add_litellm_metadata_from_request_headers(
+        headers=headers, data=data, _metadata_variable_name="metadata"
+    )
+    assert data["metadata"]["trace_id"] == "hermes-session"
+    assert data["metadata"]["session_id"] == "hermes-session"
+    assert data["litellm_session_id"] == "hermes-session"
+    assert data["litellm_trace_id"] == "hermes-session"
+
+
+def test_add_litellm_metadata_from_request_headers_user_id_fallback_sets_chain_id():
+    """When no session header is present, authenticated user_id is used as a stable session fallback."""
+    headers = {}
+    data = {"metadata": {}}
+    LiteLLMProxyRequestSetup.add_litellm_metadata_from_request_headers(
+        headers=headers,
+        data=data,
+        _metadata_variable_name="metadata",
+        fallback_session_id="user-123",
+    )
+    assert data["metadata"]["trace_id"] == "user-123"
+    assert data["metadata"]["session_id"] == "user-123"
+    assert data["litellm_session_id"] == "user-123"
+    assert data["litellm_trace_id"] == "user-123"
+
+
+def test_add_litellm_metadata_from_request_headers_existing_session_prevents_user_id_fallback():
+    """Explicit request metadata session id takes precedence over the user_id fallback."""
+    headers = {}
+    data = {"metadata": {"session_id": "explicit-session"}}
+    LiteLLMProxyRequestSetup.add_litellm_metadata_from_request_headers(
+        headers=headers,
+        data=data,
+        _metadata_variable_name="metadata",
+        fallback_session_id="user-123",
+    )
+    assert data["metadata"]["trace_id"] == "explicit-session"
+    assert data["metadata"]["session_id"] == "explicit-session"
+    assert data["litellm_session_id"] == "explicit-session"
+    assert data["litellm_trace_id"] == "explicit-session"
+
+
 def test_add_litellm_metadata_from_request_headers_both_headers_trace_id_precedence():
     """When both x-litellm-trace-id and x-litellm-session-id are present, trace-id takes precedence for chain_id."""
     headers = {
@@ -1278,6 +1324,19 @@ def test_add_litellm_metadata_from_request_headers_both_headers_trace_id_precede
     assert data["metadata"]["session_id"] == "trace-value"
     assert data["litellm_session_id"] == "trace-value"
     assert data["litellm_trace_id"] == "trace-value"
+
+
+def test_get_chain_id_from_headers_uses_hermes_session_id_case_insensitively():
+    headers = {"X-Hermes-Session-Id": "hermes-session"}
+    assert get_chain_id_from_headers(headers) == "hermes-session"
+
+
+def test_get_chain_id_from_headers_prefers_litellm_session_over_hermes_session():
+    headers = {
+        "X-Hermes-Session-Id": "hermes-session",
+        "x-litellm-session-id": "litellm-session",
+    }
+    assert get_chain_id_from_headers(headers) == "litellm-session"
 
 
 def test_get_internal_user_header_from_mapping_returns_expected_header():

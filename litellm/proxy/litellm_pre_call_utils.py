@@ -61,6 +61,13 @@ _STALE_TEAM_ALIAS_WARNING_KEYS: OrderedDict[str, None] = OrderedDict()
 # Cache the stale alias bypass flag at module load to avoid hot-path secret lookups
 _ENABLE_TEAM_STALE_ALIAS_BYPASS: Optional[bool] = None
 
+CHAIN_ID_HEADER_NAMES = (
+    "x-litellm-trace-id",
+    "x-litellm-session-id",
+    "session_id",
+    "x-hermes-session-id",
+)
+
 
 if TYPE_CHECKING:
     from litellm.proxy.proxy_server import ProxyConfig as _ProxyConfig
@@ -117,10 +124,11 @@ def get_chain_id_from_headers(headers: Optional[Dict[str, str]]) -> Optional[str
     """
     Extract chain id for call chaining from request headers.
 
-    x-litellm-trace-id, x-litellm-session-id, and session_id are treated as the
-    same chain identifier. When multiple are present, x-litellm-trace-id takes
-    precedence. Header keys are matched case-insensitively so this works with raw
-    header dicts from any transport.
+    x-litellm-trace-id, x-litellm-session-id, session_id, and
+    x-hermes-session-id are treated as the same chain identifier. When multiple
+    are present, earlier entries in CHAIN_ID_HEADER_NAMES take precedence. Header
+    keys are matched case-insensitively so this works with raw header dicts from
+    any transport.
 
     Used by MCP (and other paths that have raw_headers but no Request) to set
     litellm_trace_id/litellm_session_id for spend logs and logging consistency.
@@ -128,11 +136,11 @@ def get_chain_id_from_headers(headers: Optional[Dict[str, str]]) -> Optional[str
     if not headers:
         return None
     normalized = {k.lower(): v for k, v in headers.items() if isinstance(k, str)}
-    return (
-        normalized.get("x-litellm-trace-id")
-        or normalized.get("x-litellm-session-id")
-        or normalized.get("session_id")
-    )
+    for header_name in CHAIN_ID_HEADER_NAMES:
+        chain_id = normalized.get(header_name)
+        if chain_id:
+            return chain_id
+    return None
 
 
 def safe_add_api_version_from_query_params(data: dict, request: Request):
@@ -848,6 +856,7 @@ class LiteLLMProxyRequestSetup:
         headers: dict,
         data: dict,
         _metadata_variable_name: str,
+        fallback_session_id: Optional[str] = None,
     ) -> dict:
         """
         Add litellm metadata from request headers
@@ -870,13 +879,20 @@ class LiteLLMProxyRequestSetup:
         #########################################################################################
 
         agent_id_from_header = headers.get("x-litellm-agent-id")
-        # x-litellm-trace-id, x-litellm-session-id, and session_id all identify the
-        # same request/session chain for downstream provider calls and spend logging.
-        chain_id = (
-            headers.get("x-litellm-trace-id")
-            or headers.get("x-litellm-session-id")
-            or headers.get("session_id")
-        )
+        # x-litellm-trace-id, x-litellm-session-id, session_id, and
+        # x-hermes-session-id all identify the same request/session chain for
+        # downstream provider calls and spend logging. If the client did not
+        # provide a session header, fall back to an existing request session id
+        # (e.g. body metadata), then to the authenticated user's id so ChatGPT
+        # provider calls can reuse a stable session for prompt caching.
+        chain_id = get_chain_id_from_headers(headers)
+        if not chain_id:
+            chain_id = LiteLLMProxyRequestSetup._get_existing_chain_id_from_data(
+                data=data,
+                _metadata_variable_name=_metadata_variable_name,
+            )
+        if not chain_id:
+            chain_id = fallback_session_id
 
         if agent_id_from_header:
             metadata_from_headers["agent_id"] = agent_id_from_header
@@ -890,12 +906,57 @@ class LiteLLMProxyRequestSetup:
             data["litellm_session_id"] = chain_id
             data["litellm_trace_id"] = chain_id
             verbose_proxy_logger.debug(
-                f"Extracted chain_id from header (trace-id/session-id/session_id): {chain_id}"
+                f"Resolved chain_id for request (trace-id/session-id/session_id/x-hermes-session-id/user_id): {chain_id}"
             )
 
         if isinstance(data[_metadata_variable_name], dict):
             data[_metadata_variable_name].update(metadata_from_headers)
         return data
+
+    @staticmethod
+    def _get_existing_chain_id_from_data(
+        data: dict,
+        _metadata_variable_name: str,
+    ) -> Optional[str]:
+        """
+        Return an already-explicit request/session id from request data.
+
+        This prevents the user-id fallback from overwriting explicit session ids
+        supplied outside of headers.
+        """
+        for key in ("litellm_trace_id", "litellm_session_id", "session_id"):
+            value = data.get(key)
+            if value:
+                return str(value)
+
+        for metadata_key in (_metadata_variable_name, "metadata", "litellm_metadata"):
+            metadata = data.get(metadata_key)
+            if not isinstance(metadata, dict):
+                continue
+            for key in ("trace_id", "session_id"):
+                value = metadata.get(key)
+                if value:
+                    return str(value)
+        return None
+
+    @staticmethod
+    def _get_user_id_as_session_fallback(
+        user_api_key_dict: UserAPIKeyAuth,
+    ) -> Optional[str]:
+        """
+        Use the authenticated LiteLLM user id as a stable session fallback.
+
+        Avoid coercing arbitrary objects (e.g. unset MagicMock attributes in
+        tests) into strings.
+        """
+        user_id = getattr(user_api_key_dict, "user_id", None)
+        if isinstance(user_id, str):
+            return user_id or None
+        if isinstance(user_id, bool):
+            return None
+        if isinstance(user_id, (int, float)):
+            return str(user_id)
+        return None
 
     @staticmethod
     def get_sanitized_user_information_from_key(
@@ -1210,6 +1271,13 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     if data.get(_metadata_variable_name, None) is None:
         data[_metadata_variable_name] = {}
 
+    # Resolve internal-user mappings before deriving a session fallback so
+    # mapped end users get stable ChatGPT sessions when no explicit session
+    # header is present.
+    user_api_key_dict = LiteLLMProxyRequestSetup.add_internal_user_from_user_mapping(
+        general_settings, user_api_key_dict, _headers
+    )
+
     data.update(
         LiteLLMProxyRequestSetup.add_litellm_data_for_backend_llm_call(
             headers=_headers,
@@ -1222,6 +1290,9 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
         headers=_headers,
         data=data,
         _metadata_variable_name=_metadata_variable_name,
+        fallback_session_id=LiteLLMProxyRequestSetup._get_user_id_as_session_fallback(
+            user_api_key_dict=user_api_key_dict
+        ),
     )
 
     # Add headers to metadata for guardrails to access (fixes #17477)
@@ -1234,10 +1305,6 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     # check for forwardable headers
     data = LiteLLMProxyRequestSetup.add_headers_to_llm_call_by_model_group(
         data=data, headers=_headers, user_api_key_dict=user_api_key_dict
-    )
-
-    user_api_key_dict = LiteLLMProxyRequestSetup.add_internal_user_from_user_mapping(
-        general_settings, user_api_key_dict, _headers
     )
 
     # Parse user info from headers (fallback to general_settings.user_header_name)

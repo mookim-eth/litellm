@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import litellm
 from litellm._uuid import uuid
 from litellm.integrations.opentelemetry import UserAPIKeyAuth
+from litellm.proxy._types import UserAPIKeyAuth as ProxyUserAPIKeyAuth
 from litellm.proxy.common_request_processing import (
     ProxyBaseLLMRequestProcessing,
     ProxyConfig,
@@ -396,6 +397,86 @@ class TestProxyBaseLLMRequestProcessing:
         assert result_data["litellm_metadata"]["trace_id"] == "codex-http-session"
         assert result_data["litellm_session_id"] == "codex-http-session"
         assert result_data["litellm_trace_id"] == "codex-http-session"
+
+    @pytest.mark.asyncio
+    async def test_add_litellm_data_to_request_responses_hermes_session_id_header_sets_chain_id(
+        self,
+    ):
+        """
+        Test that X-Hermes-Session-Id is used as the session chain id when
+        LiteLLM session headers are absent.
+        """
+        from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
+
+        test_data = {
+            "model": "chatgpt/gpt-5.4",
+            "input": "hello",
+        }
+
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = {"X-Hermes-Session-Id": "hermes-http-session"}
+        mock_request.url = MagicMock()
+        mock_request.url.path = "/v1/responses"
+        mock_request.url.__str__.return_value = "http://testserver/v1/responses"
+        mock_request.method = "POST"
+        mock_request.query_params = {}
+        mock_request.client = None
+
+        result_data = await add_litellm_data_to_request(
+            data=test_data,
+            request=mock_request,
+            general_settings={},
+            user_api_key_dict=ProxyUserAPIKeyAuth(
+                api_key="test_api_key_hash", user_id="fallback-user"
+            ),
+            version=None,
+            proxy_config=MagicMock(),
+        )
+
+        assert result_data["litellm_metadata"]["session_id"] == "hermes-http-session"
+        assert result_data["litellm_metadata"]["trace_id"] == "hermes-http-session"
+        assert result_data["litellm_session_id"] == "hermes-http-session"
+        assert result_data["litellm_trace_id"] == "hermes-http-session"
+
+    @pytest.mark.asyncio
+    async def test_add_litellm_data_to_request_responses_user_id_sets_session_fallback(
+        self,
+    ):
+        """
+        Test that responses requests without session headers use the current
+        authenticated LiteLLM user id as a stable session id.
+        """
+        from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
+
+        test_data = {
+            "model": "chatgpt/gpt-5.4",
+            "input": "hello",
+        }
+
+        mock_request = MagicMock(spec=Request)
+        mock_request.headers = {}
+        mock_request.url = MagicMock()
+        mock_request.url.path = "/v1/responses"
+        mock_request.url.__str__.return_value = "http://testserver/v1/responses"
+        mock_request.method = "POST"
+        mock_request.query_params = {}
+        mock_request.client = None
+
+        result_data = await add_litellm_data_to_request(
+            data=test_data,
+            request=mock_request,
+            general_settings={},
+            user_api_key_dict=ProxyUserAPIKeyAuth(
+                api_key="test_api_key_hash", user_id="user-session-fallback"
+            ),
+            version=None,
+            proxy_config=MagicMock(),
+        )
+
+        assert result_data["litellm_metadata"]["session_id"] == "user-session-fallback"
+        assert result_data["litellm_metadata"]["trace_id"] == "user-session-fallback"
+        assert result_data["litellm_session_id"] == "user-session-fallback"
+        assert result_data["litellm_trace_id"] == "user-session-fallback"
 
     def test_get_custom_headers_with_discount_info(self):
         """
