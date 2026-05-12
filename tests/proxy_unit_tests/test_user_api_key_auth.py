@@ -88,6 +88,45 @@ def test_check_valid_ip_sent_with_x_forwarded_for(
     assert _check_valid_ip(allowed_ips, request, use_x_forwarded_for=True)[0] == expected_result  # type: ignore
 
 
+def test_get_request_ip_address_prefers_cloudflare_header_when_enabled():
+    from litellm.proxy.auth.auth_utils import _get_request_ip_address
+
+    request = MagicMock()
+    request.client.host = "10.0.0.10"
+    request.headers = {
+        "CF-Connecting-IP": "203.0.113.10",
+        "X-Forwarded-For": "198.51.100.20",
+    }
+
+    assert (
+        _get_request_ip_address(
+            request,
+            use_x_forwarded_for=True,
+            use_cloudflare_header=True,
+        )
+        == "203.0.113.10"
+    )
+
+
+def test_get_request_ip_address_preserves_x_forwarded_for_default_behavior():
+    from litellm.proxy.auth.auth_utils import _get_request_ip_address
+
+    request = MagicMock()
+    request.client.host = "10.0.0.10"
+    request.headers = {
+        "CF-Connecting-IP": "203.0.113.10",
+        "X-Forwarded-For": "198.51.100.20",
+    }
+
+    assert (
+        _get_request_ip_address(
+            request,
+            use_x_forwarded_for=True,
+        )
+        == "198.51.100.20"
+    )
+
+
 @pytest.mark.asyncio
 async def test_check_blocked_team():
     """

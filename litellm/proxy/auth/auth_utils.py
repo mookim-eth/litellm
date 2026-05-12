@@ -12,13 +12,79 @@ from litellm.constants import STANDARD_CUSTOMER_ID_HEADERS
 from litellm.proxy._types import *
 from litellm.types.router import CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS
 
+CLOUDFLARE_CLIENT_IP_HEADERS = ("cf-connecting-ip", "true-client-ip")
+
+
+def _get_request_header_value(request: Request, header_name: str) -> Optional[str]:
+    """
+    Read a request header case-insensitively.
+
+    Starlette's ``Headers`` object is case-insensitive, but tests and some internal
+    callers pass plain dictionaries. Normalize manually so IP extraction behaves
+    consistently for both.
+    """
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return None
+
+    value: Optional[Any] = None
+    try:
+        value = headers.get(header_name)
+    except Exception:
+        value = None
+
+    if value is None:
+        try:
+            header_name_lower = header_name.lower()
+            for key, header_value in headers.items():
+                if isinstance(key, str) and key.lower() == header_name_lower:
+                    value = header_value
+                    break
+        except Exception:
+            return None
+
+    if value is None:
+        return None
+
+    if isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            return None
+        value = value[0]
+
+    value = str(value).strip()
+    return value or None
+
+
+def _get_cloudflare_request_ip_address(request: Request) -> Optional[str]:
+    """
+    Extract the original client IP from Cloudflare headers.
+
+    ``CF-Connecting-IP`` is Cloudflare's standard client IP header. Enterprise
+    customers can also enable ``True-Client-IP``; it carries the same value.
+    """
+    for header_name in CLOUDFLARE_CLIENT_IP_HEADERS:
+        client_ip = _get_request_header_value(request=request, header_name=header_name)
+        if client_ip is not None:
+            return client_ip
+    return None
+
 
 def _get_request_ip_address(
-    request: Request, use_x_forwarded_for: Optional[bool] = False
+    request: Request,
+    use_x_forwarded_for: Optional[bool] = False,
+    use_cloudflare_header: Optional[bool] = False,
 ) -> Optional[str]:
     client_ip = None
-    if use_x_forwarded_for is True and "x-forwarded-for" in request.headers:
-        client_ip = request.headers["x-forwarded-for"]
+    if use_cloudflare_header is True:
+        client_ip = _get_cloudflare_request_ip_address(request=request)
+        if client_ip is not None:
+            return client_ip
+
+    x_forwarded_for = _get_request_header_value(
+        request=request, header_name="x-forwarded-for"
+    )
+    if use_x_forwarded_for is True and x_forwarded_for is not None:
+        client_ip = x_forwarded_for
     elif request.client is not None:
         client_ip = request.client.host
     else:

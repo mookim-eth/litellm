@@ -3,6 +3,7 @@ import copy
 import json
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -52,6 +53,42 @@ def test_check_if_token_is_service_account():
         api_key="test-key", metadata={"user_id": "test-user"}
     )
     assert check_if_token_is_service_account(other_metadata_token) == False
+
+
+@pytest.mark.asyncio
+async def test_add_litellm_data_to_request_prefers_cloudflare_request_ip():
+    request_mock = MagicMock(spec=Request)
+    request_mock.url.path = "/chat/completions"
+    request_mock.url = MagicMock()
+    request_mock.url.__str__.return_value = "http://localhost/chat/completions"
+    request_mock.method = "POST"
+    request_mock.query_params = {}
+    request_mock.headers = {
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": "203.0.113.10",
+        "X-Forwarded-For": "198.51.100.20",
+    }
+    request_mock.client = MagicMock()
+    request_mock.client.host = "10.0.0.10"
+    request_mock.state = SimpleNamespace()
+
+    data = {
+        "model": "gpt-3.5-turbo",
+        "messages": [{"role": "user", "content": "test"}],
+    }
+    user_api_key_dict = UserAPIKeyAuth(api_key="test-key", metadata={})
+
+    with patch("litellm.proxy.utils._premium_user_check"):
+        updated_data = await add_litellm_data_to_request(
+            data=data,
+            request=request_mock,
+            user_api_key_dict=user_api_key_dict,
+            proxy_config=MagicMock(),
+            general_settings={},
+            version="test-version",
+        )
+
+    assert updated_data["metadata"]["requester_ip_address"] == "203.0.113.10"
 
 
 class TestGetMetadataVariableName:

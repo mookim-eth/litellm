@@ -12,6 +12,7 @@ from litellm._logging import verbose_logger, verbose_proxy_logger
 from litellm._service_logger import ServiceLogging
 from litellm.litellm_core_utils.credential_accessor import CredentialAccessor
 from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
+from litellm.proxy.auth.auth_utils import _get_request_ip_address
 from litellm.proxy._types import (
     AddTeamCallback,
     CommonProxyErrors,
@@ -1498,27 +1499,22 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
         data["allowed_model_region"] = user_api_key_dict.allowed_model_region
     start_time = time.time()
     ## [Enterprise Only]
-    # Add User-IP Address
+    # Add User-IP Address. Prefer Cloudflare's original client IP header when
+    # present, then fall back to the existing X-Forwarded-For/direct-client
+    # behavior.
     requester_ip_address = ""
-    if True:  # Always set the IP Address if available
-        # logic for tracking IP Address
-
-        # logic for tracking IP Address
-        if (
-            general_settings is not None
-            and general_settings.get("use_x_forwarded_for") is True
-            and request is not None
-            and hasattr(request, "headers")
-            and "x-forwarded-for" in request.headers
-        ):
-            requester_ip_address = request.headers["x-forwarded-for"]
-        elif (
-            request is not None
-            and hasattr(request, "client")
-            and hasattr(request.client, "host")
-            and request.client is not None
-        ):
-            requester_ip_address = request.client.host
+    if request is not None:
+        requester_ip_address = (
+            _get_request_ip_address(
+                request=request,
+                use_x_forwarded_for=(
+                    general_settings is not None
+                    and general_settings.get("use_x_forwarded_for") is True
+                ),
+                use_cloudflare_header=True,
+            )
+            or ""
+        )
     data[_metadata_variable_name]["requester_ip_address"] = requester_ip_address
 
     # Add User-Agent
