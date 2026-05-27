@@ -14,6 +14,7 @@ from litellm.constants import SENTRY_DENYLIST, SENTRY_PII_DENYLIST
 from litellm.litellm_core_utils.litellm_logging import \
     Logging as LitellmLogging
 from litellm.litellm_core_utils.litellm_logging import set_callbacks
+from litellm.types.llms.openai import ResponseAPIUsage, ResponseCompletedEvent
 from litellm.types.utils import ModelResponse, TextCompletionResponse
 
 
@@ -2010,6 +2011,38 @@ def test_get_assembled_streaming_response_returns_result_for_streaming():
         streaming_chunks=[],
     )
     assert assembled is result
+
+
+def test_get_assembled_streaming_response_handles_dict_responses_api_event():
+    """Responses API stream events may carry a plain dict response."""
+    import datetime
+
+    logging_obj = _make_logging_obj(stream=True)
+    result = ResponseCompletedEvent.model_construct(
+        type="response.completed",
+        response={
+            "id": "resp-1",
+            "created_at": 1,
+            "model": "test",
+            "output": [],
+            "usage": ResponseAPIUsage(
+                input_tokens=1,
+                output_tokens=2,
+                total_tokens=3,
+            ),
+        },
+    )
+
+    assembled = logging_obj._get_assembled_streaming_response(
+        result=result,
+        start_time=datetime.datetime.now(),
+        end_time=datetime.datetime.now(),
+        is_async=True,
+        streaming_chunks=[],
+    )
+
+    assert assembled is not None
+    assert assembled.get("usage") is not None
 
 
 def test_get_assembled_streaming_response_returns_none_for_non_streaming_text_completion():
