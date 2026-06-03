@@ -1124,7 +1124,11 @@ def _route_uses_model_routing_sources(route: str) -> bool:
     return _route_matches_any_marker(route=route, markers=_MODEL_ROUTING_ROUTE_MARKERS)
 
 
-def _extract_models_from_managed_resource_id(resource_id: Any) -> List[str]:
+def _extract_models_from_managed_resource_id(
+    resource_id: Any,
+    resource_id_field: Optional[str] = None,
+    llm_router: Optional[Router] = None,
+) -> List[str]:
     if not isinstance(resource_id, str) or not resource_id:
         return []
 
@@ -1172,26 +1176,47 @@ def _extract_models_from_managed_resource_id(resource_id: Any) -> List[str]:
             "Unable to extract model from unified managed resource ID: %s", str(e)
         )
 
-    try:
-        from litellm.types.videos.utils import (
-            decode_character_id_with_provider,
-            decode_video_id_with_provider,
-        )
+    if resource_id_field in ("video_id", "character_id"):
+        try:
+            from litellm.types.videos.utils import (
+                decode_character_id_with_provider,
+                decode_video_id_with_provider,
+            )
 
-        _append_model_candidates(
-            candidates=candidates,
-            value=decode_video_id_with_provider(resource_id).get("model_id"),
-        )
-        _append_model_candidates(
-            candidates=candidates,
-            value=decode_character_id_with_provider(resource_id).get("model_id"),
-        )
-    except Exception as e:
-        verbose_proxy_logger.debug(
-            "Unable to extract model from managed video/character ID: %s", str(e)
-        )
+            if resource_id_field == "video_id":
+                model_id = decode_video_id_with_provider(resource_id).get("model_id")
+                _append_model_candidates(
+                    candidates=candidates,
+                    value=_resolve_model_id_with_router(model_id, llm_router),
+                )
+            else:
+                model_id = decode_character_id_with_provider(resource_id).get(
+                    "model_id"
+                )
+                _append_model_candidates(
+                    candidates=candidates,
+                    value=_resolve_model_id_with_router(model_id, llm_router),
+                )
+        except Exception as e:
+            verbose_proxy_logger.debug(
+                "Unable to extract model from managed video/character ID: %s", str(e)
+            )
 
     return _dedupe_model_candidates(candidates)
+
+
+def _resolve_model_id_with_router(
+    model_id: Optional[str], llm_router: Optional[Router]
+) -> Optional[str]:
+    if model_id is None or llm_router is None:
+        return model_id
+    try:
+        return llm_router.resolve_model_name_from_model_id(model_id) or model_id
+    except Exception as e:
+        verbose_proxy_logger.debug(
+            "Unable to resolve model_id from managed resource ID: %s", str(e)
+        )
+        return model_id
 
 
 def _extract_model_candidates_from_request(
@@ -1199,6 +1224,7 @@ def _extract_model_candidates_from_request(
     route: str,
     request_headers: Optional[Mapping[str, Any]] = None,
     request_query_params: Optional[Mapping[str, Any]] = None,
+    llm_router: Optional[Router] = None,
 ) -> List[str]:
     candidates: List[str] = []
     uses_model_routing_sources = _route_uses_model_routing_sources(route=route)
@@ -1247,7 +1273,11 @@ def _extract_model_candidates_from_request(
         for field in _MODEL_ROUTING_ID_FIELDS:
             _append_model_candidates(
                 candidates,
-                _extract_models_from_managed_resource_id(request_data.get(field)),
+                _extract_models_from_managed_resource_id(
+                    request_data.get(field),
+                    resource_id_field=field,
+                    llm_router=llm_router,
+                ),
             )
 
     return _dedupe_model_candidates(candidates)
@@ -1268,12 +1298,14 @@ def get_model_from_request(
     route: str,
     request_headers: Optional[Mapping[str, Any]] = None,
     request_query_params: Optional[Mapping[str, Any]] = None,
+    llm_router: Optional[Router] = None,
 ) -> Optional[Union[str, List[str]]]:
     candidates = _extract_model_candidates_from_request(
         request_data=request_data,
         route=route,
         request_headers=request_headers,
         request_query_params=request_query_params,
+        llm_router=llm_router,
     )
     model = _format_model_candidates(candidates)
 

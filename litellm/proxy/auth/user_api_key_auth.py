@@ -123,12 +123,14 @@ def _get_model_from_request_context(
     request_data: dict,
     route: str,
     request: Optional[Request],
+    llm_router: Optional[Any] = None,
 ) -> Optional[Union[str, List[str]]]:
     return get_model_from_request(
         request_data=request_data,
         route=route,
         request_headers=_safe_get_request_headers(request=request),
         request_query_params=_safe_get_request_query_params(request=request),
+        llm_router=llm_router,
     )
 
 
@@ -917,6 +919,7 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                         request_data=request_data,
                         route=route,
                         request=request,
+                        llm_router=llm_router,
                     )
                     skip_budget_checks = False
                     if model is not None and llm_router is not None:
@@ -1312,6 +1315,7 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                 request_data=request_data,
                 route=route,
                 request=request,
+                llm_router=llm_router,
             )
             skip_budget_checks = False
             if model is not None and llm_router is not None:
@@ -1432,6 +1436,7 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                         request_data=request_data,
                         route=route,
                         request=request,
+                        llm_router=llm_router,
                     )
                     current_models = _get_model_names_for_budget_checks(
                         model=current_model
@@ -1759,6 +1764,7 @@ async def _run_centralized_common_checks(
     skip_budget_checks = _should_skip_budget_checks(
         request_data=request_data,
         route=route,
+        request=request,
         llm_router=llm_router,
     )
 
@@ -1833,9 +1839,15 @@ async def _reserve_budget_after_common_checks(
 def _should_skip_budget_checks(
     request_data: dict,
     route: str,
+    request: Optional[Request],
     llm_router: Optional[Any],
 ) -> bool:
-    model = get_model_from_request(request_data, route)
+    model = _get_model_from_request_context(
+        request_data=request_data,
+        route=route,
+        request=request,
+        llm_router=llm_router,
+    )
     if model is not None and llm_router is not None:
         return _is_model_cost_zero(model=model, llm_router=llm_router)
     return False
@@ -2099,6 +2111,7 @@ async def _enforce_key_and_fallback_model_access(
             request_data=request_data,
             route=route,
             request=request,
+            llm_router=llm_router,
         )
         fallback_models = cast(
             Optional[List[ALL_FALLBACK_MODEL_VALUES]],
@@ -2263,6 +2276,7 @@ async def _run_post_custom_auth_checks(
         request_data=request_data,
         route=route,
         request=request,
+        llm_router=llm_router,
     )
     current_models = _get_model_names_for_budget_checks(model=current_model)
 

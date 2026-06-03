@@ -418,6 +418,137 @@ def test_get_model_from_request_extracts_video_id_model():
     )
 
 
+def test_get_model_from_request_resolves_video_id_model_with_router():
+    from litellm.types.videos.utils import encode_video_id_with_provider
+
+    provider_video_id = (
+        "projects/test-project/locations/us-central1/publishers/google/models/"
+        "veo-3.1-generate-001/operations/operation-id"
+    )
+    video_id = encode_video_id_with_provider(
+        video_id=provider_video_id,
+        provider="vertex_ai",
+        model_id="veo-3.1-generate-001",
+    )
+    llm_router = MagicMock()
+    llm_router.resolve_model_name_from_model_id.return_value = (
+        "gcp/google/veo-3.1-generate-001"
+    )
+
+    assert (
+        get_model_from_request(
+            request_data={"video_id": video_id},
+            route="/v1/videos/{video_id}",
+            llm_router=llm_router,
+        )
+        == "gcp/google/veo-3.1-generate-001"
+    )
+    llm_router.resolve_model_name_from_model_id.assert_called_once_with(
+        "veo-3.1-generate-001"
+    )
+
+
+def test_get_model_from_request_resolves_character_id_model_with_router():
+    from litellm.types.videos.utils import encode_character_id_with_provider
+
+    character_id = encode_character_id_with_provider(
+        character_id="character-provider-id",
+        provider="vertex_ai",
+        model_id="veo-3.1-generate-001",
+    )
+    llm_router = MagicMock()
+    llm_router.resolve_model_name_from_model_id.return_value = (
+        "gcp/google/veo-3.1-generate-001"
+    )
+
+    assert (
+        get_model_from_request(
+            request_data={"character_id": character_id},
+            route="/v1/videos/characters/{character_id}",
+            llm_router=llm_router,
+        )
+        == "gcp/google/veo-3.1-generate-001"
+    )
+    llm_router.resolve_model_name_from_model_id.assert_called_once_with(
+        "veo-3.1-generate-001"
+    )
+
+
+def test_get_model_from_request_only_runs_media_decoders_for_matching_fields():
+    with (
+        patch(
+            "litellm.types.videos.utils.decode_video_id_with_provider",
+            return_value={"model_id": "video-model"},
+        ) as video_decoder,
+        patch(
+            "litellm.types.videos.utils.decode_character_id_with_provider",
+            return_value={"model_id": "character-model"},
+        ) as character_decoder,
+    ):
+        assert (
+            get_model_from_request(
+                request_data={"file_id": "file-provider-id"},
+                route="/v1/files/{file_id}",
+            )
+            is None
+        )
+        video_decoder.assert_not_called()
+        character_decoder.assert_not_called()
+
+        assert (
+            get_model_from_request(
+                request_data={"video_id": "video-provider-id"},
+                route="/v1/videos/{video_id}",
+            )
+            == "video-model"
+        )
+        video_decoder.assert_called_once_with("video-provider-id")
+        character_decoder.assert_not_called()
+
+        video_decoder.reset_mock()
+        character_decoder.reset_mock()
+        assert (
+            get_model_from_request(
+                request_data={"character_id": "character-provider-id"},
+                route="/v1/videos/{character_id}",
+            )
+            == "character-model"
+        )
+        video_decoder.assert_not_called()
+        character_decoder.assert_called_once_with("character-provider-id")
+
+
+def test_get_model_from_request_handles_managed_id_decoder_failures():
+    with (
+        patch(
+            "litellm.proxy.openai_files_endpoints.common_utils.decode_model_from_file_id",
+            side_effect=Exception("decode failed"),
+        ),
+        patch(
+            "litellm.llms.base_llm.managed_resources.utils.parse_unified_id",
+            side_effect=Exception("parse failed"),
+        ),
+        patch(
+            "litellm.types.videos.utils.decode_video_id_with_provider",
+            side_effect=Exception("video decode failed"),
+        ),
+    ):
+        assert (
+            get_model_from_request(
+                request_data={"file_id": "not-a-managed-resource-id"},
+                route="/v1/files/{file_id}",
+            )
+            is None
+        )
+        assert (
+            get_model_from_request(
+                request_data={"video_id": "not-a-managed-resource-id"},
+                route="/v1/videos/{video_id}",
+            )
+            is None
+        )
+
+
 def test_get_customer_user_header_returns_none_when_no_customer_role():
     from litellm.proxy.auth.auth_utils import get_customer_user_header_from_mapping
 
