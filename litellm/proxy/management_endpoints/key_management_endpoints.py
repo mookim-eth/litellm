@@ -463,10 +463,10 @@ def _check_allowed_routes_caller_permission(
     """
     Only proxy admins may set `allowed_routes` on a key.
 
-    `allowed_routes` bypasses the standard role-based route gate in
-    RouteChecks.non_proxy_admin_allowed_routes_check, so if a non-admin is
-    allowed to set it they can grant themselves access to any endpoint.
-    Non-admins should use `key_type` to pick a preset route bucket instead.
+    `allowed_routes` is a powerful per-key route allowlist. Non-admins must
+    not set it directly because it can otherwise be used to create confusing
+    or over-broad management keys. Non-admins should use `key_type` to pick a
+    preset route bucket instead.
     """
     # Empty list is the default on GenerateKeyRequest — treat as "not set".
     if not allowed_routes:

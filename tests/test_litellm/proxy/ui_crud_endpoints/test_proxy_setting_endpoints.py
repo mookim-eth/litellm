@@ -3,13 +3,18 @@ import os
 import sys
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 sys.path.insert(
     0, os.path.abspath("../../..")
 )  # Adds the parent directory to the system path
 
-from litellm.proxy._types import DefaultInternalUserParams, LitellmUserRoles
+from litellm.proxy._types import (
+    DefaultInternalUserParams,
+    LitellmUserRoles,
+    UserAPIKeyAuth,
+)
 from litellm.proxy.proxy_server import app
 from litellm.types.proxy.management_endpoints.ui_sso import (
     DefaultTeamSSOParams,
@@ -151,11 +156,15 @@ class TestProxySettingEndpoints:
         import litellm
 
         monkeypatch.setattr("litellm.proxy.proxy_server.store_model_in_db", True)
+        monkeypatch.setattr(
+            "litellm.proxy.ui_crud_endpoints.proxy_setting_endpoints._require_proxy_admin",
+            lambda _: None,
+        )
         monkeypatch.setattr(litellm, "default_internal_user_params", {})
 
         # New settings to update
         new_settings = {
-            "user_role": LitellmUserRoles.PROXY_ADMIN,
+            "user_role": LitellmUserRoles.INTERNAL_USER,
             "max_budget": 200.0,
             "budget_duration": "7d",
             "models": ["gpt-4", "claude-3"],
@@ -187,6 +196,40 @@ class TestProxySettingEndpoints:
 
         # Verify save_config was called exactly once
         assert mock_proxy_config["save_call_count"]() == 1
+
+    def test_update_internal_user_settings_rejects_admin_default_role(
+        self, mock_proxy_config, mock_auth, monkeypatch
+    ):
+        import litellm
+
+        monkeypatch.setattr("litellm.proxy.proxy_server.store_model_in_db", True)
+        monkeypatch.setattr(
+            "litellm.proxy.ui_crud_endpoints.proxy_setting_endpoints._require_proxy_admin",
+            lambda _: None,
+        )
+        monkeypatch.setattr(litellm, "default_internal_user_params", {})
+
+        response = client.patch(
+            "/update/internal_user_settings",
+            json={"user_role": LitellmUserRoles.PROXY_ADMIN},
+        )
+
+        assert response.status_code == 400
+        assert "cannot be an administrative role" in response.text
+
+    def test_update_internal_user_settings_requires_proxy_admin(self):
+        from litellm.proxy.ui_crud_endpoints.proxy_setting_endpoints import (
+            _require_proxy_admin,
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            _require_proxy_admin(
+                UserAPIKeyAuth(
+                    user_id="test_user", user_role=LitellmUserRoles.INTERNAL_USER
+                )
+            )
+
+        assert exc_info.value.status_code == 403
 
     def test_get_default_team_settings(self, mock_proxy_config, mock_auth):
         """Test getting the default team settings"""
@@ -223,6 +266,10 @@ class TestProxySettingEndpoints:
         import litellm
 
         monkeypatch.setattr("litellm.proxy.proxy_server.store_model_in_db", True)
+        monkeypatch.setattr(
+            "litellm.proxy.ui_crud_endpoints.proxy_setting_endpoints._require_proxy_admin",
+            lambda _: None,
+        )
         monkeypatch.setattr(litellm, "default_team_params", {})
 
         # New settings to update
@@ -292,6 +339,10 @@ class TestProxySettingEndpoints:
         import litellm
 
         monkeypatch.setattr("litellm.proxy.proxy_server.store_model_in_db", True)
+        monkeypatch.setattr(
+            "litellm.proxy.ui_crud_endpoints.proxy_setting_endpoints._require_proxy_admin",
+            lambda _: None,
+        )
         monkeypatch.setattr(litellm, "default_team_params", {})
 
         new_settings = {

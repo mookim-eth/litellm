@@ -235,25 +235,13 @@ class RouteChecks:
         ):
             pass
         elif valid_token.allowed_routes is not None:
-            # check if route is in allowed_routes (exact match or prefix match)
-            route_allowed = False
-            for allowed_route in valid_token.allowed_routes:
-                if RouteChecks._route_matches_allowed_route(
-                    route=route, allowed_route=allowed_route
-                ):
-                    route_allowed = True
-                    break
-
-                if RouteChecks._route_matches_wildcard_pattern(
-                    route=route, pattern=allowed_route
-                ):
-                    route_allowed = True
-                    break
-
-            if not route_allowed:
-                RouteChecks._raise_admin_only_route_exception(
-                    user_obj=user_obj, route=route
-                )
+            # `allowed_routes` is an additional virtual-key restriction, not a
+            # privilege grant. RouteChecks.should_call_route() has already
+            # enforced it before this RBAC check, so do not allow it to elevate
+            # a non-admin key to management/admin-only endpoints.
+            RouteChecks._raise_admin_only_route_exception(
+                user_obj=user_obj, route=route
+            )
         else:
             RouteChecks._raise_admin_only_route_exception(
                 user_obj=user_obj, route=route

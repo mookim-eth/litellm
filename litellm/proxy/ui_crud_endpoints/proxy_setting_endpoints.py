@@ -18,6 +18,32 @@ from litellm.types.proxy.management_endpoints.ui_sso import (
 router = APIRouter()
 
 
+def _role_value(role: Any) -> Optional[str]:
+    if role is None:
+        return None
+    return getattr(role, "value", role)
+
+
+def _require_proxy_admin(user_api_key_dict: UserAPIKeyAuth) -> None:
+    if isinstance(user_api_key_dict, dict):
+        user_role = user_api_key_dict.get("user_role")
+    else:
+        user_role = getattr(user_api_key_dict, "user_role", None)
+
+    if _role_value(user_role) != LitellmUserRoles.PROXY_ADMIN.value:
+        raise HTTPException(
+            status_code=403,
+            detail="Only proxy admins can update SSO/default provisioning settings.",
+        )
+
+
+def _is_admin_user_role(role: Any) -> bool:
+    return _role_value(role) in {
+        LitellmUserRoles.PROXY_ADMIN.value,
+        LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+    }
+
+
 class IPAddress(BaseModel):
     ip: str
 
@@ -516,6 +542,13 @@ async def update_internal_user_settings(
     Update the default internal user parameters for SSO users.
     These settings will be applied to new users who sign in via SSO.
     """
+    _require_proxy_admin(user_api_key_dict)
+    if _is_admin_user_role(settings.user_role):
+        raise HTTPException(
+            status_code=400,
+            detail="default_internal_user_params.user_role cannot be an administrative role.",
+        )
+
     if settings.teams is not None and all(
         isinstance(team, NewUserRequestTeam) for team in settings.teams
     ):
@@ -535,11 +568,15 @@ async def update_internal_user_settings(
     tags=["SSO Settings"],
     dependencies=[Depends(user_api_key_auth)],
 )
-async def update_default_team_settings(settings: DefaultTeamSSOParams):
+async def update_default_team_settings(
+    settings: DefaultTeamSSOParams,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
     """
     Update the default team parameters for SSO users.
     These settings will be applied to new teams created from SSO.
     """
+    _require_proxy_admin(user_api_key_dict)
     return await _update_litellm_setting(
         settings=settings,
         settings_key="default_team_params",

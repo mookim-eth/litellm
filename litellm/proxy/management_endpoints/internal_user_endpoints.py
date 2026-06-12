@@ -58,6 +58,29 @@ if TYPE_CHECKING:
 router = APIRouter()
 
 
+ADMIN_USER_ROLES = {
+    LitellmUserRoles.PROXY_ADMIN.value,
+    LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+}
+
+
+def _role_value(role: Any) -> Optional[str]:
+    if role is None:
+        return None
+    return getattr(role, "value", role)
+
+
+def _is_admin_user_role(role: Any) -> bool:
+    return _role_value(role) in ADMIN_USER_ROLES
+
+
+def _user_api_key_is_proxy_admin(user_api_key_dict: UserAPIKeyAuth) -> bool:
+    return (
+        _role_value(getattr(user_api_key_dict, "user_role", None))
+        == LitellmUserRoles.PROXY_ADMIN.value
+    )
+
+
 def _hash_password_in_dict(data: dict) -> None:
     """Hash password field in-place if present."""
     if "password" in data and data["password"] is not None:
@@ -81,16 +104,18 @@ def _update_internal_new_user_params(data_json: dict, data: NewUserRequest) -> d
     auto_create_key = data_json.pop("auto_create_key", True)
 
     if auto_create_key is False:
-        data_json[
-            "table_name"
-        ] = "user"  # only create a user, don't create key if 'auto_create_key' set to False
+        data_json["table_name"] = (
+            "user"  # only create a user, don't create key if 'auto_create_key' set to False
+        )
 
-    if litellm.default_internal_user_params and (
-        data.user_role != LitellmUserRoles.PROXY_ADMIN.value
-        and data.user_role != LitellmUserRoles.PROXY_ADMIN
-    ):
+    if litellm.default_internal_user_params and not _is_admin_user_role(data.user_role):
         for key, value in litellm.default_internal_user_params.items():
             if key == "available_teams":
+                continue
+            if key == "user_role" and _is_admin_user_role(value):
+                # Never promote a user to an administrative role from default
+                # provisioning settings. Admins can still create admin users
+                # explicitly by passing user_role on /user/new.
                 continue
             elif key not in data_json or data_json[key] is None:
                 data_json[key] = value
@@ -442,10 +467,9 @@ async def new_user(
         # Check if user_api_key_dict is actually a UserAPIKeyAuth instance (not a Depends object)
         # This can happen when the function is called directly in tests
         if (
-            data.user_role
-            in [LitellmUserRoles.PROXY_ADMIN, LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY]
+            _is_admin_user_role(data.user_role)
             and isinstance(user_api_key_dict, UserAPIKeyAuth)
-            and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN
+            and not _user_api_key_is_proxy_admin(user_api_key_dict)
         ):
             raise HTTPException(
                 status_code=403,
@@ -454,6 +478,15 @@ async def new_user(
 
         data_json = data.json()  # type: ignore
         data_json = _update_internal_new_user_params(data_json, data)
+        if (
+            _is_admin_user_role(data_json.get("user_role"))
+            and isinstance(user_api_key_dict, UserAPIKeyAuth)
+            and not _user_api_key_is_proxy_admin(user_api_key_dict)
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Only proxy admins can create administrative users (proxy_admin, proxy_admin_viewer). Attempted to create user with role: {data_json.get('user_role')}. Your role: {user_api_key_dict.user_role}",
+            )
         _hash_password_in_dict(data_json)
         teams = data.teams
         if teams is None:
@@ -1103,9 +1136,9 @@ def _update_internal_user_params(
         "budget_duration" not in non_default_values
     ):  # applies internal user limits, if user role updated
         if is_internal_user and litellm.internal_user_budget_duration is not None:
-            non_default_values[
-                "budget_duration"
-            ] = litellm.internal_user_budget_duration
+            non_default_values["budget_duration"] = (
+                litellm.internal_user_budget_duration
+            )
             from litellm.proxy.common_utils.timezone_utils import get_budget_reset_time
 
             non_default_values["budget_reset_at"] = get_budget_reset_time(
@@ -2366,13 +2399,13 @@ async def ui_view_users(
             }
 
         # Query users with pagination and filters
-        users: Optional[
-            List[BaseModel]
-        ] = await prisma_client.db.litellm_usertable.find_many(
-            where=where_conditions,
-            skip=skip,
-            take=page_size,
-            order={"created_at": "desc"},
+        users: Optional[List[BaseModel]] = (
+            await prisma_client.db.litellm_usertable.find_many(
+                where=where_conditions,
+                skip=skip,
+                take=page_size,
+                order={"created_at": "desc"},
+            )
         )
 
         if not users:

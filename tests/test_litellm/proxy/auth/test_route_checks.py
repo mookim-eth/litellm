@@ -931,8 +931,8 @@ def test_videos_route_with_virtual_key_llm_api_routes():
         ), f"Virtual key with llm_api_routes should be able to access {route}"
 
 
-def test_non_proxy_admin_wildcard_allowed_routes():
-    """Test that nonproxy admin users can still use wildcard routes"""
+def test_non_proxy_admin_allowed_routes_do_not_grant_admin_routes():
+    """allowed_routes restricts virtual keys; it must not elevate non-admin RBAC."""
 
     user_obj = LiteLLM_UserTable(
         user_id="test_user",
@@ -943,20 +943,21 @@ def test_non_proxy_admin_wildcard_allowed_routes():
     valid_token = UserAPIKeyAuth(
         user_id="test_user",
         user_role=LitellmUserRoles.INTERNAL_USER.value,
-        allowed_routes=["/scim/*"],
+        allowed_routes=["/update/internal_user_settings"],
     )
 
     request = MagicMock(spec=Request)
     request.query_params = {}
 
-    RouteChecks.non_proxy_admin_allowed_routes_check(
-        user_obj=user_obj,
-        _user_role=LitellmUserRoles.INTERNAL_USER.value,
-        route="/scim/v2/Users",
-        request=request,
-        valid_token=valid_token,
-        request_data={},
-    )
+    with pytest.raises(Exception, match="Only proxy admin"):
+        RouteChecks.non_proxy_admin_allowed_routes_check(
+            user_obj=user_obj,
+            _user_role=LitellmUserRoles.INTERNAL_USER.value,
+            route="/update/internal_user_settings",
+            request=request,
+            valid_token=valid_token,
+            request_data={},
+        )
 
 
 def test_proxy_admin_viewer_can_access_global_spend_tags():

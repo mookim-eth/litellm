@@ -1225,6 +1225,33 @@ def test_update_internal_new_user_params_no_role_specified():
         litellm.default_internal_user_params = original_default_params
 
 
+def test_update_internal_new_user_params_ignores_admin_default_role():
+    """Compromised defaults must not make /user/new create admin users implicitly."""
+    import litellm
+    from litellm.proxy._types import LitellmUserRoles, NewUserRequest
+    from litellm.proxy.management_endpoints.internal_user_endpoints import (
+        _update_internal_new_user_params,
+    )
+
+    original_default_params = getattr(litellm, "default_internal_user_params", None)
+    litellm.default_internal_user_params = {
+        "user_role": LitellmUserRoles.PROXY_ADMIN.value,
+        "max_budget": 1000,
+    }
+
+    try:
+        data = NewUserRequest(user_email="user@example.com")
+        data_json = data.model_dump(exclude_unset=True)
+
+        result = _update_internal_new_user_params(data_json=data_json, data=data)
+
+        assert result.get("user_role") != LitellmUserRoles.PROXY_ADMIN.value
+        assert result.get("max_budget") == 1000
+        assert result["user_email"] == "user@example.com"
+    finally:
+        litellm.default_internal_user_params = original_default_params
+
+
 def test_update_internal_new_user_params_internal_user_role():
     """
     Test that default_internal_user_params ARE applied when user_role is INTERNAL_USER
