@@ -1189,6 +1189,8 @@ async def _update_single_user_helper(
             where={"user_email": user_request.user_email}
         )
 
+    is_proxy_admin = user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value
+
     if existing_user_row is not None:
         existing_user_row = LiteLLM_UserTable(
             **existing_user_row.model_dump(exclude_none=True)
@@ -1203,6 +1205,19 @@ async def _update_single_user_helper(
                     "error": "User does not have permission to update this user. Only PROXY_ADMIN can update other users."
                 },
             )
+    elif not is_proxy_admin:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "Only PROXY_ADMIN can create users via /user/update."
+            },
+        )
+
+    if not is_proxy_admin and user_request.user_role is not None:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "Only PROXY_ADMIN can update user_role."},
+        )
 
     existing_metadata = (
         cast(Dict, getattr(existing_user_row, "metadata", {}) or {})
@@ -1547,6 +1562,12 @@ async def bulk_user_update(
     ] = []
 
     if data.all_users and data.user_updates:
+        if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value:
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "Only PROXY_ADMIN can bulk update all users."},
+            )
+
         # Optimized path for updating all users directly in database
         all_users_in_db = await prisma_client.db.litellm_usertable.find_many(
             order={"created_at": "desc"}

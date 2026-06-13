@@ -247,7 +247,11 @@ async def get_allowed_ips():
     tags=["Budget & Spend Tracking"],
     dependencies=[Depends(user_api_key_auth)],
 )
-async def add_allowed_ip(ip_address: IPAddress):
+async def add_allowed_ip(
+    ip_address: IPAddress,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    _require_proxy_admin(user_api_key_dict)
     from litellm.proxy.proxy_server import (
         general_settings,
         prisma_client,
@@ -298,7 +302,11 @@ async def add_allowed_ip(ip_address: IPAddress):
     tags=["Budget & Spend Tracking"],
     dependencies=[Depends(user_api_key_auth)],
 )
-async def delete_allowed_ip(ip_address: IPAddress):
+async def delete_allowed_ip(
+    ip_address: IPAddress,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    _require_proxy_admin(user_api_key_dict)
     from litellm.proxy.proxy_server import general_settings, proxy_config
 
     _allowed_ips: List = general_settings.get("allowed_ips", [])
@@ -706,7 +714,11 @@ async def get_sso_settings():
     tags=["SSO Settings"],
     dependencies=[Depends(user_api_key_auth)],
 )
-async def update_sso_settings(sso_config: SSOConfig):
+async def update_sso_settings(
+    sso_config: SSOConfig,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    _require_proxy_admin(user_api_key_dict)
     """
     Update SSO configuration by saving to the dedicated SSO table.
     """
@@ -883,7 +895,11 @@ def _validate_public_image_url(value: Optional[str], field_name: str) -> None:
     tags=["UI Theme Settings"],
     dependencies=[Depends(user_api_key_auth)],
 )
-async def update_ui_theme_settings(theme_config: UIThemeConfig):
+async def update_ui_theme_settings(
+    theme_config: UIThemeConfig,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    _require_proxy_admin(user_api_key_dict)
     """
     Update UI theme configuration.
     Updates logo settings for the admin UI.
@@ -1020,6 +1036,7 @@ async def update_mcp_semantic_filter_settings(
     settings: MCPSemanticFilterSettings,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
+    _require_proxy_admin(user_api_key_dict)
     """
     Update MCP semantic filter settings in database.
     Settings will be picked up by all pods within approximately 10 seconds via background polling.
@@ -1276,7 +1293,11 @@ async def update_ui_settings(
     tags=["UI Theme Settings"],
     dependencies=[Depends(user_api_key_auth)],
 )
-async def upload_logo(file: UploadFile = File(...)):
+async def upload_logo(
+    file: UploadFile = File(...),
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    _require_proxy_admin(user_api_key_dict)
     """
     Upload a custom logo for the admin UI.
     Accepts image files (PNG, JPG, JPEG, SVG) and stores them for use in the UI.

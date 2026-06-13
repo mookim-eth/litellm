@@ -76,18 +76,67 @@ def mock_proxy_config(monkeypatch):
 
 
 @pytest.fixture
-def mock_auth():
+def mock_auth(monkeypatch):
     """Mock the authentication to bypass auth checks using FastAPI dependency overrides"""
     from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
     from litellm.proxy.proxy_server import app
+    from litellm.proxy.ui_crud_endpoints.proxy_setting_endpoints import (
+        user_api_key_auth as proxy_settings_user_api_key_auth,
+    )
 
     async def mock_user_api_key_auth():
-        return {"user_id": "test_user"}
+        return UserAPIKeyAuth(
+            user_id="test_user",
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+        )
 
     app.dependency_overrides[user_api_key_auth] = mock_user_api_key_auth
+    app.dependency_overrides[proxy_settings_user_api_key_auth] = mock_user_api_key_auth
+    monkeypatch.setattr(
+        "litellm.proxy.ui_crud_endpoints.proxy_setting_endpoints._require_proxy_admin",
+        lambda _: None,
+    )
     yield
     app.dependency_overrides.pop(user_api_key_auth, None)
+    app.dependency_overrides.pop(proxy_settings_user_api_key_auth, None)
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "func_name,payload",
+    [
+        ("update_sso_settings", {"proxy_base_url": "https://example.com"}),
+        ("update_ui_theme_settings", {"logo_url": "https://example.com/logo.png"}),
+        ("update_mcp_semantic_filter_settings", {"enabled": True}),
+        ("add_allowed_ip", {"ip": "203.0.113.10"}),
+        ("delete_allowed_ip", {"ip": "203.0.113.10"}),
+        ("upload_logo", None),
+    ],
+)
+async def test_sensitive_settings_helpers_require_proxy_admin(func_name, payload):
+    from litellm.proxy.ui_crud_endpoints import proxy_setting_endpoints as endpoints
+
+    internal_user = UserAPIKeyAuth(
+        user_id="internal-user", user_role=LitellmUserRoles.INTERNAL_USER
+    )
+
+    if func_name == "update_sso_settings":
+        arg = SSOConfig(**payload)
+    elif func_name == "update_ui_theme_settings":
+        arg = endpoints.UIThemeConfig(**payload)
+    elif func_name == "update_mcp_semantic_filter_settings":
+        arg = endpoints.MCPSemanticFilterSettings(**payload)
+    elif func_name in {"add_allowed_ip", "delete_allowed_ip"}:
+        arg = endpoints.IPAddress(**payload)
+    elif func_name == "upload_logo":
+        arg = None
+    else:
+        raise AssertionError(func_name)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await getattr(endpoints, func_name)(arg, user_api_key_dict=internal_user)
+
+    assert exc_info.value.status_code == 403
 
 class TestProxySettingEndpoints:
     def test_get_internal_user_settings(self, mock_proxy_config, mock_auth):

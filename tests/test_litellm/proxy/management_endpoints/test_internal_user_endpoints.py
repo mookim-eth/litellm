@@ -4,6 +4,7 @@ import sys
 from datetime import datetime, timezone
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 sys.path.insert(
@@ -2543,3 +2544,65 @@ class TestGetUserIdFromRequestValidation:
         request = self._make_request(f"user_id={exact_id}")
         result = get_user_id_from_request(request)
         assert result == exact_id
+
+
+@pytest.mark.asyncio
+async def test_user_update_internal_user_cannot_promote_self(mocker):
+    from litellm.proxy.management_endpoints.internal_user_endpoints import (
+        _update_single_user_helper,
+    )
+
+    mock_prisma_client = mocker.MagicMock()
+    mock_user_row = mocker.MagicMock()
+    mock_user_row.model_dump.return_value = {
+        "user_id": "self-user",
+        "user_email": "self@example.com",
+        "user_role": LitellmUserRoles.INTERNAL_USER.value,
+    }
+    mock_prisma_client.db.litellm_usertable.find_first = mocker.AsyncMock(
+        return_value=mock_user_row
+    )
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _update_single_user_helper(
+            user_request=UpdateUserRequest(
+                user_id="self-user",
+                user_role=LitellmUserRoles.PROXY_ADMIN,
+            ),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="self-user",
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "Only PROXY_ADMIN can update user_role" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_user_update_internal_user_cannot_create_missing_user(mocker):
+    from litellm.proxy.management_endpoints.internal_user_endpoints import (
+        _update_single_user_helper,
+    )
+
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.litellm_usertable.find_first = mocker.AsyncMock(
+        return_value=None
+    )
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _update_single_user_helper(
+            user_request=UpdateUserRequest(
+                user_email="new@example.com",
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            ),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="self-user",
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "Only PROXY_ADMIN can create users" in str(exc_info.value.detail)
