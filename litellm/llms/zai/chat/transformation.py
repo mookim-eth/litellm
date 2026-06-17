@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import AllMessageValues, ChatCompletionToolParam
@@ -56,3 +56,76 @@ class ZAIChatConfig(OpenAIGPTConfig):
             pass
 
         return base_params
+
+    def _convert_non_function_tools_to_functions(
+        self, tools: Optional[List[Dict[str, Any]]]
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        ZAI's OpenAI-compatible chat API only accepts tools with type=function.
+
+        Codex sends Responses API built-in tools (for example local_shell/apply_patch)
+        through LiteLLM's Responses->Chat bridge for providers without a native
+        Responses API. Convert these built-ins to function tools so ZAI accepts the
+        request instead of rejecting it with `tools[n].type:type is illegal`.
+        """
+        if tools is None:
+            return None
+
+        converted_tools: List[Dict[str, Any]] = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                converted_tools.append(tool)
+                continue
+
+            if tool.get("type") == "function":
+                converted_tools.append(tool)
+                continue
+
+            tool_name = str(tool.get("name") or tool.get("type") or "tool")
+            description = str(
+                tool.get("description")
+                or f"Run the {tool_name} tool. Arguments depend on the tool."
+            )
+            parameters = tool.get("parameters")
+            if not isinstance(parameters, dict):
+                parameters = {
+                    "type": "object",
+                    "additionalProperties": True,
+                }
+            elif "type" not in parameters:
+                parameters = {**parameters, "type": "object"}
+
+            converted_tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "description": description,
+                        "parameters": parameters,
+                        "strict": bool(tool.get("strict", False)),
+                    },
+                }
+            )
+
+        return converted_tools
+
+    def map_openai_params(
+        self,
+        non_default_params: dict,
+        optional_params: dict,
+        model: str,
+        drop_params: bool,
+    ) -> dict:
+        optional_params = super().map_openai_params(
+            non_default_params=non_default_params,
+            optional_params=optional_params,
+            model=model,
+            drop_params=drop_params,
+        )
+
+        if "tools" in optional_params:
+            optional_params["tools"] = self._convert_non_function_tools_to_functions(
+                optional_params.get("tools")
+            )
+
+        return optional_params

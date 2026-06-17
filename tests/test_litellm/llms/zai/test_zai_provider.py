@@ -139,6 +139,46 @@ def test_glm47_cost_calculation():
     assert math.isclose(completion_cost, 2.2, rel_tol=1e-6)
 
 
+def test_zai_converts_responses_builtin_tools_to_functions():
+    """ZAI chat endpoint rejects non-function tool types; convert them."""
+    from litellm.llms.zai.chat.transformation import ZAIChatConfig
+
+    config = ZAIChatConfig()
+    optional_params = config.map_openai_params(
+        non_default_params={
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "regular_tool",
+                        "parameters": {"type": "object"},
+                    },
+                },
+                {"type": "local_shell"},
+                {
+                    "type": "apply_patch",
+                    "description": "Apply a patch",
+                    "parameters": {"properties": {"patch": {"type": "string"}}},
+                },
+            ],
+        },
+        optional_params={},
+        model="glm-5.2",
+        drop_params=False,
+    )
+
+    tools = optional_params["tools"]
+    assert [tool["type"] for tool in tools] == ["function", "function", "function"]
+    assert tools[0]["function"]["name"] == "regular_tool"
+    assert tools[1]["function"]["name"] == "local_shell"
+    assert tools[1]["function"]["parameters"] == {
+        "type": "object",
+        "additionalProperties": True,
+    }
+    assert tools[2]["function"]["name"] == "apply_patch"
+    assert tools[2]["function"]["parameters"]["type"] == "object"
+
+
 @pytest.mark.asyncio
 async def test_zai_completion_call(respx_mock, zai_response, monkeypatch):
     """Test completion call with zai provider using mocked response"""
