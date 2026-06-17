@@ -103,6 +103,7 @@ export enum Providers {
   WATSONX = "Watsonx",
   WATSONX_TEXT = "Watsonx Text",
   xAI = "xAI",
+  ZAI = "ZAI",
   XINFERENCE = "Xinference",
 }
 
@@ -211,6 +212,7 @@ export const provider_map: Record<string, string> = {
   WATSONX: "watsonx",
   WATSONX_TEXT: "watsonx_text",
   xAI: "xai",
+  ZAI: "zai",
   XINFERENCE: "xinference",
 };
 
@@ -301,6 +303,7 @@ export const providerLogoMap: Record<string, string> = {
   [Providers.WATSONX]: `${asset_logos_folder}watsonx.svg`,
   [Providers.WATSONX_TEXT]: `${asset_logos_folder}watsonx.svg`,
   [Providers.xAI]: `${asset_logos_folder}xai.svg`,
+  [Providers.ZAI]: `${asset_logos_folder}openai_small.svg`,
   [Providers.XINFERENCE]: `${asset_logos_folder}xinference.svg`,
 };
 
@@ -371,6 +374,8 @@ export const getPlaceholder = (selectedProvider: string): string => {
     return "chatgpt/gpt-5.3-codex";
   } else if (selectedProvider === Providers.Cursor) {
     return "cursor/claude-4-sonnet";
+  } else if (selectedProvider === Providers.ZAI) {
+    return "zai/glm-5";
   } else {
     return "gpt-3.5-turbo";
   }
