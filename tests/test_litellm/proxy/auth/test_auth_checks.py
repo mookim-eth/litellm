@@ -1714,7 +1714,7 @@ async def test_virtual_key_budget_check_reads_from_spend_counter():
     proxy_logging_obj = ProxyLogging(user_api_key_cache=None)
     proxy_logging_obj.budget_alerts = AsyncMock()
 
-    async def mock_get_current_spend(counter_key, fallback_spend):
+    async def mock_get_current_spend(counter_key, fallback_spend, **kwargs):
         if counter_key == "spend:key:test-hashed-token":
             return 1.5
         return fallback_spend
@@ -1748,7 +1748,7 @@ async def test_virtual_key_budget_check_fallback_no_counter():
     proxy_logging_obj.budget_alerts = AsyncMock()
 
     # get_current_spend returns fallback_spend when no counter exists
-    async def mock_get_current_spend(counter_key, fallback_spend):
+    async def mock_get_current_spend(counter_key, fallback_spend, **kwargs):
         return fallback_spend
 
     with patch(
@@ -1777,7 +1777,7 @@ async def test_team_budget_check_reads_from_spend_counter():
     proxy_logging_obj = ProxyLogging(user_api_key_cache=None)
     proxy_logging_obj.budget_alerts = AsyncMock()
 
-    async def mock_get_current_spend(counter_key, fallback_spend):
+    async def mock_get_current_spend(counter_key, fallback_spend, **kwargs):
         if counter_key == "spend:team:test-team":
             return 1.5
         return fallback_spend
@@ -1804,7 +1804,7 @@ async def test_end_user_budget_check_reads_from_spend_counter():
         litellm_budget_table=LiteLLM_BudgetTable(max_budget=1.0),
     )
 
-    async def mock_get_current_spend(counter_key, fallback_spend):
+    async def mock_get_current_spend(counter_key, fallback_spend, **kwargs):
         if counter_key == "spend:end_user:customer-1":
             return 1.5
         return fallback_spend
@@ -1830,7 +1830,7 @@ async def test_tag_budget_check_reads_from_spend_counter():
         litellm_budget_table=LiteLLM_BudgetTable(max_budget=1.0),
     )
 
-    async def mock_get_current_spend(counter_key, fallback_spend):
+    async def mock_get_current_spend(counter_key, fallback_spend, **kwargs):
         if counter_key == "spend:tag:paid-tag":
             return 1.5
         return fallback_spend
@@ -1878,7 +1878,7 @@ async def test_team_member_budget_check_reads_from_spend_counter():
 
     proxy_logging_obj = ProxyLogging(user_api_key_cache=None)
 
-    async def mock_get_current_spend(counter_key, fallback_spend):
+    async def mock_get_current_spend(counter_key, fallback_spend, **kwargs):
         if counter_key == "spend:team_member:test-user:test-team":
             return 1.5
         return fallback_spend

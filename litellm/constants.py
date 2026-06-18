@@ -1575,6 +1575,9 @@ SENTRY_PII_DENYLIST = [
 COROUTINE_CHECKER_MAX_SIZE_IN_MEMORY = int(
     os.getenv("COROUTINE_CHECKER_MAX_SIZE_IN_MEMORY", 1000)
 )
+SPEND_COUNTER_RESEED_LOCKS_MAX_SIZE = int(
+    os.getenv("SPEND_COUNTER_RESEED_LOCKS_MAX_SIZE", 10000)
+)
 
 ########################### RAG Text Splitter Constants ###########################
 DEFAULT_CHUNK_SIZE = int(os.getenv("DEFAULT_CHUNK_SIZE", 1000))

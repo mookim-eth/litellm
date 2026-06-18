@@ -612,7 +612,14 @@ async def common_checks(  # noqa: PLR0915
             and user_object.max_budget is not None
         ):
             user_budget = user_object.max_budget
-            if math.isfinite(user_budget) and user_budget < user_object.spend:
+            from litellm.proxy.proxy_server import get_current_spend
+
+            user_spend = await get_current_spend(
+                counter_key=f"spend:user:{user_object.user_id}",
+                fallback_spend=user_object.spend or 0.0,
+                max_budget=user_budget,
+            )
+            if math.isfinite(user_budget) and user_spend >= user_budget:
                 raise litellm.BudgetExceededError(
                     current_cost=user_object.spend,
                     max_budget=user_budget,
@@ -951,6 +958,8 @@ async def _check_end_user_budget(
     end_user_spend = await get_current_spend(
         counter_key=f"spend:end_user:{end_user_obj.user_id}",
         fallback_spend=end_user_obj.spend or 0.0,
+        max_budget=end_user_budget,
+        fallback_authoritative=True,
     )
     if end_user_spend > end_user_budget:
         raise litellm.BudgetExceededError(
@@ -2948,10 +2957,14 @@ async def _virtual_key_max_budget_check(
     if valid_token.max_budget is not None:
         from litellm.proxy.proxy_server import get_current_spend
 
+        fallback_spend = valid_token.spend or 0.0
+        counter_key = f"spend:key:{valid_token.token}"
+
         # Read spend from cross-pod counter (Redis-first) or cached object (fallback)
         spend = await get_current_spend(
-            counter_key=f"spend:key:{valid_token.token}",
-            fallback_spend=valid_token.spend or 0.0,
+            counter_key=counter_key,
+            fallback_spend=fallback_spend,
+            max_budget=valid_token.max_budget,
         )
 
         ####################################
@@ -3128,6 +3141,7 @@ async def _check_team_member_budget(
             team_member_spend = await get_current_spend(
                 counter_key=f"spend:team_member:{valid_token.user_id}:{team_object.team_id}",
                 fallback_spend=team_member_spend,
+                max_budget=team_member_budget,
             )
 
             if (
@@ -3160,6 +3174,7 @@ async def _team_max_budget_check(
         spend = await get_current_spend(
             counter_key=f"spend:team:{team_object.team_id}",
             fallback_spend=team_object.spend or 0.0,
+            max_budget=team_object.max_budget,
         )
 
         if math.isfinite(team_object.max_budget) and spend > team_object.max_budget:
@@ -3474,12 +3489,21 @@ async def _organization_max_budget_check(
     if org_max_budget is None or org_max_budget <= 0:
         return
 
+    # Read spend from cross-pod counter (Redis-first) or cached object (fallback)
+    from litellm.proxy.proxy_server import get_current_spend
+
+    org_spend = await get_current_spend(
+        counter_key=f"spend:org:{org_id}",
+        fallback_spend=org_table.spend or 0.0,
+        max_budget=org_max_budget,
+    )
+
     # Check if organization spend exceeds max budget
-    if math.isfinite(org_max_budget) and org_table.spend >= org_max_budget:
+    if math.isfinite(org_max_budget) and org_spend >= org_max_budget:
         # Trigger budget alert
         call_info = CallInfo(
             token=valid_token.token,
-            spend=org_table.spend,
+            spend=org_spend,
             max_budget=org_max_budget,
             user_id=valid_token.user_id,
             team_id=valid_token.team_id,
@@ -3495,9 +3519,9 @@ async def _organization_max_budget_check(
         )
 
         raise litellm.BudgetExceededError(
-            current_cost=org_table.spend,
+            current_cost=org_spend,
             max_budget=org_max_budget,
-            message=f"Budget has been exceeded! Organization={org_id} Current cost: {org_table.spend}, Max budget: {org_max_budget}",
+            message=f"Budget has been exceeded! Organization={org_id} Current cost: {org_spend}, Max budget: {org_max_budget}",
         )
 
 
@@ -3549,6 +3573,8 @@ async def _tag_max_budget_check(
             tag_spend = await get_current_spend(
                 counter_key=f"spend:tag:{tag_name}",
                 fallback_spend=tag_object.spend or 0.0,
+                max_budget=tag_object.litellm_budget_table.max_budget,
+                fallback_authoritative=True,
             )
             if tag_spend <= tag_object.litellm_budget_table.max_budget:
                 continue
