@@ -8499,6 +8499,10 @@ class ProviderConfigManager:
             )
 
             return MinimaxMessagesConfig()
+        elif litellm.LlmProviders.ZAI == provider:
+            from litellm.llms.zai.messages.transformation import ZAIMessagesConfig
+
+            return ZAIMessagesConfig()
         return None
 
     @staticmethod

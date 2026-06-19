@@ -219,3 +219,81 @@ def test_zai_sync_completion(respx_mock, zai_response, monkeypatch):
 
     assert response.choices[0].message.content == "Hello! How can I help you today?"
     assert response.usage.total_tokens == 25
+
+
+def test_zai_anthropic_messages_config_is_registered():
+    """ZAI should use its native Anthropic-compatible Messages endpoint."""
+    from litellm.types.utils import LlmProviders
+    from litellm.utils import ProviderConfigManager
+
+    config = ProviderConfigManager.get_provider_anthropic_messages_config(
+        model="glm-5.2",
+        provider=LlmProviders.ZAI,
+    )
+
+    assert config is not None
+    assert config.custom_llm_provider == "zai"
+    assert (
+        config.get_complete_url(
+            api_base=None,
+            api_key=None,
+            model="glm-5.2",
+            optional_params={},
+            litellm_params={},
+        )
+        == "https://open.bigmodel.cn/api/anthropic/v1/messages"
+    )
+    assert (
+        config.get_complete_url(
+            api_base="https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+            api_key=None,
+            model="glm-5.2",
+            optional_params={},
+            litellm_params={},
+        )
+        == "https://open.bigmodel.cn/api/anthropic/v1/messages"
+    )
+
+
+@pytest.mark.asyncio
+async def test_zai_anthropic_messages_uses_native_endpoint(respx_mock, monkeypatch):
+    """Anthropic Messages calls for ZAI should not be bridged to chat/completions."""
+    monkeypatch.setenv("ZAI_API_KEY", "test-api-key")
+    litellm.disable_aiohttp_transport = True
+
+    respx_mock.post("https://open.bigmodel.cn/api/anthropic/v1/messages").respond(
+        json={
+            "id": "msg_zai_123",
+            "type": "message",
+            "role": "assistant",
+            "model": "glm-5.2",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": 9,
+                "output_tokens": 2,
+                "cache_read_input_tokens": 1,
+            },
+        }
+    )
+
+    response = await litellm.anthropic_messages(
+        model="zai/glm-5.2",
+        max_tokens=16,
+        messages=[{"role": "user", "content": "只回复 ok"}],
+    )
+
+    assert response["content"][0]["text"] == "ok"
+    assert response["usage"]["cache_read_input_tokens"] == 1
+    assert len(respx_mock.calls) == 1
+    request = respx_mock.calls[0].request
+    assert str(request.url) == "https://open.bigmodel.cn/api/anthropic/v1/messages"
+    assert request.headers["Authorization"] == "Bearer test-api-key"
+    assert request.headers["anthropic-version"] == "2023-06-01"
+
+    request_body = json.loads(request.content)
+    assert request_body["model"] == "glm-5.2"
+    assert request_body["max_tokens"] == 16
+    assert request_body["messages"] == [{"role": "user", "content": "只回复 ok"}]
+    assert "tools" not in request_body
