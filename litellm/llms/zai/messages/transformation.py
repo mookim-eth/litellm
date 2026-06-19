@@ -49,10 +49,12 @@ class ZAIMessagesConfig(AnthropicMessagesConfig):
             # Many ZAI configs use the OpenAI-compatible chat API base. For
             # Anthropic Messages, switch to the matching Anthropic base instead
             # of appending /v1/messages to a chat-completions URL.
-            if "open.bigmodel.cn" in api_base or "bigmodel.cn" in api_base:
+            if (
+                "open.bigmodel.cn" in api_base
+                or "bigmodel.cn" in api_base
+                or "api.z.ai" in api_base
+            ):
                 return ZAI_ANTHROPIC_API_BASE
-            if "api.z.ai" in api_base:
-                return "https://api.z.ai/api/anthropic/v1/messages"
 
         return ZAI_ANTHROPIC_API_BASE
 

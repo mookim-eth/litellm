@@ -253,6 +253,16 @@ def test_zai_anthropic_messages_config_is_registered():
         )
         == "https://open.bigmodel.cn/api/anthropic/v1/messages"
     )
+    assert (
+        config.get_complete_url(
+            api_base="https://api.z.ai/api/paas/v4",
+            api_key=None,
+            model="glm-5.2",
+            optional_params={},
+            litellm_params={},
+        )
+        == "https://open.bigmodel.cn/api/anthropic/v1/messages"
+    )
 
 
 @pytest.mark.asyncio
