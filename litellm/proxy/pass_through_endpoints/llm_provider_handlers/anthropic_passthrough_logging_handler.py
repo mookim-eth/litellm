@@ -180,6 +180,13 @@ class AnthropicPassthroughLoggingHandler:
                     call_type=logging_obj.call_type,
                 )
                 response_cost = prompt_cost + completion_cost
+                logging_obj.set_cost_breakdown(
+                    input_cost=prompt_cost,
+                    output_cost=completion_cost,
+                    total_cost=response_cost,
+                    cost_for_built_in_tools_cost_usd_dollar=0.0,
+                    original_cost=response_cost,
+                )
 
             if hasattr(litellm_model_response, "_hidden_params"):
                 litellm_model_response._hidden_params["response_cost"] = response_cost
