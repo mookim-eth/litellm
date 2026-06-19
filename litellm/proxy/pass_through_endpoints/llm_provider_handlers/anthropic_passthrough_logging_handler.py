@@ -181,6 +181,9 @@ class AnthropicPassthroughLoggingHandler:
                 )
                 response_cost = prompt_cost + completion_cost
 
+            if hasattr(litellm_model_response, "_hidden_params"):
+                litellm_model_response._hidden_params["response_cost"] = response_cost
+
             kwargs["response_cost"] = response_cost
             kwargs["model"] = model
             passthrough_logging_payload: Optional[PassthroughStandardLoggingPayload] = (  # type: ignore

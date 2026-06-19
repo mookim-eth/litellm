@@ -354,6 +354,7 @@ class TestAzureAnthropicCostCalculation:
         )
 
         assert kwargs["response_cost"] == 0.0000214
+        assert mock_response._hidden_params["response_cost"] == 0.0000214
         mock_cost_per_token.assert_called_once()
         call_kwargs = mock_cost_per_token.call_args[1]
         assert call_kwargs["model"] == "zai/glm-5.2"
