@@ -134,15 +134,22 @@ class AnthropicPassthroughLoggingHandler:
                 )
             )
 
-            response_cost = litellm.completion_cost(
-                completion_response=litellm_model_response,
-                model=model_for_cost,
-                custom_llm_provider=custom_llm_provider,
-                custom_pricing=custom_pricing,
-                router_model_id=router_model_id,
-                litellm_logging_obj=logging_obj,
-                call_type=logging_obj.call_type,
-            )
+            try:
+                response_cost = litellm.completion_cost(
+                    completion_response=litellm_model_response,
+                    model=model_for_cost,
+                    custom_llm_provider=custom_llm_provider,
+                    custom_pricing=custom_pricing,
+                    router_model_id=router_model_id,
+                    litellm_logging_obj=logging_obj,
+                    call_type=logging_obj.call_type,
+                )
+            except Exception as cost_error:
+                verbose_proxy_logger.debug(
+                    "Error calculating Anthropic passthrough response cost with completion_cost: %s",
+                    cost_error,
+                )
+                response_cost = 0.0
 
             # Some Anthropic-compatible providers (for example ZAI/BigModel via
             # LiteLLM's /v1/messages) stream through the passthrough logging
@@ -170,7 +177,6 @@ class AnthropicPassthroughLoggingHandler:
                     cache_read_input_tokens=(
                         getattr(usage, "cache_read_input_tokens", 0) or 0
                     ),
-                    usage_object=usage,
                     call_type=logging_obj.call_type,
                 )
                 response_cost = prompt_cost + completion_cost
