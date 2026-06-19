@@ -140,7 +140,40 @@ class AnthropicPassthroughLoggingHandler:
                 custom_llm_provider=custom_llm_provider,
                 custom_pricing=custom_pricing,
                 router_model_id=router_model_id,
+                litellm_logging_obj=logging_obj,
+                call_type=logging_obj.call_type,
             )
+
+            # Some Anthropic-compatible providers (for example ZAI/BigModel via
+            # LiteLLM's /v1/messages) stream through the passthrough logging
+            # path. If the streaming logging object does not carry router model
+            # metadata, the generic passthrough cost path can resolve to 0 even
+            # though token usage is present. Fall back to the public model-cost
+            # map for non-custom-priced calls so streamed /v1/messages is billed
+            # the same as non-streaming /v1/messages.
+            usage = getattr(litellm_model_response, "usage", None)
+            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+            completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+            if (
+                response_cost == 0
+                and custom_pricing is not True
+                and (prompt_tokens > 0 or completion_tokens > 0)
+            ):
+                prompt_cost, completion_cost = litellm.cost_per_token(
+                    model=model_for_cost,
+                    custom_llm_provider=custom_llm_provider,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cache_creation_input_tokens=(
+                        getattr(usage, "cache_creation_input_tokens", 0) or 0
+                    ),
+                    cache_read_input_tokens=(
+                        getattr(usage, "cache_read_input_tokens", 0) or 0
+                    ),
+                    usage_object=usage,
+                    call_type=logging_obj.call_type,
+                )
+                response_cost = prompt_cost + completion_cost
 
             kwargs["response_cost"] = response_cost
             kwargs["model"] = model

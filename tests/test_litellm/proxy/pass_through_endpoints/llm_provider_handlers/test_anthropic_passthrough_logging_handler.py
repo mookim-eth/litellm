@@ -317,6 +317,51 @@ class TestAzureAnthropicCostCalculation:
         assert call_kwargs["model"] == "azure_ai/claude-sonnet-4-5_gb_20250929"
         assert call_kwargs["custom_llm_provider"] == "azure_ai"
 
+    @patch("litellm.cost_per_token")
+    @patch("litellm.completion_cost")
+    def test_streaming_cost_falls_back_to_model_cost_when_passthrough_cost_is_zero(
+        self, mock_completion_cost, mock_cost_per_token
+    ):
+        """Streaming Anthropic-compatible passthrough calls should not log zero cost when usage exists."""
+        from datetime import datetime
+
+        from litellm.types.utils import ModelResponse, Usage
+
+        mock_completion_cost.return_value = 0.0
+        mock_cost_per_token.return_value = (0.0000126, 0.0000088)
+
+        logging_obj = self._create_mock_logging_obj(
+            model="glm-5.2", custom_llm_provider="zai"
+        )
+        logging_obj.call_type = "anthropic_messages"
+
+        mock_response = ModelResponse(model="glm-5.2")
+        mock_response.usage = Usage(
+            prompt_tokens=9,
+            completion_tokens=2,
+            total_tokens=11,
+            cache_read_input_tokens=0,
+        )
+
+        kwargs = {}
+        AnthropicPassthroughLoggingHandler._create_anthropic_response_logging_payload(
+            litellm_model_response=mock_response,
+            model="glm-5.2",
+            kwargs=kwargs,
+            start_time=datetime.now(),
+            end_time=datetime.now(),
+            logging_obj=logging_obj,
+        )
+
+        assert kwargs["response_cost"] == 0.0000214
+        mock_cost_per_token.assert_called_once()
+        call_kwargs = mock_cost_per_token.call_args[1]
+        assert call_kwargs["model"] == "zai/glm-5.2"
+        assert call_kwargs["custom_llm_provider"] == "zai"
+        assert call_kwargs["prompt_tokens"] == 9
+        assert call_kwargs["completion_tokens"] == 2
+
+
 
 class TestAnthropicBatchPassthroughCostTracking:
     """Test cases for Anthropic batch passthrough cost tracking functionality"""
