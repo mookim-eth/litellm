@@ -168,3 +168,11 @@ def test_get_request_route_with_base_url_not_at_start():
     request = create_request("/api/genai/test")
     result = get_request_route(request)
     assert result == "/api/genai/test"
+
+
+def test_get_request_route_uses_scope_path_not_host_header_url_path():
+    request = create_request("/key/generate")
+    request.scope["headers"] = [(b"host", b"testserver/team/new")]
+
+    assert str(request.url.path) == "/team/new/key/generate"
+    assert get_request_route(request) == "/key/generate"
