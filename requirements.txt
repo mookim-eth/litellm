@@ -58,6 +58,7 @@ detect-secrets==1.5.0 # Enterprise - secret detection / masking in LLM requests
 tzdata==2025.1 # IANA time zone database
 litellm-proxy-extras==0.4.65 # for proxy extras - e.g. prisma migrations
 llm-sandbox==0.3.31 # for skill execution in sandbox
+RestrictedPython==8.1 # sandbox custom-code guardrails
 ### LITELLM PACKAGE DEPENDENCIES
 python-dotenv==1.0.1 # for env
 tiktoken==0.12.0 # for calculating usage
