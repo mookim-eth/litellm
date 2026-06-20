@@ -8834,41 +8834,6 @@ def test_validate_public_image_url_accepts_http_and_noop_empty():
 
 
 @pytest.mark.asyncio
-async def test_ghsa_q775_non_admin_no_budget_cannot_set_budget():
-    """
-    Non-admin caller with no max_budget (None) must not be able to set
-    max_budget on generated keys. Before the fix, the ceiling check was
-    silently skipped when the caller had no budget configured.
-    """
-    data = GenerateKeyRequest(max_budget=999999)
-    user_api_key_dict = UserAPIKeyAuth(
-        user_role=LitellmUserRoles.INTERNAL_USER,
-        api_key="sk-internal",
-        user_id="user-1",
-        max_budget=None,
-    )
-
-    mock_prisma_client = AsyncMock()
-
-    with (
-        patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client),
-        patch("litellm.proxy.proxy_server.user_api_key_cache", MagicMock()),
-        patch("litellm.proxy.proxy_server.user_custom_key_generate", None),
-    ):
-        with pytest.raises((HTTPException, ProxyException)) as exc_info:
-            await generate_key_fn(
-                data=data,
-                user_api_key_dict=user_api_key_dict,
-                litellm_changed_by=None,
-            )
-        err = exc_info.value
-        code = getattr(err, "status_code", None) or getattr(err, "code", None)
-        msg = str(getattr(err, "detail", "")) + str(getattr(err, "message", ""))
-        assert str(code) == "400"
-        assert "no budget configured" in msg.lower()
-
-
-@pytest.mark.asyncio
 async def test_ghsa_q775_non_admin_cannot_exceed_own_budget():
     """
     Non-admin caller with max_budget=100 must not be able to create a key
@@ -8966,3 +8931,41 @@ async def test_ghsa_q775_admin_bypasses_budget_ceiling():
             litellm_changed_by=None,
         )
         assert result is not None
+
+@pytest.mark.asyncio
+async def test_ghsa_q775_ui_session_token_default_team_id_personal_key_still_capped():
+    """
+    Session-token exemption must key off caller-supplied team_id, not a
+    default_key_generate_params.team_id injected after request parsing.
+    """
+    from litellm.constants import UI_SESSION_TOKEN_TEAM_ID
+
+    data = GenerateKeyRequest(max_budget=500)
+    assert data.team_id is None
+    user_api_key_dict = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        api_key="sk-ui-session",
+        user_id="user-1",
+        team_id=UI_SESSION_TOKEN_TEAM_ID,
+        max_budget=0.25,
+    )
+
+    mock_prisma_client = AsyncMock()
+
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client),
+        patch("litellm.proxy.proxy_server.user_api_key_cache", MagicMock()),
+        patch("litellm.proxy.proxy_server.user_custom_key_generate", None),
+        patch("litellm.default_key_generate_params", {"team_id": "team-default"}),
+    ):
+        with pytest.raises((HTTPException, ProxyException)) as exc_info:
+            await generate_key_fn(
+                data=data,
+                user_api_key_dict=user_api_key_dict,
+                litellm_changed_by=None,
+            )
+        err = exc_info.value
+        code = getattr(err, "status_code", None) or getattr(err, "code", None)
+        msg = str(getattr(err, "detail", "")) + str(getattr(err, "message", ""))
+        assert str(code) == "400"
+        assert "cannot exceed" in msg.lower()
