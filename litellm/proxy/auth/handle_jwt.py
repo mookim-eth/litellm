@@ -45,6 +45,7 @@ from litellm.proxy._types import (
     UserAPIKeyAuth,
 )
 from litellm.proxy.auth.auth_checks import can_team_access_model
+from litellm.proxy.auth.route_checks import RouteChecks
 from litellm.proxy.utils import PrismaClient, ProxyLogging
 
 from .auth_checks import (
@@ -220,6 +221,25 @@ class JWTHandler:
             return team_ids or []
 
         return []
+
+    def get_all_jwt_team_ids(self, token: dict) -> List[str]:
+        team_ids = [str(team_id) for team_id in self.get_team_ids_from_jwt(token=token)]
+        if self.litellm_jwtauth.team_id_jwt_field is not None:
+            singular = get_nested_value(
+                data=token,
+                key_path=self.litellm_jwtauth.team_id_jwt_field,
+                default=None,
+            )
+            if isinstance(singular, list):
+                singular_values = [str(item) for item in singular if item is not None]
+            elif singular is not None:
+                singular_values = [str(singular)]
+            else:
+                singular_values = []
+            for team_id in singular_values:
+                if team_id and team_id not in team_ids:
+                    team_ids.append(team_id)
+        return team_ids
 
     def get_end_user_id(
         self, token: dict, default_value: Optional[str]
@@ -1031,11 +1051,39 @@ class JWTAuthManager:
     @staticmethod
     def get_all_team_ids(jwt_handler: JWTHandler, jwt_valid_token: dict) -> Set[str]:
         """Get combined team IDs from groups and individual team_id"""
-        team_ids_from_groups = jwt_handler.get_team_ids_from_jwt(token=jwt_valid_token)
+        team_ids_from_groups = jwt_handler.get_all_jwt_team_ids(token=jwt_valid_token)
 
         all_team_ids = set(team_ids_from_groups)
 
         return all_team_ids
+
+    @staticmethod
+    def _team_has_passthrough_route_access(
+        team_object: Optional[LiteLLM_TeamTable],
+        route: str,
+        request_method: Optional[str] = None,
+    ) -> bool:
+        if not RouteChecks.is_auth_enforced_pass_through_route(
+            route=route,
+            method=request_method.upper() if isinstance(request_method, str) else None,
+        ):
+            return True
+        return RouteChecks.check_passthrough_route_access(
+            route=route,
+            user_api_key_dict=UserAPIKeyAuth(
+                team_metadata=(team_object.metadata or {}) if team_object else {}
+            ),
+        )
+
+    @staticmethod
+    def _raise_team_passthrough_route_denial(route: str) -> None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Team not allowed to access passthrough route {route}. "
+                "Configure `allowed_passthrough_routes` on the team."
+            ),
+        )
 
     @staticmethod
     async def find_team_with_model_access(
@@ -1047,9 +1095,12 @@ class JWTAuthManager:
         user_api_key_cache: DualCache,
         parent_otel_span: Optional[Span],
         proxy_logging_obj: ProxyLogging,
+        request_method: Optional[str] = None,
     ) -> Tuple[Optional[str], Optional[LiteLLM_TeamTable]]:
         """Find first team with access to the requested model"""
         from litellm.proxy.proxy_server import llm_router
+
+        denied_auth_enforced_pass_through_route = False
 
         if not team_ids:
             if jwt_handler.litellm_jwtauth.enforce_team_based_model_access:
@@ -1088,10 +1139,23 @@ class JWTAuthManager:
                         verbose_proxy_logger.debug(
                             f"JWT team route check: team_id={team_id}, route={route}, is_allowed={is_allowed}"
                         )
+                        if (
+                            is_allowed
+                            and not JWTAuthManager._team_has_passthrough_route_access(
+                                team_object=team_object,
+                                route=route,
+                                request_method=request_method,
+                            )
+                        ):
+                            is_allowed = False
+                            denied_auth_enforced_pass_through_route = True
                         if is_allowed:
                             return team_id, team_object
             except Exception:
                 continue
+
+        if denied_auth_enforced_pass_through_route:
+            JWTAuthManager._raise_team_passthrough_route_denial(route=route)
 
         if requested_model:
             raise HTTPException(
@@ -1416,6 +1480,7 @@ class JWTAuthManager:
         parent_otel_span: Optional[Span],
         proxy_logging_obj: ProxyLogging,
         request_headers: Optional[dict] = None,
+        request_method: Optional[str] = None,
     ) -> JWTAuthBuilderResult:
         """Main authentication and authorization builder"""
         # Check if OIDC UserInfo endpoint is enabled, but fall back to standard
@@ -1543,7 +1608,34 @@ class JWTAuthManager:
                 user_api_key_cache=user_api_key_cache,
                 parent_otel_span=parent_otel_span,
                 proxy_logging_obj=proxy_logging_obj,
+                request_method=request_method,
             )
+
+        if (
+            team_id
+            and team_object is None
+            and RouteChecks.is_auth_enforced_pass_through_route(
+                route=route,
+                method=(
+                    request_method.upper() if isinstance(request_method, str) else None
+                ),
+            )
+        ):
+            team_object = await get_team_object(
+                team_id=team_id,
+                prisma_client=prisma_client,
+                user_api_key_cache=user_api_key_cache,
+                parent_otel_span=parent_otel_span,
+                proxy_logging_obj=proxy_logging_obj,
+                team_id_upsert=jwt_handler.litellm_jwtauth.team_id_upsert,
+            )
+
+        if team_id and not JWTAuthManager._team_has_passthrough_route_access(
+            team_object=team_object,
+            route=route,
+            request_method=request_method,
+        ):
+            JWTAuthManager._raise_team_passthrough_route_denial(route=route)
         # Extract alias fields for resolution (if configured)
         org_alias = jwt_handler.get_org_alias(token=jwt_valid_token, default_value=None)
 

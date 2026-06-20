@@ -485,6 +485,36 @@ def _check_allowed_routes_caller_permission(
     )
 
 
+def _validate_caller_can_change_key_ownership(
+    data: Optional[Any],
+    existing_key_row: Any,
+    user_api_key_dict: UserAPIKeyAuth,
+) -> None:
+    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+    if data is None:
+        return
+
+    incoming_user_id = getattr(data, "user_id", None)
+    if incoming_user_id is None:
+        return
+    if incoming_user_id == "":
+        raise HTTPException(
+            status_code=403,
+            detail="Non-admin users cannot remove the user_id from a key.",
+        )
+
+    existing_user_id = getattr(existing_key_row, "user_id", None)
+    if incoming_user_id != existing_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"User={incoming_user_id} is not allowed to update the key "
+                f"to belong to user={existing_user_id}"
+            ),
+        )
+
+
 async def validate_team_id_used_in_service_account_request(
     team_id: Optional[str],
     prisma_client: Optional[PrismaClient],
@@ -1990,23 +2020,11 @@ async def _validate_update_key_data(
         user_api_key_dict=user_api_key_dict,
     )
 
-    # Prevent non-admin from removing user_id (setting to empty string) (LIT-1884)
-    if data.user_id is not None and data.user_id == "" and not _is_proxy_admin:
-        raise HTTPException(
-            status_code=403,
-            detail="Non-admin users cannot remove the user_id from a key.",
-        )
-
-    # sanity check - prevent non-proxy admin user from updating key to belong to a different user
-    if (
-        data.user_id is not None
-        and data.user_id != existing_key_row.user_id
-        and not _is_proxy_admin
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail=f"User={data.user_id} is not allowed to update key={data.key} to belong to user={existing_key_row.user_id}",
-        )
+    _validate_caller_can_change_key_ownership(
+        data=data,
+        existing_key_row=existing_key_row,
+        user_api_key_dict=user_api_key_dict,
+    )
 
     common_key_access_checks(
         user_api_key_dict=user_api_key_dict,
@@ -2040,7 +2058,9 @@ async def _validate_update_key_data(
     # must not be able to lower their own key spend through /key/update and
     # bypass budget checks. Use /key/{key}/reset_spend for the controlled admin
     # reset flow.
-    if data.spend is not None and data.spend != getattr(existing_key_row, "spend", None):
+    if data.spend is not None and data.spend != getattr(
+        existing_key_row, "spend", None
+    ):
         if prisma_client is not None:
             hashed_key = existing_key_row.token
             await _check_key_admin_access(
@@ -3764,6 +3784,12 @@ async def _execute_virtual_key_regeneration(
 ) -> GenerateKeyResponse:
     """Generate new token, update DB, invalidate cache, and return response."""
     from litellm.proxy.proxy_server import hash_token
+
+    _validate_caller_can_change_key_ownership(
+        data=data,
+        existing_key_row=key_in_db,
+        user_api_key_dict=user_api_key_dict,
+    )
 
     new_token = await get_new_token(data=data)
     new_token_hash = hash_token(new_token)

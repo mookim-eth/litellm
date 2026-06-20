@@ -44,6 +44,8 @@ def _sanitize_for_log(value: Any) -> str:
         text = repr(value)
     # Strip CR/LF characters commonly used for log injection
     return text.replace("\r", "").replace("\n", "")
+
+
 from litellm.router import Router
 from litellm.secret_managers.main import get_secret_bool
 from litellm.types.llms.anthropic import ANTHROPIC_API_HEADERS
@@ -233,12 +235,12 @@ def _get_dynamic_logging_metadata(
     user_api_key_dict: UserAPIKeyAuth, proxy_config: ProxyConfig
 ) -> Optional[TeamCallbackMetadata]:
     callback_settings_obj: Optional[TeamCallbackMetadata] = None
-    key_dynamic_logging_settings: Optional[
-        dict
-    ] = KeyAndTeamLoggingSettings.get_key_dynamic_logging_settings(user_api_key_dict)
-    team_dynamic_logging_settings: Optional[
-        dict
-    ] = KeyAndTeamLoggingSettings.get_team_dynamic_logging_settings(user_api_key_dict)
+    key_dynamic_logging_settings: Optional[dict] = (
+        KeyAndTeamLoggingSettings.get_key_dynamic_logging_settings(user_api_key_dict)
+    )
+    team_dynamic_logging_settings: Optional[dict] = (
+        KeyAndTeamLoggingSettings.get_team_dynamic_logging_settings(user_api_key_dict)
+    )
     #########################################################################################
     # Key-based callbacks
     #########################################################################################
@@ -524,6 +526,7 @@ def _summarize_metadata_for_proxy_server_request(
 
 
 def _build_proxy_server_request_body_summary(data: dict) -> Dict[str, Any]:
+    safe_data = {k: v for k, v in data.items() if k != "secret_fields"}
     input_value = data.get("input")
     metadata_value = data.get("metadata")
     litellm_metadata_value = data.get("litellm_metadata")
@@ -532,7 +535,7 @@ def _build_proxy_server_request_body_summary(data: dict) -> Dict[str, Any]:
         "stream": data.get("stream"),
         "background": data.get("background"),
         "user": data.get("user"),
-        "request_body_keys": sorted([str(k) for k in data.keys()]),
+        "request_body_keys": sorted([str(k) for k in safe_data.keys()]),
         "input_summary": _summarize_input_for_proxy_server_request(input_value),
     }
 
@@ -541,8 +544,8 @@ def _build_proxy_server_request_body_summary(data: dict) -> Dict[str, Any]:
     body_summary.update(body_summary["input_summary"])
 
     if metadata_value is not None:
-        body_summary["metadata_summary"] = (
-            _summarize_metadata_for_proxy_server_request(metadata_value)
+        body_summary["metadata_summary"] = _summarize_metadata_for_proxy_server_request(
+            metadata_value
         )
     if litellm_metadata_value is not None:
         body_summary["litellm_metadata_summary"] = (
@@ -556,7 +559,7 @@ def _build_proxy_server_request_body_summary(data: dict) -> Dict[str, Any]:
     if "tools" in data:
         body_summary["tools_count"] = _summarize_sequence_items(data.get("tools"))
 
-    estimated_body_size_bytes = _estimate_json_like_size_bytes(data)
+    estimated_body_size_bytes = _estimate_json_like_size_bytes(safe_data)
     if estimated_body_size_bytes is not None:
         body_summary["estimated_body_size_bytes"] = estimated_body_size_bytes
 
@@ -567,9 +570,10 @@ def _build_proxy_server_request_body_for_memory_safe_logging(
     data: dict,
     general_settings: Optional[Dict[str, Any]],
 ) -> dict:
+    safe_data = {k: v for k, v in data.items() if k != "secret_fields"}
     if _should_store_raw_request_body_in_proxy_server_request(general_settings):
-        return copy.copy(data)
-    return _build_proxy_server_request_body_summary(data)
+        return copy.copy(safe_data)
+    return _build_proxy_server_request_body_summary(safe_data)
 
 
 class LiteLLMProxyRequestSetup:
@@ -1073,11 +1077,11 @@ class LiteLLMProxyRequestSetup:
 
         ## KEY-LEVEL SPEND LOGS / TAGS
         if "tags" in key_metadata and key_metadata["tags"] is not None:
-            data[_metadata_variable_name][
-                "tags"
-            ] = LiteLLMProxyRequestSetup._merge_tags(
-                request_tags=data[_metadata_variable_name].get("tags"),
-                tags_to_add=key_metadata["tags"],
+            data[_metadata_variable_name]["tags"] = (
+                LiteLLMProxyRequestSetup._merge_tags(
+                    request_tags=data[_metadata_variable_name].get("tags"),
+                    tags_to_add=key_metadata["tags"],
+                )
             )
         if "disable_global_guardrails" in key_metadata and isinstance(
             key_metadata["disable_global_guardrails"], bool
@@ -1385,9 +1389,9 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     data[_metadata_variable_name]["litellm_api_version"] = version
 
     if general_settings is not None:
-        data[_metadata_variable_name][
-            "global_max_parallel_requests"
-        ] = general_settings.get("global_max_parallel_requests", None)
+        data[_metadata_variable_name]["global_max_parallel_requests"] = (
+            general_settings.get("global_max_parallel_requests", None)
+        )
 
     ### KEY-LEVEL Controls
     key_metadata = user_api_key_dict.metadata
@@ -2176,7 +2180,9 @@ async def move_guardrails_to_metadata(
     )
 
     # Only check policy engine if no local config (avoid import + registry lookup)
-    if not (has_key_config or has_team_config or has_project_config or has_request_config):
+    if not (
+        has_key_config or has_team_config or has_project_config or has_request_config
+    ):
         from litellm.proxy.policy_engine.policy_registry import get_policy_registry
 
         if not get_policy_registry().is_initialized():

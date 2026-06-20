@@ -74,7 +74,7 @@ pass_through_endpoint_logging = PassThroughEndpointLogging()
 
 # Global registry to track registered pass-through routes and prevent memory leaks
 _registered_pass_through_routes: Dict[
-    str, Dict[str, Union[str, List[str], Dict[str, Any]]]
+    str, Dict[str, Union[str, bool, List[str], Dict[str, Any]]]
 ] = {}
 
 
@@ -1179,6 +1179,17 @@ def create_pass_through_route(
                     route=path, method=request.method
                 )
             )
+            if (
+                passthrough_params is None
+                and InitPassThroughEndpointHelpers.get_registered_pass_through_route(
+                    route=path
+                )
+                is not None
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+                    detail=f"Method {request.method} is not allowed for pass-through endpoint {path}.",
+                )
             target_params = {
                 "target": target,
                 "custom_headers": custom_headers,
@@ -1900,6 +1911,7 @@ class InitPassThroughEndpointHelpers:
         guardrails: Optional[dict] = None,
         methods: Optional[List[str]] = None,
         default_query_params: Optional[dict] = None,
+        auth: bool = False,
     ):
         """Add exact path route for pass-through endpoint"""
         # Default to all methods if none specified (backward compatibility)
@@ -1950,6 +1962,7 @@ class InitPassThroughEndpointHelpers:
             "path": path,
             "type": "exact",
             "methods": methods,
+            "auth": auth,
             "passthrough_params": {
                 "target": target,
                 "custom_headers": custom_headers,
@@ -1976,6 +1989,7 @@ class InitPassThroughEndpointHelpers:
         guardrails: Optional[dict] = None,
         methods: Optional[List[str]] = None,
         default_query_params: Optional[dict] = None,
+        auth: bool = False,
     ):
         """Add wildcard route for sub-paths"""
         # Default to all methods if none specified (backward compatibility)
@@ -2027,6 +2041,7 @@ class InitPassThroughEndpointHelpers:
             "path": path,
             "type": "subpath",
             "methods": methods,
+            "auth": auth,
             "passthrough_params": {
                 "target": target,
                 "custom_headers": custom_headers,
@@ -2145,8 +2160,12 @@ class InitPassThroughEndpointHelpers:
                     InitPassThroughEndpointHelpers._build_full_path_with_root(parts[2])
                 )
 
-                # Get the methods for this route
-                route_methods = _registered_pass_through_routes[key].get("methods", [])
+                methods_entry = _registered_pass_through_routes[key].get("methods", [])
+                route_methods: List[str] = (
+                    methods_entry if isinstance(methods_entry, list) else []
+                )
+                if not route_methods and len(parts) == 4:
+                    route_methods = parts[3].split(",")
 
                 # Check if path matches
                 path_matches = False
@@ -2203,8 +2222,9 @@ async def _register_pass_through_endpoint(
     default_query_params = endpoint_data.get("default_query_params")
     auth = endpoint_data.get("auth")
     dependencies = None
+    auth_enforced = auth is not None and str(auth).lower() == "true"
 
-    if auth is not None and str(auth).lower() == "true":
+    if auth_enforced:
         if premium_user is not True:
             raise ValueError(
                 "Error Setting Authentication on Pass Through Endpoint: {}".format(
@@ -2238,6 +2258,7 @@ async def _register_pass_through_endpoint(
         guardrails=guardrails,
         methods=methods,
         default_query_params=default_query_params,
+        auth=auth_enforced,
     )
 
     methods_for_key = methods if methods else ["GET", "POST", "PUT", "DELETE", "PATCH"]
@@ -2262,6 +2283,7 @@ async def _register_pass_through_endpoint(
             guardrails=guardrails,
             methods=methods,
             default_query_params=default_query_params,
+            auth=auth_enforced,
         )
         visited_endpoints.add(f"{endpoint_id}:subpath:{path}:{methods_str}")
 
@@ -2577,9 +2599,11 @@ async def update_pass_through_endpoints(
             },
         )
 
-    # Get the update data as dict, excluding None values for partial updates
+    # Get only explicitly provided update data for partial updates.
     # Exclude is_from_config as it's a response-only field (computed at read time)
-    update_data = data.model_dump(exclude_none=True, exclude={"is_from_config"})
+    update_data = data.model_dump(
+        exclude_unset=True, exclude_none=True, exclude={"is_from_config"}
+    )
 
     # Start with existing endpoint data
     endpoint_dict = found_endpoint.model_dump()
@@ -2632,6 +2656,7 @@ async def update_pass_through_endpoints(
             guardrails=getattr(updated_endpoint, "guardrails", None),
             methods=updated_endpoint.methods,
             default_query_params=updated_endpoint.default_query_params,
+            auth=updated_endpoint.auth,
         )
     else:
         InitPassThroughEndpointHelpers.add_exact_path_route(
@@ -2647,6 +2672,7 @@ async def update_pass_through_endpoints(
             guardrails=getattr(updated_endpoint, "guardrails", None),
             methods=updated_endpoint.methods,
             default_query_params=updated_endpoint.default_query_params,
+            auth=updated_endpoint.auth,
         )
 
     return PassThroughEndpointResponse(
@@ -2725,6 +2751,7 @@ async def create_pass_through_endpoints(
             guardrails=getattr(created_endpoint, "guardrails", None),
             methods=created_endpoint.methods,
             default_query_params=created_endpoint.default_query_params,
+            auth=created_endpoint.auth,
         )
     else:
         InitPassThroughEndpointHelpers.add_exact_path_route(
@@ -2740,6 +2767,7 @@ async def create_pass_through_endpoints(
             guardrails=getattr(created_endpoint, "guardrails", None),
             methods=created_endpoint.methods,
             default_query_params=created_endpoint.default_query_params,
+            auth=created_endpoint.auth,
         )
 
     return PassThroughEndpointResponse(endpoints=[created_endpoint])

@@ -11,6 +11,7 @@ from litellm._logging import verbose_proxy_logger
 from litellm.constants import STANDARD_CUSTOMER_ID_HEADERS
 from litellm.proxy._types import *
 from litellm.types.router import CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS
+from litellm.types.utils import CustomPricingLiteLLMParams
 
 CLOUDFLARE_CLIENT_IP_HEADERS = ("cf-connecting-ip", "true-client-ip")
 
@@ -23,7 +24,10 @@ def _get_request_header_value(request: Request, header_name: str) -> Optional[st
     callers pass plain dictionaries. Normalize manually so IP extraction behaves
     consistently for both.
     """
-    headers = getattr(request, "headers", None)
+    try:
+        headers = getattr(request, "headers", None)
+    except (KeyError, AttributeError):
+        headers = None
     if headers is None:
         return None
 
@@ -207,6 +211,66 @@ def _allow_model_level_clientside_configurable_parameters(
     )
 
 
+def _custom_pricing_fields() -> Tuple[str, ...]:
+    fields = getattr(CustomPricingLiteLLMParams, "model_fields", None)
+    if fields is None:
+        fields = getattr(CustomPricingLiteLLMParams, "__fields__", {})
+    return tuple(str(field) for field in fields.keys())
+
+
+_NESTED_CONFIG_KEYS: Tuple[str, ...] = ("litellm_embedding_config",)
+
+_BANNED_REQUEST_BODY_PARAMS: Tuple[str, ...] = (
+    "api_base",
+    "base_url",
+    "user_config",
+    "aws_sts_endpoint",
+    "aws_web_identity_token",
+    "aws_role_name",
+    "vertex_credentials",
+    "aws_bedrock_runtime_endpoint",
+    "langsmith_base_url",
+    "langfuse_host",
+    "posthog_host",
+    "braintrust_host",
+    "slack_webhook_url",
+    "s3_endpoint_url",
+    "sagemaker_base_url",
+    "deployment_url",
+    *_custom_pricing_fields(),
+)
+
+
+def _check_banned_params(
+    body: dict,
+    general_settings: dict,
+    llm_router: Optional[Router],
+    model: str,
+) -> None:
+    for param in _BANNED_REQUEST_BODY_PARAMS:
+        if param not in body:
+            continue
+        if general_settings.get("allow_client_side_credentials") is True:
+            return
+        if (
+            _allow_model_level_clientside_configurable_parameters(
+                model=model,
+                param=param,
+                request_body_value=body[param],
+                llm_router=llm_router,
+            )
+            is True
+        ):
+            continue
+        raise ValueError(
+            f"Rejected Request: {param} is not allowed in request body. "
+            "Clientside passthrough requires explicit admin opt-in via "
+            "`general_settings.allow_client_side_credentials = true` or "
+            "`configurable_clientside_auth_params` on the deployment. "
+            "Relevant Issue: https://huntr.com/bounties/4001e1a2-7b7a-4776-a3ae-e6692ec3d997",
+        )
+
+
 def is_request_body_safe(
     request_body: dict, general_settings: dict, llm_router: Optional[Router], model: str
 ) -> bool:
@@ -216,32 +280,11 @@ def is_request_body_safe(
     A malicious user can set the ﻿api_base to their own domain and invoke POST /chat/completions to intercept and steal the OpenAI API key.
     Relevant issue: https://huntr.com/bounties/4001e1a2-7b7a-4776-a3ae-e6692ec3d997
     """
-    banned_params = ["api_base", "base_url"]
-
-    for param in banned_params:
-        if (
-            param in request_body
-            and not check_complete_credentials(  # allow client-credentials to be passed to proxy
-                request_body=request_body
-            )
-        ):
-            if general_settings.get("allow_client_side_credentials") is True:
-                return True
-            elif (
-                _allow_model_level_clientside_configurable_parameters(
-                    model=model,
-                    param=param,
-                    request_body_value=request_body[param],
-                    llm_router=llm_router,
-                )
-                is True
-            ):
-                return True
-            raise ValueError(
-                f"Rejected Request: {param} is not allowed in request body. "
-                "Enable with `general_settings::allow_client_side_credentials` on proxy config.yaml. "
-                "Relevant Issue: https://huntr.com/bounties/4001e1a2-7b7a-4776-a3ae-e6692ec3d997",
-            )
+    _check_banned_params(request_body, general_settings, llm_router, model)
+    for nested_key in _NESTED_CONFIG_KEYS:
+        nested = request_body.get(nested_key)
+        if isinstance(nested, dict):
+            _check_banned_params(nested, general_settings, llm_router, model)
 
     return True
 

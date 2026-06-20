@@ -130,9 +130,9 @@ def _get_spend_logs_metadata(
     clean_metadata["applied_guardrails"] = applied_guardrails
     clean_metadata["batch_models"] = batch_models
     clean_metadata["mcp_tool_call_metadata"] = mcp_tool_call_metadata
-    clean_metadata[
-        "vector_store_request_metadata"
-    ] = _get_vector_store_request_for_spend_logs_payload(vector_store_request_metadata)
+    clean_metadata["vector_store_request_metadata"] = (
+        _get_vector_store_request_for_spend_logs_payload(vector_store_request_metadata)
+    )
     clean_metadata["guardrail_information"] = guardrail_information
     clean_metadata["usage_object"] = usage_object
     clean_metadata["model_map_information"] = model_map_information
@@ -272,8 +272,10 @@ def get_logging_payload(  # noqa: PLR0915
             usage = dict(_usage)
         elif isinstance(_usage, dict):
             usage = _usage
-    response_tool_usage = StandardBuiltInToolCostTracking.get_tool_usage_from_response_object(
-        response_object=response_obj_dict
+    response_tool_usage = (
+        StandardBuiltInToolCostTracking.get_tool_usage_from_response_object(
+            response_object=response_obj_dict
+        )
     )
     if isinstance(response_tool_usage, dict) and len(response_tool_usage) > 0:
         usage = dict(usage)
@@ -638,6 +640,9 @@ def _get_messages_for_spend_logs_payload(
     return "{}"
 
 
+_SENSITIVE_REQUEST_BODY_KEYS = frozenset({"secret_fields"})
+
+
 def _sanitize_request_body_for_spend_logs_payload(
     request_body: dict,
     visited: Optional[set] = None,
@@ -704,7 +709,11 @@ def _sanitize_request_body_for_spend_logs_payload(
             return value
         return value
 
-    return {k: _sanitize_value(v) for k, v in request_body.items()}
+    return {
+        k: _sanitize_value(v)
+        for k, v in request_body.items()
+        if k not in _SENSITIVE_REQUEST_BODY_KEYS
+    }
 
 
 def _convert_to_json_serializable_dict(

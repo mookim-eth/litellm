@@ -15,6 +15,11 @@ from litellm.proxy._types import (
 from .auth_checks_organization import _user_is_org_admin
 
 
+_AUTH_ENFORCED_PASS_THROUGH_ROUTE_GROUPS = frozenset(
+    ("openai_routes", "llm_api_routes")
+)
+
+
 class RouteChecks:
     @staticmethod
     def should_call_route(route: str, valid_token: UserAPIKeyAuth):
@@ -38,7 +43,7 @@ class RouteChecks:
 
     @staticmethod
     def is_virtual_key_allowed_to_call_route(
-        route: str, valid_token: UserAPIKeyAuth
+        route: str, valid_token: UserAPIKeyAuth, request: Optional[Request] = None
     ) -> bool:
         """
         Raises Exception if Virtual Key is not allowed to call the route
@@ -51,6 +56,8 @@ class RouteChecks:
             return True
         if len(valid_token.allowed_routes) == 0:
             return True
+
+        denied_auth_enforced_pass_through_route = False
 
         # explicit check for allowed routes (exact match or prefix match)
         for allowed_route in valid_token.allowed_routes:
@@ -70,7 +77,20 @@ class RouteChecks:
                         route=route,
                         allowed_routes=LiteLLMRoutes._member_map_[allowed_route].value,
                     ):
-                        return True
+                        if (
+                            allowed_route in _AUTH_ENFORCED_PASS_THROUGH_ROUTE_GROUPS
+                            and RouteChecks.is_auth_enforced_pass_through_route(
+                                route=route,
+                                method=RouteChecks._get_request_method(request=request),
+                            )
+                        ):
+                            if RouteChecks.check_passthrough_route_access(
+                                route=route, user_api_key_dict=valid_token
+                            ):
+                                return True
+                            denied_auth_enforced_pass_through_route = True
+                        else:
+                            return True
 
                     ################################################
                     #  For llm_api_routes, also check registered pass-through endpoints
@@ -83,7 +103,17 @@ class RouteChecks:
                         if InitPassThroughEndpointHelpers.is_registered_pass_through_route(
                             route=route
                         ):
-                            return True
+                            if RouteChecks.is_auth_enforced_pass_through_route(
+                                route=route,
+                                method=RouteChecks._get_request_method(request=request),
+                            ):
+                                if RouteChecks.check_passthrough_route_access(
+                                    route=route, user_api_key_dict=valid_token
+                                ):
+                                    return True
+                                denied_auth_enforced_pass_through_route = True
+                            else:
+                                return True
 
         # check if wildcard pattern is allowed
         for allowed_route in valid_token.allowed_routes:
@@ -91,6 +121,9 @@ class RouteChecks:
                 route=route, pattern=allowed_route
             ):
                 return True
+
+        if denied_auth_enforced_pass_through_route:
+            raise RouteChecks._auth_pass_through_denied_exception(route=route)
 
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -162,7 +195,14 @@ class RouteChecks:
             route=route,
         )
 
-        if RouteChecks.is_llm_api_route(route=route):
+        if RouteChecks.is_auth_enforced_pass_through_route(
+            route=route,
+            method=RouteChecks._get_request_method(request=request),
+        ):
+            RouteChecks._require_auth_pass_through_access(
+                route=route, valid_token=valid_token
+            )
+        elif RouteChecks.is_llm_api_route(route=route):
             pass
         elif RouteChecks.is_info_route(route=route):
             # check if user allowed to call an info route
@@ -517,6 +557,54 @@ class RouteChecks:
         return False
 
     @staticmethod
+    def _get_request_method(request: Optional[Request]) -> Optional[str]:
+        if request is None:
+            return None
+        try:
+            method = request.method
+        except (AttributeError, KeyError):
+            return None
+        if not isinstance(method, str):
+            return None
+        return method.upper()
+
+    @staticmethod
+    def is_auth_enforced_pass_through_route(
+        route: str, method: Optional[str] = None
+    ) -> bool:
+        from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
+            InitPassThroughEndpointHelpers,
+        )
+
+        route_info = InitPassThroughEndpointHelpers.get_registered_pass_through_route(
+            route=route, method=method
+        )
+        if route_info is None:
+            return False
+        return route_info.get("auth") is True
+
+    @staticmethod
+    def _auth_pass_through_denied_exception(route: str) -> HTTPException:
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Key/team not allowed to access passthrough route {route}. "
+                "Configure `allowed_passthrough_routes` on the team or key."
+            ),
+        )
+
+    @staticmethod
+    def _require_auth_pass_through_access(
+        route: str,
+        valid_token: UserAPIKeyAuth,
+    ) -> None:
+        if RouteChecks.check_passthrough_route_access(
+            route=route, user_api_key_dict=valid_token
+        ):
+            return
+        raise RouteChecks._auth_pass_through_denied_exception(route=route)
+
+    @staticmethod
     def check_passthrough_route_access(
         route: str, user_api_key_dict: UserAPIKeyAuth
     ) -> bool:
@@ -524,9 +612,9 @@ class RouteChecks:
         Check if route is a passthrough route.
         Supports both exact match and prefix match.
         """
-        metadata = user_api_key_dict.metadata
+        metadata = user_api_key_dict.metadata or {}
         team_metadata = user_api_key_dict.team_metadata or {}
-        if metadata is None and team_metadata is None:
+        if not metadata and not team_metadata:
             return False
         if (
             "allowed_passthrough_routes" not in metadata

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import time
 from datetime import datetime
 from typing import Literal, Optional
@@ -22,6 +23,20 @@ from litellm.types.passthrough_endpoints.assembly_ai import (
 from litellm.types.passthrough_endpoints.pass_through_endpoints import (
     PassthroughStandardLoggingPayload,
 )
+
+_ASSEMBLYAI_TRANSCRIPT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _sanitize_assemblyai_transcript_id(transcript_id: str) -> str:
+    if not _ASSEMBLYAI_TRANSCRIPT_ID_PATTERN.fullmatch(transcript_id):
+        raise ValueError(
+            f"Invalid transcript_id {transcript_id!r}: contains disallowed characters"
+        )
+    if ".." in transcript_id:
+        raise ValueError(
+            f"Invalid transcript_id {transcript_id!r}: path traversal detected"
+        )
+    return transcript_id
 
 
 class AssemblyAITranscriptResponse(TypedDict, total=False):
@@ -203,8 +218,9 @@ class AssemblyAIPassthroughLoggingHandler:
         )
         if _api_key is None:
             raise ValueError("AssemblyAI API key not found")
+        safe_transcript_id = _sanitize_assemblyai_transcript_id(transcript_id)
         try:
-            url = f"{_base_url}/v2/transcript/{transcript_id}"
+            url = f"{_base_url}/v2/transcript/{safe_transcript_id}"
             headers = {
                 "Authorization": f"Bearer {_api_key}",
                 "Content-Type": "application/json",

@@ -1,9 +1,21 @@
-from typing import Any, Dict
+from typing import Any, Dict, FrozenSet
 
 from fastapi import Request
 
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import UserAPIKeyAuth
+
+
+ALLOWED_OAUTH2_PROXY_FIELDS: FrozenSet[str] = frozenset(
+    {
+        "user_id",
+        "user_email",
+        "team_id",
+        "team_alias",
+        "org_id",
+        "models",
+    }
+)
 
 
 async def handle_oauth2_proxy_request(request: Request) -> UserAPIKeyAuth:
@@ -21,6 +33,20 @@ async def handle_oauth2_proxy_request(request: Request) -> UserAPIKeyAuth:
 
     if not oauth2_config_mappings:
         raise ValueError("Oauth2 config mappings not found in general_settings")
+
+    disallowed = sorted(
+        set(oauth2_config_mappings.keys()) - ALLOWED_OAUTH2_PROXY_FIELDS
+    )
+    if disallowed:
+        raise ValueError(
+            "Oauth2 proxy auth refuses to map non-identity UserAPIKeyAuth "
+            f"fields from request headers: {disallowed}. Only identity "
+            f"fields are accepted ({sorted(ALLOWED_OAUTH2_PROXY_FIELDS)}); "
+            "anything else would let a caller forge enforcement parameters "
+            "by spoofing the matching header. If you need a trusted upstream "
+            "to assert anything beyond identity, use JWT auth."
+        )
+
     # Initialize a dictionary to store the mapped values
     auth_data: Dict[str, Any] = {}
 
@@ -28,11 +54,8 @@ async def handle_oauth2_proxy_request(request: Request) -> UserAPIKeyAuth:
     for key, header in oauth2_config_mappings.items():
         value = request.headers.get(header)
         if value:
-            # Convert max_budget to float if present
-            if key == "max_budget":
-                auth_data[key] = float(value)
             # Convert models to list if present
-            elif key == "models":
+            if key == "models":
                 auth_data[key] = [model.strip() for model in value.split(",")]
             else:
                 auth_data[key] = value
