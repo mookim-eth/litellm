@@ -442,6 +442,21 @@ def common_key_access_checks(
 router = APIRouter()
 
 
+def _get_prisma_json_wrapper() -> Any:
+    import prisma
+
+    json_wrapper = getattr(prisma, "Json", None)
+    if json_wrapper is not None:
+        return json_wrapper
+
+    class _PrismaJsonFallback:
+        def __init__(self, value: Any):
+            self.value = value
+
+    setattr(prisma, "Json", _PrismaJsonFallback)
+    return _PrismaJsonFallback
+
+
 def handle_key_type(data: GenerateKeyRequest, data_json: dict) -> dict:
     """
     Handle the key type.
@@ -3570,9 +3585,9 @@ async def _rotate_master_key(  # noqa: PLR0915
     3. Encrypt the values with the new master key
     4. Update the values in the DB
     """
-    import prisma
-
     from litellm.proxy.proxy_server import proxy_config
+
+    prisma_json = _get_prisma_json_wrapper()
 
     try:
         models: Optional[List] = (
@@ -3597,8 +3612,8 @@ async def _rotate_master_key(  # noqa: PLR0915
             )
             if new_model:
                 _dumped = new_model.model_dump(exclude_none=True)
-                _dumped["litellm_params"] = prisma.Json(_dumped["litellm_params"])  # type: ignore[attr-defined]
-                _dumped["model_info"] = prisma.Json(_dumped["model_info"])  # type: ignore[attr-defined]
+                _dumped["litellm_params"] = prisma_json(_dumped["litellm_params"])
+                _dumped["model_info"] = prisma_json(_dumped["model_info"])
                 new_models.append(_dumped)
         verbose_proxy_logger.debug("Resetting proxy model table")
         async with prisma_client.db.tx() as tx:
@@ -3632,7 +3647,7 @@ async def _rotate_master_key(  # noqa: PLR0915
             if encrypted_env_vars:
                 await prisma_client.db.litellm_config.update(
                     where={"param_name": "environment_variables"},
-                    data={"param_value": prisma.Json(encrypted_env_vars)},  # type: ignore[attr-defined]
+                    data={"param_value": prisma_json(encrypted_env_vars)},
                 )
 
     # 4. process MCP server table
@@ -3665,11 +3680,11 @@ async def _rotate_master_key(  # noqa: PLR0915
                 )
                 _cred_data = encrypted_cred.model_dump(exclude_none=True)
                 if "credential_values" in _cred_data:
-                    _cred_data["credential_values"] = prisma.Json(  # type: ignore[attr-defined]
+                    _cred_data["credential_values"] = prisma_json(
                         _cred_data["credential_values"]
                     )
                 if "credential_info" in _cred_data:
-                    _cred_data["credential_info"] = prisma.Json(  # type: ignore[attr-defined]
+                    _cred_data["credential_info"] = prisma_json(
                         _cred_data["credential_info"]
                     )
                 await prisma_client.db.litellm_credentialstable.update(
