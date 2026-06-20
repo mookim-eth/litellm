@@ -168,6 +168,76 @@ When opening issues or pull requests, follow these templates:
 - Consider rate limiting and abuse prevention
 - Follow security best practices for authentication
 
+### Current local security-fix status for upstream sync
+
+As of 2026-06-20, the local branch `feat/chatgpt-proxy-credential-support` is ahead of
+`mookim/feat/chatgpt-proxy-credential-support` with a small security-fix stack that should
+be preserved when syncing with upstream LiteLLM. Do not drop, squash away without review,
+or overwrite these fixes during rebase/merge conflict resolution:
+
+1. `85155aa1cc fix(guardrails): replace custom_code sandbox with RestrictedPython`
+   - Replaces the prior custom-code guardrail sandbox with `RestrictedPython`.
+   - Key files: `litellm/proxy/guardrails/guardrail_hooks/custom_code/`,
+     `litellm/proxy/guardrails/guardrail_endpoints.py`,
+     `tests/litellm/proxy/guardrails/test_custom_code_security.py`,
+     `pyproject.toml`.
+2. `4d43483234 fix(guardrails): provide _inplacevar_ to sandbox`
+   - Follow-up compatibility fix for augmented assignment inside the restricted sandbox.
+   - Key files: `litellm/proxy/guardrails/guardrail_hooks/custom_code/sandbox.py`,
+     `tests/litellm/proxy/guardrails/test_custom_code_security.py`.
+3. `1e136bb63f build: include RestrictedPython in proxy runtime requirements`
+   - Ensures the proxy runtime image installs `RestrictedPython`.
+   - Key file: `requirements.txt`.
+4. `22bdc6ca81 fix(auth): derive request route from ASGI scope path`
+   - Prevents auth/route checks from trusting a user-controlled or proxy-rewritten URL path.
+   - Key files: `litellm/proxy/auth/auth_utils.py`,
+     `tests/proxy_unit_tests/test_proxy_routes.py`.
+5. `ddeb2bbbb1 fix: block NaN/Inf budget bypass and add missing non-admin guards`
+   - Rejects non-finite budget values and closes missing non-admin authorization checks across
+     budget/key/team/org/internal-user management endpoints.
+   - Key files: `litellm/proxy/auth/auth_checks.py`,
+     `litellm/proxy/management_endpoints/{budget_management_endpoints.py,internal_user_endpoints.py,key_management_endpoints.py,organization_endpoints.py,team_endpoints.py}`,
+     `tests/test_litellm/proxy/management_endpoints/test_budget_endpoints.py`.
+6. `30f8558c49 fix: close budget ceiling bypass for callers with no max_budget (GHSA-q775)`
+   - Ensures callers without their own `max_budget` cannot bypass max-budget ceilings when
+     creating/updating keys.
+   - Key file: `tests/test_litellm/proxy/management_endpoints/test_key_management_endpoints.py`.
+7. `aa15a4245f fix(key-generate): match upstream GHSA-q775 budget ceiling defaults`
+   - Aligns key-generation budget ceiling defaults with the upstream GHSA-q775 fix while
+     retaining the local hardening from the previous commits.
+   - Key files: `litellm/proxy/management_endpoints/key_management_endpoints.py`,
+     `tests/test_litellm/proxy/management_endpoints/test_key_management_endpoints.py`.
+
+When continuing an upstream sync/rebase:
+
+- First inspect the delta with:
+
+  ```bash
+  git status --short --branch
+  git log --oneline --decorate mookim/feat/chatgpt-proxy-credential-support..HEAD
+  ```
+
+- If upstream already contains an equivalent fix, compare behavior and tests before dropping the
+  local commit. Prefer preserving the regression tests even if implementation code is replaced by
+  upstream.
+- Be especially careful around conflicts in:
+  - `litellm/proxy/management_endpoints/key_management_endpoints.py`
+  - `litellm/proxy/auth/auth_checks.py`
+  - `litellm/proxy/auth/auth_utils.py`
+  - `litellm/proxy/guardrails/guardrail_hooks/custom_code/`
+  - `requirements.txt` / `pyproject.toml`
+- Run the targeted regression tests after conflict resolution when practical:
+
+  ```bash
+  .venv/bin/pytest tests/litellm/proxy/guardrails/test_custom_code_security.py -q
+  .venv/bin/pytest tests/proxy_unit_tests/test_proxy_routes.py -q
+  .venv/bin/pytest tests/test_litellm/proxy/management_endpoints/test_budget_endpoints.py -q
+  .venv/bin/pytest tests/test_litellm/proxy/management_endpoints/test_key_management_endpoints.py -q
+  ```
+
+- If dependency files change during sync, verify `RestrictedPython` remains installed in the proxy
+  runtime requirements, not only in development metadata.
+
 ## ENTERPRISE FEATURES
 
 - Some features are enterprise-only
