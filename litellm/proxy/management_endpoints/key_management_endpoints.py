@@ -472,6 +472,60 @@ def handle_key_type(data: GenerateKeyRequest, data_json: dict) -> dict:
     return data_json
 
 
+async def _get_key_budget_delegation_ceiling(
+    user_api_key_dict: UserAPIKeyAuth,
+    prisma_client: Optional[PrismaClient],
+) -> Optional[float]:
+    """Return the max_budget ceiling a non-admin caller can delegate.
+
+    For regular virtual keys, the calling key's own max_budget is the delegation
+    ceiling. UI session tokens are different: their max_budget is the short-lived
+    dashboard chat/session cap, not the user's budget authority. For those, use
+    the backing internal user's max_budget from LiteLLM_UserTable when available.
+    """
+
+    if (
+        user_api_key_dict.team_id == UI_SESSION_TOKEN_TEAM_ID
+        and user_api_key_dict.user_id is not None
+        and prisma_client is not None
+    ):
+        user_row = await prisma_client.db.litellm_usertable.find_unique(
+            where={"user_id": user_api_key_dict.user_id}
+        )
+        if user_row is not None:
+            return getattr(user_row, "max_budget", None)
+
+    return user_api_key_dict.max_budget
+
+
+async def _enforce_key_budget_delegation_ceiling(
+    requested_max_budget: Optional[float],
+    user_api_key_dict: UserAPIKeyAuth,
+    prisma_client: Optional[PrismaClient],
+) -> None:
+    """Ensure a non-admin caller cannot delegate more budget than allowed."""
+
+    if (
+        user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value
+        or requested_max_budget is None
+    ):
+        return
+
+    caller_max_budget = await _get_key_budget_delegation_ceiling(
+        user_api_key_dict=user_api_key_dict,
+        prisma_client=prisma_client,
+    )
+    if caller_max_budget is not None and requested_max_budget > caller_max_budget:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": (
+                    f"max_budget ({requested_max_budget}) cannot exceed the caller's "
+                    f"own max_budget ({caller_max_budget})."
+                )
+            },
+        )
+
 def _check_allowed_routes_caller_permission(
     allowed_routes: Optional[list],
     user_api_key_dict: UserAPIKeyAuth,
@@ -693,29 +747,19 @@ async def _common_key_generation_helper(  # noqa: PLR0915
     # Delegated-authority ceiling (GHSA-q775-qw9r-2r4g): a non-admin caller
     # with an explicit budget cannot grant a key a higher budget than their own.
     # Callers with max_budget=None (unlimited) can delegate any budget.
-    # A UI/CLI session token's max_budget is a per-session chat spend cap
-    # (max_ui_session_budget), not a delegation authority, so it is exempt only
-    # when creating a team key - that key's spend is bounded by the team budget
-    # at request time. Personal keys keep the ceiling; nothing else bounds them.
+    # A UI session token's max_budget is a per-session chat spend cap
+    # (max_ui_session_budget), not a delegation authority; for personal keys use
+    # the backing user's max_budget instead. Team keys are exempt because spend is
+    # bounded by the team budget at request time.
     is_ui_session_team_key = (
         user_api_key_dict.team_id == UI_SESSION_TOKEN_TEAM_ID
         and _requested_team_id is not None
     )
-    if (
-        user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value
-        and not is_ui_session_team_key
-        and _requested_max_budget is not None
-        and user_api_key_dict.max_budget is not None
-        and _requested_max_budget > user_api_key_dict.max_budget
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": (
-                    f"max_budget ({_requested_max_budget}) cannot exceed the caller's "
-                    f"own max_budget ({user_api_key_dict.max_budget})."
-                )
-            },
+    if not is_ui_session_team_key:
+        await _enforce_key_budget_delegation_ceiling(
+            requested_max_budget=_requested_max_budget,
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
         )
 
     # APPLY ENTERPRISE KEY MANAGEMENT PARAMS
@@ -2057,9 +2101,20 @@ async def _validate_update_key_data(
         user_api_key_cache=user_api_key_cache,
     )
 
-    # Admin-only: only proxy admins, team admins, or org admins can modify max_budget
+    # Only admins may modify team/org key budgets. Personal key owners may update
+    # their own key budget, but still cannot exceed their delegation ceiling.
     if data.max_budget is not None and data.max_budget != existing_key_row.max_budget:
-        if prisma_client is not None:
+        is_personal_key_owner = (
+            getattr(existing_key_row, "team_id", None) is None
+            and getattr(existing_key_row, "user_id", None) == user_api_key_dict.user_id
+        )
+        if is_personal_key_owner:
+            await _enforce_key_budget_delegation_ceiling(
+                requested_max_budget=data.max_budget,
+                user_api_key_dict=user_api_key_dict,
+                prisma_client=prisma_client,
+            )
+        elif prisma_client is not None:
             hashed_key = existing_key_row.token
             await _check_key_admin_access(
                 user_api_key_dict=user_api_key_dict,

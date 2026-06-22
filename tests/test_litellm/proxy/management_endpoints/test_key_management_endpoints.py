@@ -7411,7 +7411,6 @@ async def test_key_aliases_admin_sees_all():
     assert "team_id IN " not in count_sql
 
 
-
 class TestValidateKeyAliasFormat:
     @pytest.fixture(autouse=True)
     def reset_key_alias_flag(self):
@@ -8903,6 +8902,97 @@ async def test_ghsa_q775_non_admin_within_budget_allowed():
 
 
 @pytest.mark.asyncio
+async def test_update_personal_key_owner_can_set_budget_with_ui_session_user_budget():
+    """Personal key owners using a UI session token can update their own key budget."""
+    from litellm.constants import UI_SESSION_TOKEN_TEAM_ID
+
+    mock_prisma_client = AsyncMock()
+    mock_prisma_client.db.litellm_usertable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(max_budget=None)
+    )
+    existing_key_row = SimpleNamespace(
+        token="hashed-token",
+        user_id="user-1",
+        team_id=None,
+        max_budget=None,
+        spend=0,
+        metadata={},
+    )
+
+    with (
+        patch(
+            "litellm.proxy.management_helpers.team_member_permission_checks.TeamMemberPermissionChecks.can_team_member_execute_key_management_endpoint",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "litellm.proxy.management_endpoints.key_management_endpoints._check_key_admin_access",
+            new_callable=AsyncMock,
+            side_effect=AssertionError("owner should not need admin access"),
+        ),
+    ):
+        await _validate_update_key_data(
+            data=UpdateKeyRequest(key="sk-test", max_budget=1000),
+            existing_key_row=existing_key_row,
+            user_api_key_dict=UserAPIKeyAuth(
+                user_role=LitellmUserRoles.INTERNAL_USER,
+                api_key="sk-ui-session",
+                user_id="user-1",
+                team_id=UI_SESSION_TOKEN_TEAM_ID,
+                max_budget=0.25,
+            ),
+            llm_router=None,
+            premium_user=True,
+            prisma_client=mock_prisma_client,
+            user_api_key_cache=MagicMock(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_personal_key_owner_budget_respects_backing_user_budget():
+    """Personal key owner updates are still capped by the backing user's budget."""
+    from litellm.constants import UI_SESSION_TOKEN_TEAM_ID
+
+    mock_prisma_client = AsyncMock()
+    mock_prisma_client.db.litellm_usertable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(max_budget=100)
+    )
+    existing_key_row = SimpleNamespace(
+        token="hashed-token",
+        user_id="user-1",
+        team_id=None,
+        max_budget=None,
+        spend=0,
+        metadata={},
+    )
+
+    with patch(
+        "litellm.proxy.management_helpers.team_member_permission_checks.TeamMemberPermissionChecks.can_team_member_execute_key_management_endpoint",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await _validate_update_key_data(
+                data=UpdateKeyRequest(key="sk-test", max_budget=500),
+                existing_key_row=existing_key_row,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_role=LitellmUserRoles.INTERNAL_USER,
+                    api_key="sk-ui-session",
+                    user_id="user-1",
+                    team_id=UI_SESSION_TOKEN_TEAM_ID,
+                    max_budget=0.25,
+                ),
+                llm_router=None,
+                premium_user=True,
+                prisma_client=mock_prisma_client,
+                user_api_key_cache=MagicMock(),
+            )
+
+    assert exc_info.value.status_code == 400
+    assert "cannot exceed" in str(exc_info.value.detail).lower()
+
+
+@pytest.mark.asyncio
 async def test_ghsa_q775_admin_bypasses_budget_ceiling():
     """
     Admin caller can set any max_budget regardless of own budget.
@@ -8935,10 +9025,51 @@ async def test_ghsa_q775_admin_bypasses_budget_ceiling():
         assert result is not None
 
 @pytest.mark.asyncio
-async def test_ghsa_q775_ui_session_token_default_team_id_personal_key_still_capped():
+async def test_ghsa_q775_ui_session_token_uses_user_budget_for_personal_key():
     """
-    Session-token exemption must key off caller-supplied team_id, not a
-    default_key_generate_params.team_id injected after request parsing.
+    UI session tokens have a small max_ui_session_budget for dashboard chat, but
+    personal key budget delegation should use the backing user's budget.
+    """
+    from litellm.constants import UI_SESSION_TOKEN_TEAM_ID
+
+    data = GenerateKeyRequest(max_budget=500)
+    user_api_key_dict = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        api_key="sk-ui-session",
+        user_id="user-1",
+        team_id=UI_SESSION_TOKEN_TEAM_ID,
+        max_budget=0.25,
+    )
+
+    mock_prisma_client = AsyncMock()
+    mock_prisma_client.db.litellm_usertable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(max_budget=None)
+    )
+
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client),
+        patch("litellm.proxy.proxy_server.user_api_key_cache", MagicMock()),
+        patch("litellm.proxy.proxy_server.user_custom_key_generate", None),
+        patch(
+            "litellm.proxy.management_endpoints.key_management_endpoints._common_key_generation_helper",
+            new_callable=AsyncMock,
+            return_value=MagicMock(),
+        ),
+    ):
+        result = await generate_key_fn(
+            data=data,
+            user_api_key_dict=user_api_key_dict,
+            litellm_changed_by=None,
+        )
+        assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_ghsa_q775_ui_session_token_personal_key_respects_user_budget_with_default_team_id():
+    """
+    Session-token team-key exemption must key off caller-supplied team_id, not a
+    default_key_generate_params.team_id injected after request parsing. For a
+    personal key, the backing user's max_budget is still enforced.
     """
     from litellm.constants import UI_SESSION_TOKEN_TEAM_ID
 
@@ -8953,6 +9084,9 @@ async def test_ghsa_q775_ui_session_token_default_team_id_personal_key_still_cap
     )
 
     mock_prisma_client = AsyncMock()
+    mock_prisma_client.db.litellm_usertable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(max_budget=100)
+    )
 
     with (
         patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client),
@@ -8971,3 +9105,4 @@ async def test_ghsa_q775_ui_session_token_default_team_id_personal_key_still_cap
         msg = str(getattr(err, "detail", "")) + str(getattr(err, "message", ""))
         assert str(code) == "400"
         assert "cannot exceed" in msg.lower()
+        assert "100" in msg
