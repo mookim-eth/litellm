@@ -563,7 +563,7 @@ class TestBaseResponsesAPIStreamingIterator:
         from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
 
         mock_response = Mock()
-        mock_response.headers = {}
+        mock_response.headers = {"retry-after": "60"}
         mock_response.aiter_lines = Mock()
         mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {"litellm_params": {}}
@@ -777,3 +777,148 @@ class TestBaseResponsesAPIStreamingIterator:
             # Failure handlers should NOT have been called
             mock_logging_obj.async_failure_handler.assert_not_called()
             mock_logging_obj.failure_handler.assert_not_called()
+
+
+    def test_process_chunk_response_failed_server_overloaded_raises_retryable(
+        self, caplog
+    ):
+        """
+        A RESPONSE_FAILED SSE event carrying error.code = server_is_overloaded (or
+        slow_down) must surface as a retryable RateLimitError (429) instead of
+        flowing the dead chunk downstream, so Router/retry logic can kick in.
+        """
+        import logging as _logging
+        from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
+        from litellm import RateLimitError
+
+        mock_response = Mock()
+        mock_response.headers = {}
+        mock_response.aiter_lines = Mock()
+        mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
+        mock_logging_obj.model_call_details = {"litellm_params": {}}
+        mock_logging_obj.async_failure_handler = Mock()
+        mock_logging_obj.failure_handler = Mock()
+        mock_config = Mock(spec=BaseResponsesAPIConfig)
+
+        mock_responses_api_response = Mock(spec=ResponsesAPIResponse)
+        mock_responses_api_response.id = "resp_failed_123"
+        mock_responses_api_response.error = {
+            "code": "server_is_overloaded",
+            "message": "Selected model is at capacity. Please try a different model.",
+        }
+        mock_responses_api_response.usage = None
+
+        mock_failed_event = Mock(spec=ResponseFailedEvent)
+        mock_failed_event.type = ResponsesAPIStreamEvents.RESPONSE_FAILED
+        mock_failed_event.response = mock_responses_api_response
+
+        mock_config.transform_streaming_response.return_value = mock_failed_event
+
+        iterator = ResponsesAPIStreamingIterator(
+            response=mock_response,
+            model="gpt-4",
+            responses_api_provider_config=mock_config,
+            logging_obj=mock_logging_obj,
+            litellm_metadata={"model_info": {"id": "model_123"}},
+            custom_llm_provider="chatgpt",
+        )
+
+        test_chunk_data = {
+            "type": "response.failed",
+            "response": {
+                "id": "resp_failed_123",
+                "error": {
+                    "code": "server_is_overloaded",
+                    "message": "Selected model is at capacity. Please try a different model.",
+                },
+            },
+        }
+
+        with caplog.at_level(_logging.WARNING, logger="LiteLLM"), patch.object(
+            ResponsesAPIRequestUtils,
+            "_update_responses_api_response_id_with_model_id",
+            return_value=mock_responses_api_response,
+        ), patch(
+            "litellm.responses.streaming_iterator.run_async_function"
+        ), patch(
+            "litellm.responses.streaming_iterator.executor"
+        ):
+            with pytest.raises(RateLimitError) as exc_info:
+                iterator._process_chunk(json.dumps(test_chunk_data))
+
+        assert exc_info.value.status_code == 429
+        assert "Selected model is at capacity" in str(exc_info.value)
+        assert "retry-after" not in exc_info.value.response.headers
+        assert any(
+            "server_is_overloaded" in rec.message
+            and "RateLimitError" in rec.message
+            for rec in caplog.records
+        ), f"expected overload->429 warning, got: {[r.message for r in caplog.records]}"
+
+    def test_process_chunk_response_failed_server_overloaded_preserves_retry_after_if_present(
+        self,
+    ):
+        """
+        If the upstream does include retry-after on the HTTP response, keep it on the
+        surfaced RateLimitError so router cooldown logic can still honor it.
+        """
+        from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
+        from litellm import RateLimitError
+
+        mock_response = Mock()
+        mock_response.headers = {"retry-after": "60"}
+        mock_response.aiter_lines = Mock()
+        mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
+        mock_logging_obj.model_call_details = {"litellm_params": {}}
+        mock_logging_obj.async_failure_handler = Mock()
+        mock_logging_obj.failure_handler = Mock()
+        mock_config = Mock(spec=BaseResponsesAPIConfig)
+
+        mock_responses_api_response = Mock(spec=ResponsesAPIResponse)
+        mock_responses_api_response.id = "resp_failed_123"
+        mock_responses_api_response.error = {
+            "code": "server_is_overloaded",
+            "message": "Selected model is at capacity. Please try a different model.",
+        }
+        mock_responses_api_response.usage = None
+
+        mock_failed_event = Mock(spec=ResponseFailedEvent)
+        mock_failed_event.type = ResponsesAPIStreamEvents.RESPONSE_FAILED
+        mock_failed_event.response = mock_responses_api_response
+
+        mock_config.transform_streaming_response.return_value = mock_failed_event
+
+        iterator = ResponsesAPIStreamingIterator(
+            response=mock_response,
+            model="gpt-4",
+            responses_api_provider_config=mock_config,
+            logging_obj=mock_logging_obj,
+            litellm_metadata={"model_info": {"id": "model_123"}},
+            custom_llm_provider="chatgpt",
+        )
+
+        test_chunk_data = {
+            "type": "response.failed",
+            "response": {
+                "id": "resp_failed_123",
+                "error": {
+                    "code": "server_is_overloaded",
+                    "message": "Selected model is at capacity. Please try a different model.",
+                },
+            },
+        }
+
+        with patch.object(
+            ResponsesAPIRequestUtils,
+            "_update_responses_api_response_id_with_model_id",
+            return_value=mock_responses_api_response,
+        ), patch(
+            "litellm.responses.streaming_iterator.run_async_function"
+        ), patch(
+            "litellm.responses.streaming_iterator.executor"
+        ):
+            with pytest.raises(RateLimitError) as exc_info:
+                iterator._process_chunk(json.dumps(test_chunk_data))
+
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.response.headers["retry-after"] == "60"

@@ -572,7 +572,11 @@ class TestChatGPTResponsesAPITransformation:
 
         assert model_response.choices[0].message.content == "Hi there"
 
-    def test_chatgpt_non_stream_sse_failed_server_overloaded_is_retryable(self):
+    def test_chatgpt_non_stream_sse_failed_server_overloaded_is_retryable(
+        self, caplog
+    ):
+        import logging as _logging
+
         config = ChatGPTResponsesAPIConfig()
         sse_events = [
             {
@@ -596,15 +600,21 @@ class TestChatGPTResponsesAPITransformation:
         )
         logging_obj = MagicMock()
 
-        with pytest.raises(OpenAIError) as exc_info:
-            config.transform_response_api_response(
-                model="chatgpt/gpt-5.4",
-                raw_response=raw_response,
-                logging_obj=logging_obj,
-            )
+        with caplog.at_level(_logging.WARNING, logger="LiteLLM"):
+            with pytest.raises(OpenAIError) as exc_info:
+                config.transform_response_api_response(
+                    model="chatgpt/gpt-5.4",
+                    raw_response=raw_response,
+                    logging_obj=logging_obj,
+                )
 
-        assert exc_info.value.status_code == 503
+        assert exc_info.value.status_code == 429
         assert "Selected model is at capacity" in exc_info.value.message
+        assert any(
+            "server_is_overloaded/slow_down" in rec.message
+            and "mapped to 429" in rec.message
+            for rec in caplog.records
+        ), f"expected mapped-to-429 warning, got: {[r.message for r in caplog.records]}"
 
     def test_chatgpt_non_stream_sse_failed_preserves_retry_after_headers(self):
         config = ChatGPTResponsesAPIConfig()
@@ -643,7 +653,7 @@ class TestChatGPTResponsesAPITransformation:
                 logging_obj=logging_obj,
             )
 
-        assert exc_info.value.status_code == 503
+        assert exc_info.value.status_code == 429
         assert exc_info.value.response.headers["retry-after"] == "60"
         assert exc_info.value.headers is not None
         assert exc_info.value.headers["retry-after"] == "60"

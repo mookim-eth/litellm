@@ -290,6 +290,12 @@ class BaseResponsesAPIStreamingIterator:
                                     pass
 
                     if _chunk_type == ResponsesAPIStreamEvents.RESPONSE_FAILED:
+                        # If the failure is a capacity/overload error, raise it as a
+                        # retryable RateLimitError (429) instead of flowing the failed
+                        # chunk downstream. Non-stream requests map this in
+                        # ChatGPTResponsesAPIConfig._status_code_from_sse_error_payload;
+                        # streaming requests never reach that code path (HTTP is already
+                        # 200), so we convert it here so Router/retry logic can kick in.
                         self._handle_logging_failed_response()
                     else:
                         self._handle_logging_completed_response()
@@ -328,6 +334,22 @@ class BaseResponsesAPIStreamingIterator:
         error_message = "Response failed"
         if isinstance(error_info, dict):
             error_message = error_info.get("message", str(error_info))
+
+        if isinstance(error_info, dict) and error_info.get("code") in self._OVERLOADED_ERROR_CODES:
+            exception = litellm.RateLimitError(
+                message=f"{error_message}",
+                model=self.model or "",
+                llm_provider=self.custom_llm_provider or "",
+                response=self.response,
+            )
+            verbose_logger.warning(
+                "responses stream: %s mapped to retryable RateLimitError (429); message=%s",
+                error_info.get("code"),
+                error_message,
+            )
+            self._handle_failure(exception)
+            raise exception
+
         exception = litellm.APIError(
             status_code=500,
             message=error_message,
@@ -335,6 +357,9 @@ class BaseResponsesAPIStreamingIterator:
             model=self.model or "",
         )
         self._handle_failure(exception)
+
+    # Error codes the upstream treats as "model at capacity" / transient overload.
+    _OVERLOADED_ERROR_CODES = frozenset({"server_is_overloaded", "slow_down"})
 
     async def _call_post_streaming_deployment_hook(self, chunk):
         """

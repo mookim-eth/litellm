@@ -2,6 +2,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from litellm.constants import STREAM_SSE_DONE_STRING
+from litellm._logging import verbose_logger
 from litellm.exceptions import AuthenticationError
 from litellm.litellm_core_utils.core_helpers import process_response_headers
 from litellm.litellm_core_utils.llm_response_utils.convert_dict_to_response import (
@@ -460,7 +461,12 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
 
         error_code = error_obj.get("code")
         if error_code in {"server_is_overloaded", "slow_down"}:
-            return 503
+            verbose_logger.warning(
+                "chatgpt responses: server_is_overloaded/slow_down (code=%s) mapped to 429 for retry; message=%s",
+                error_code,
+                error_obj.get("message"),
+            )
+            return 429
         if error_code in {"rate_limit_exceeded", "usage_limit_reached"}:
             return 429
         if error_code in {"context_length_exceeded", "invalid_prompt"}:
