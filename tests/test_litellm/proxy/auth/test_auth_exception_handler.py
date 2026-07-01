@@ -197,7 +197,12 @@ async def test_auth_failure_logging_includes_request_ip_and_user_agent_context()
 
     assert metadata["requester_ip_address"] == "198.51.100.10"
     assert metadata["user_agent"] == "codex-tui/0.142.4"
-    assert metadata["tags"] == ["team:dev", "env:test"]
+    assert metadata["tags"] == [
+        "team:dev",
+        "env:test",
+        "User-Agent: codex-tui",
+        "User-Agent: codex-tui/0.142.4",
+    ]
     assert proxy_server_request["headers"]["user-agent"] == "codex-tui/0.142.4"
     assert "authorization" not in {
         header.lower() for header in proxy_server_request["headers"].keys()

@@ -64,6 +64,21 @@ class UserAPIKeyAuthExceptionHandler:
         return tags
 
     @staticmethod
+    def _get_user_agent_tags(user_agent: Optional[Any]) -> Optional[List[str]]:
+        if user_agent is None or litellm.disable_add_user_agent_to_request_tags is True:
+            return None
+
+        user_agent_str = str(user_agent).strip()
+        if not user_agent_str:
+            return None
+
+        user_agent_tags: List[str] = []
+        if "/" in user_agent_str:
+            user_agent_tags.append("User-Agent: " + user_agent_str.split("/")[0])
+        user_agent_tags.append("User-Agent: " + user_agent_str)
+        return user_agent_tags
+
+    @staticmethod
     def _add_request_context_to_failure_logging_data(
         request: Request,
         request_data: dict,
@@ -99,10 +114,17 @@ class UserAPIKeyAuthExceptionHandler:
         if user_agent is not None:
             metadata["user_agent"] = str(user_agent)
 
-        tags = UserAPIKeyAuthExceptionHandler._get_request_tags_from_headers_and_body(
-            headers=raw_headers, request_data=request_data
+        request_tags = (
+            UserAPIKeyAuthExceptionHandler._get_request_tags_from_headers_and_body(
+                headers=raw_headers, request_data=request_data
+            )
+            or []
         )
-        if tags is not None:
+        user_agent_tags = (
+            UserAPIKeyAuthExceptionHandler._get_user_agent_tags(user_agent) or []
+        )
+        tags = [*request_tags, *user_agent_tags]
+        if tags:
             metadata["tags"] = UserAPIKeyAuthExceptionHandler._merge_tags(
                 existing_tags=metadata.get("tags"), tags_to_add=tags
             )
