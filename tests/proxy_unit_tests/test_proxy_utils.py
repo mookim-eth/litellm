@@ -2400,6 +2400,77 @@ async def test_handle_logging_proxy_only_error_syncs_normalized_call_type(
 
 
 @pytest.mark.asyncio
+async def test_handle_logging_proxy_only_error_records_ip_and_user_agent_tags():
+    from fastapi import HTTPException
+
+    from litellm.caching.caching import DualCache
+    from litellm.litellm_core_utils.litellm_logging import Logging
+    from litellm.proxy.utils import ProxyLogging
+
+    cache = DualCache()
+    proxy_logging = ProxyLogging(user_api_key_cache=cache)
+    captured_logging_obj = {}
+    original_function_setup = litellm.utils.function_setup
+
+    def _capture_function_setup(*args, **kwargs):
+        logging_obj, data = original_function_setup(*args, **kwargs)
+        captured_logging_obj["logging_obj"] = logging_obj
+        return logging_obj, data
+
+    original_exception = HTTPException(status_code=401, detail="bad auth")
+    with patch(
+        "litellm.proxy.utils.litellm.utils.function_setup",
+        side_effect=_capture_function_setup,
+    ), patch.object(
+        Logging, "async_failure_handler", new=AsyncMock(return_value=None)
+    ), patch.object(
+        Logging, "failure_handler", return_value=None
+    ), patch(
+        "litellm.proxy.utils.threading.Thread"
+    ) as mock_thread:
+        mock_thread.return_value.start = Mock()
+
+        await proxy_logging._handle_logging_proxy_only_error(
+            request_data={
+                "model": "gpt-test",
+                "messages": [{"role": "user", "content": "test"}],
+                "metadata": {"requester_ip_address": "198.51.100.10"},
+                "proxy_server_request": {
+                    "url": "http://testserver/v1/chat/completions",
+                    "method": "POST",
+                    "headers": {"user-agent": "codex-tui/0.142.4"},
+                    "body": {},
+                },
+            },
+            user_api_key_dict=UserAPIKeyAuth(
+                api_key="test_key",
+                user_id="test_user",
+                token="test_token",
+                request_route="/v1/chat/completions",
+            ),
+            route="/v1/chat/completions",
+            original_exception=original_exception,
+        )
+
+    logging_obj = captured_logging_obj["logging_obj"]
+    logging_obj._failure_handler_helper_fn(
+        exception=original_exception,
+        traceback_exception="",
+    )
+    standard_logging_object = logging_obj.model_call_details["standard_logging_object"]
+
+    assert standard_logging_object["requester_ip_address"] == "198.51.100.10"
+    assert (
+        standard_logging_object["metadata"]["requester_ip_address"]
+        == "198.51.100.10"
+    )
+    assert standard_logging_object["request_tags"] == [
+        "User-Agent: codex-tui",
+        "User-Agent: codex-tui/0.142.4",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_during_call_hook_parallel_execution():
     """
     Test that multiple guardrails in during_call_hook are executed in parallel.

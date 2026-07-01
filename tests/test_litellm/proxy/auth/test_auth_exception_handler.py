@@ -152,6 +152,59 @@ async def test_handle_authentication_error_db_transport_error_returns_503_not_40
 
 
 @pytest.mark.asyncio
+async def test_auth_failure_logging_includes_request_ip_and_user_agent_context():
+    handler = UserAPIKeyAuthExceptionHandler()
+
+    mock_request = MagicMock()
+    mock_request.headers = {
+        "authorization": "Bearer secret-token",
+        "user-agent": "codex-tui/0.142.4",
+        "x-forwarded-for": "198.51.100.10",
+        "x-litellm-tags": "team:dev, env:test",
+    }
+    mock_request.client.host = "203.0.113.5"
+    mock_request.method = "POST"
+    mock_request.url = "http://testserver/v1/responses"
+    mock_request.state = MagicMock()
+    request_data = {"model": "gpt-test"}
+
+    with patch(
+        "litellm.proxy.proxy_server.general_settings",
+        {
+            "allow_requests_on_db_unavailable": False,
+            "use_x_forwarded_for": True,
+        },
+    ), patch(
+        "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
+        new_callable=AsyncMock,
+    ) as mock_post_call_failure_hook:
+        mock_post_call_failure_hook.return_value = None
+
+        with pytest.raises(ProxyException):
+            await handler._handle_authentication_error(
+                HTTPException(status_code=401, detail="bad auth"),
+                mock_request,
+                request_data,
+                "/v1/responses",
+                None,
+                "test-key",
+            )
+
+    mock_post_call_failure_hook.assert_called_once()
+    logged_request_data = mock_post_call_failure_hook.call_args.kwargs["request_data"]
+    metadata = logged_request_data["metadata"]
+    proxy_server_request = logged_request_data["proxy_server_request"]
+
+    assert metadata["requester_ip_address"] == "198.51.100.10"
+    assert metadata["user_agent"] == "codex-tui/0.142.4"
+    assert metadata["tags"] == ["team:dev", "env:test"]
+    assert proxy_server_request["headers"]["user-agent"] == "codex-tui/0.142.4"
+    assert "authorization" not in {
+        header.lower() for header in proxy_server_request["headers"].keys()
+    }
+
+
+@pytest.mark.asyncio
 async def test_route_passed_to_post_call_failure_hook():
     """
     This route is used by proxy track_cost_callback's async_post_call_failure_hook to check if the route is an LLM route

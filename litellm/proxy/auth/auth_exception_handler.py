@@ -2,7 +2,8 @@
 Handles Authentication Errors
 """
 
-from typing import TYPE_CHECKING, Any, Optional, Union
+import time
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from fastapi import HTTPException, Request, status
 
@@ -10,6 +11,7 @@ import litellm
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import ProxyErrorTypes, ProxyException, UserAPIKeyAuth
 from litellm.proxy.auth.auth_utils import _get_request_ip_address
+from litellm.proxy.common_utils.http_parsing_utils import _safe_get_request_headers
 from litellm.proxy.db.exception_handler import PrismaDBExceptionHandler
 from litellm.types.services import ServiceTypes
 
@@ -22,6 +24,124 @@ else:
 
 
 class UserAPIKeyAuthExceptionHandler:
+    @staticmethod
+    def _get_header_value(headers: Dict[str, Any], header_name: str) -> Optional[Any]:
+        header_name_lower = header_name.lower()
+        for key, value in headers.items():
+            if isinstance(key, str) and key.lower() == header_name_lower:
+                return value
+        return None
+
+    @staticmethod
+    def _merge_tags(existing_tags: Any, tags_to_add: Optional[List[str]]) -> List[str]:
+        final_tags: List[str] = []
+        if isinstance(existing_tags, list):
+            final_tags.extend(str(tag) for tag in existing_tags)
+        if tags_to_add:
+            for tag in tags_to_add:
+                if tag not in final_tags:
+                    final_tags.append(tag)
+        return final_tags
+
+    @staticmethod
+    def _get_request_tags_from_headers_and_body(
+        headers: Dict[str, Any], request_data: dict
+    ) -> Optional[List[str]]:
+        tags: Optional[List[str]] = None
+
+        header_tags = UserAPIKeyAuthExceptionHandler._get_header_value(
+            headers=headers, header_name="x-litellm-tags"
+        )
+        if isinstance(header_tags, str):
+            tags = [tag.strip() for tag in header_tags.split(",") if tag.strip()]
+        elif isinstance(header_tags, list):
+            tags = [str(tag).strip() for tag in header_tags if str(tag).strip()]
+
+        body_tags = request_data.get("tags")
+        if isinstance(body_tags, list):
+            tags = [str(tag) for tag in body_tags]
+
+        return tags
+
+    @staticmethod
+    def _add_request_context_to_failure_logging_data(
+        request: Request,
+        request_data: dict,
+        general_settings: dict,
+    ) -> str:
+        """
+        Add the same request context used by normal LLM calls to auth/proxy-only
+        failure logs, without storing raw request bodies or auth headers.
+        """
+        requester_ip = (
+            _get_request_ip_address(
+                request=request,
+                use_x_forwarded_for=general_settings.get(
+                    "use_x_forwarded_for", False
+                ),
+                use_cloudflare_header=True,
+            )
+            or ""
+        )
+        requester_ip = str(requester_ip)
+
+        raw_headers = _safe_get_request_headers(request)
+        user_agent = UserAPIKeyAuthExceptionHandler._get_header_value(
+            headers=raw_headers, header_name="user-agent"
+        )
+
+        metadata = request_data.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+            request_data["metadata"] = metadata
+
+        metadata["requester_ip_address"] = requester_ip
+        if user_agent is not None:
+            metadata["user_agent"] = str(user_agent)
+
+        tags = UserAPIKeyAuthExceptionHandler._get_request_tags_from_headers_and_body(
+            headers=raw_headers, request_data=request_data
+        )
+        if tags is not None:
+            metadata["tags"] = UserAPIKeyAuthExceptionHandler._merge_tags(
+                existing_tags=metadata.get("tags"), tags_to_add=tags
+            )
+
+        if "proxy_server_request" not in request_data:
+            from litellm.proxy.litellm_pre_call_utils import clean_headers
+
+            lower_header_names = {
+                key.lower() for key in raw_headers.keys() if isinstance(key, str)
+            }
+            if "x-litellm-api-key" in lower_header_names:
+                authenticated_with_header = "x-litellm-api-key"
+            elif "authorization" in lower_header_names:
+                authenticated_with_header = "authorization"
+            else:
+                authenticated_with_header = "x-api-key"
+
+            request_data["proxy_server_request"] = {
+                "url": str(getattr(request, "url", "")),
+                "method": str(getattr(request, "method", "")),
+                "headers": clean_headers(
+                    raw_headers,
+                    litellm_key_header_name=general_settings.get(
+                        "litellm_key_header_name"
+                    ),
+                    # Auth failures should never log provider/auth credentials,
+                    # even if normal successful calls are configured to forward
+                    # provider auth headers.
+                    forward_llm_provider_auth_headers=False,
+                    authenticated_with_header=authenticated_with_header,
+                ),
+                # Keep auth-failure logging lightweight and avoid persisting
+                # unauthenticated request bodies.
+                "body": {},
+                "arrival_time": time.time(),
+            }
+
+        return requester_ip
+
     @staticmethod
     async def _handle_authentication_error(
         e: Exception,
@@ -71,9 +191,10 @@ class UserAPIKeyAuthExceptionHandler:
             )
         else:
             # raise the exception to the caller
-            requester_ip = _get_request_ip_address(
+            requester_ip = UserAPIKeyAuthExceptionHandler._add_request_context_to_failure_logging_data(
                 request=request,
-                use_x_forwarded_for=general_settings.get("use_x_forwarded_for", False),
+                request_data=request_data,
+                general_settings=general_settings,
             )
             verbose_proxy_logger.exception(
                 "litellm.proxy.proxy_server.user_api_key_auth(): Exception occured - {}\nRequester IP Address:{}".format(
