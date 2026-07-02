@@ -69,17 +69,25 @@ export function KeyInfoHeader({
         </Button>
       </div>
 
-      <Flex justify="space-between" align="start" style={{ marginBottom: 20 }}>
-        <div>
-          <Title level={3} copyable={{ tooltips: ["Copy Key Alias", "Copied!"] }} style={{ margin: 0 }}>
+      <Flex justify="space-between" align="start" wrap="wrap" gap={16} style={{ marginBottom: 20 }}>
+        <div style={{ minWidth: 0, flex: "1 1 240px" }}>
+          <Title
+            level={3}
+            copyable={{ tooltips: ["Copy Key Alias", "Copied!"] }}
+            style={{ margin: 0, wordBreak: "break-word" }}
+          >
             {data.keyName}
           </Title>
-          <Text type="secondary" copyable={{ text: data.keyId, tooltips: ["Copy Key ID", "Copied!"] }}>
+          <Text
+            type="secondary"
+            copyable={{ text: data.keyId, tooltips: ["Copy Key ID", "Copied!"] }}
+            style={{ display: "block", maxWidth: "100%", wordBreak: "break-all" }}
+          >
             Key ID: {data.keyId}
           </Text>
         </div>
         {canModifyKey && (
-          <Space>
+          <Space wrap size={[8, 8]}>
             <Tooltip title={regenerateTooltip || ""}>
               <span>
                 <Button icon={<SyncOutlined />} onClick={onRegenerate} disabled={regenerateDisabled}>
@@ -99,8 +107,8 @@ export function KeyInfoHeader({
         )}
       </Flex>
 
-      <Flex align="stretch" gap={40} style={{ marginBottom: 40 }}>
-        <Space direction="vertical" size={16}>
+      <Flex align="stretch" gap={24} wrap="wrap" style={{ marginBottom: 40 }}>
+        <Space direction="vertical" size={16} style={{ minWidth: 180, flex: "1 1 180px" }}>
           <LabeledField label="User Email" value={data.userEmail} icon={<MailOutlined />} />
           <LabeledField
             label="User ID"
@@ -112,9 +120,9 @@ export function KeyInfoHeader({
           />
         </Space>
 
-        <Divider type="vertical" style={{ height: "auto" }} />
+        <Divider type="vertical" className="hidden md:block" style={{ height: "auto" }} />
 
-        <Space direction="vertical" size={16}>
+        <Space direction="vertical" size={16} style={{ minWidth: 180, flex: "1 1 180px" }}>
           <LabeledField label="Created At" value={data.createdAt} icon={<CalendarOutlined />} />
           <LabeledField
             label="Created By"
@@ -126,9 +134,9 @@ export function KeyInfoHeader({
           />
         </Space>
 
-        <Divider type="vertical" style={{ height: "auto" }} />
+        <Divider type="vertical" className="hidden md:block" style={{ height: "auto" }} />
 
-        <Space direction="vertical" size={16}>
+        <Space direction="vertical" size={16} style={{ minWidth: 180, flex: "1 1 180px" }}>
           <LabeledField label="Last Updated" value={data.lastUpdated} icon={<ClockCircleOutlined />} />
           <LabeledField label="Last Active" value={data.lastActive} icon={<ThunderboltOutlined />} />
         </Space>

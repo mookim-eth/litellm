@@ -332,8 +332,8 @@ const UserDashboard: React.FC<UserDashboardProps> = ({
   console.log("inside user dashboard, selected team", selectedTeam);
   console.log("All cookies after redirect:", document.cookie);
   return (
-    <div className="w-full mx-4 h-[75vh]">
-      <Grid numItems={1} className="gap-2 p-8 w-full mt-2">
+    <div className="w-full min-w-0 mx-0 sm:mx-4 min-h-[75vh]">
+      <Grid numItems={1} className="gap-2 p-3 sm:p-8 w-full mt-2">
         <Col numColSpan={1} className="flex flex-col gap-2">
           <CreateKey
             key={selectedTeam ? selectedTeam.team_id : null}

@@ -673,7 +673,7 @@ export function VirtualKeysTable({ teams, organizations, onSortChange, currentSo
   const end = Math.min((pageIndex + 1) * pageSize, totalCount);
   const rangeLabel = `${start} - ${end}`;
   return (
-    <div className="w-full h-full overflow-hidden">
+    <div className="w-full min-w-0 h-full overflow-auto">
       {selectedKey ? (
         <KeyInfoView
           keyId={selectedKey.token}

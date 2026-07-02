@@ -372,7 +372,7 @@ export default function KeyInfoView({
   };
 
   return (
-    <div className="w-full h-screen p-4">
+    <div className="w-full min-w-0 h-screen overflow-auto p-3 sm:p-4">
       <KeyInfoHeader
         data={{
           keyName: currentKeyData.key_alias || "Virtual Key",
@@ -457,7 +457,7 @@ export default function KeyInfoView({
       </Modal>
 
       <TabGroup>
-        <TabList className="mb-4">
+        <TabList className="mb-4 overflow-x-auto">
           <Tab>Overview</Tab>
           <Tab>Settings</Tab>
         </TabList>
@@ -584,8 +584,8 @@ export default function KeyInfoView({
 
           {/* Settings Panel */}
           <TabPanel>
-            <Card className="overflow-y-auto max-h-[65vh]">
-              <div className="flex justify-between items-center mb-4">
+            <Card className="max-w-full overflow-y-auto overflow-x-hidden max-h-[65vh]">
+              <div className="flex flex-col gap-2 sm:flex-row sm:justify-between sm:items-center mb-4">
                 <Title>Key Settings</Title>
                 {!isEditing && canModifyKey && (
                   <Button onClick={() => setIsEditing(true)}>Edit Settings</Button>

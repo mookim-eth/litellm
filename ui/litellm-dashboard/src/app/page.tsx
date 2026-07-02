@@ -181,6 +181,11 @@ function CreateKeyPageContent() {
     return searchParams.get("page") || "api-keys";
   });
 
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
+
   // Custom setPage function that updates URL
   const updatePage = (newPage: string) => {
     // Update URL without full page reload
@@ -191,16 +196,43 @@ function CreateKeyPageContent() {
     window.history.pushState(null, "", `?${newSearchParams.toString()}`);
 
     setPage(newPage);
+    setMobileSidebarOpen(false);
   };
-
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // Track if we've already attempted a return URL redirect to prevent race conditions
   const hasAttemptedReturnRedirectRef = useRef(false);
 
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia("(max-width: 767px)");
+    const handleViewportChange = () => {
+      const isMobile = mediaQuery.matches;
+      setIsMobileViewport(isMobile);
+      if (!isMobile) {
+        setMobileSidebarOpen(false);
+      }
+    };
+
+    handleViewportChange();
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", handleViewportChange);
+      return () => mediaQuery.removeEventListener("change", handleViewportChange);
+    }
+
+    mediaQuery.addListener(handleViewportChange);
+    return () => mediaQuery.removeListener(handleViewportChange);
+  }, []);
+
   const toggleSidebar = () => {
-    setSidebarCollapsed(!sidebarCollapsed);
+    if (isMobileViewport) {
+      setMobileSidebarOpen((v) => !v);
+      return;
+    }
+
+    setSidebarCollapsed((v) => !v);
   };
 
   const addKey = (data: any) => {
@@ -490,15 +522,32 @@ function CreateKeyPageContent() {
                   proxySettings={proxySettings}
                   accessToken={accessToken}
                   isPublicPage={false}
-                  sidebarCollapsed={sidebarCollapsed}
+                  sidebarCollapsed={isMobileViewport ? !mobileSidebarOpen : sidebarCollapsed}
                   onToggleSidebar={toggleSidebar}
                   isDarkMode={isDarkMode}
                   toggleDarkMode={toggleDarkMode}
                 />
-                <div className="flex flex-1">
-                  <div className="mt-2">
-                  <SidebarProvider setPage={updatePage} defaultSelectedKey={page} sidebarCollapsed={sidebarCollapsed} />
-                </div>
+                <div className="flex flex-1 min-w-0 overflow-hidden">
+                  {mobileSidebarOpen && (
+                    <button
+                      aria-label="Close sidebar"
+                      className="fixed inset-0 top-14 z-20 bg-black/20 md:hidden"
+                      onClick={() => setMobileSidebarOpen(false)}
+                    />
+                  )}
+                  <div
+                    className={`${mobileSidebarOpen
+                        ? "fixed left-0 top-14 bottom-0 z-30 block overflow-y-auto bg-white shadow-xl"
+                        : "hidden"
+                      } flex-shrink-0 md:mt-2 md:block md:static md:z-auto md:overflow-visible md:shadow-none`}
+                  >
+                    <SidebarProvider
+                      setPage={updatePage}
+                      defaultSelectedKey={page}
+                      sidebarCollapsed={isMobileViewport ? false : sidebarCollapsed}
+                    />
+                  </div>
+                  <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-auto">
                   {page == "api-keys" ? (
                     <UserDashboard
                       userID={userID}
@@ -656,6 +705,7 @@ function CreateKeyPageContent() {
                       premiumUser={premiumUser}
                     />
                   )}
+                  </main>
                 </div>
 
                 {/* Survey Components */}

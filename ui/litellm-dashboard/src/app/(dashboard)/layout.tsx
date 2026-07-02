@@ -39,6 +39,8 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   const searchParams = useSearchParams();
   const { accessToken, userRole, userId, userEmail, premiumUser } = useAuthorized();
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [page, setPage] = useState(() => {
     return searchParams.get("page") || "api-keys";
   });
@@ -49,47 +51,95 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     if (migratedRoute) {
       router.push(withBase(migratedRoute));
       setPage(newPage);
+      setMobileSidebarOpen(false);
       return;
     }
 
     // Otherwise, navigate back to the legacy root page with query params
     router.push(withBase(`?page=${newPage}`));
     setPage(newPage);
+    setMobileSidebarOpen(false);
   };
 
   useEffect(() => {
     setPage(searchParams.get("page") || "api-keys");
   }, [searchParams]);
 
-  const toggleSidebar = () => setSidebarCollapsed((v) => !v);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia("(max-width: 767px)");
+    const handleViewportChange = () => {
+      const isMobile = mediaQuery.matches;
+      setIsMobileViewport(isMobile);
+      if (!isMobile) {
+        setMobileSidebarOpen(false);
+      }
+    };
+
+    handleViewportChange();
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", handleViewportChange);
+      return () => mediaQuery.removeEventListener("change", handleViewportChange);
+    }
+
+    mediaQuery.addListener(handleViewportChange);
+    return () => mediaQuery.removeListener(handleViewportChange);
+  }, []);
+
+  const toggleSidebar = () => {
+    if (isMobileViewport) {
+      setMobileSidebarOpen((v) => !v);
+      return;
+    }
+
+    setSidebarCollapsed((v) => !v);
+  };
+
+  const closeMobileSidebar = () => setMobileSidebarOpen(false);
 
   return (
     <ThemeProvider accessToken={""}>
       <div className="flex flex-col min-h-screen">
         <Navbar
           isPublicPage={false}
-          sidebarCollapsed={sidebarCollapsed}
+          sidebarCollapsed={isMobileViewport ? !mobileSidebarOpen : sidebarCollapsed}
           onToggleSidebar={toggleSidebar}
           userID={userId}
           userEmail={userEmail}
           userRole={userRole}
           premiumUser={premiumUser}
           proxySettings={undefined}
-          setProxySettings={() => { }}
+          setProxySettings={() => {}}
           accessToken={accessToken}
           isDarkMode={false}
-          toggleDarkMode={() => { }}
+          toggleDarkMode={() => {}}
         />
         <DebugWarningBanner />
-        <div className="flex flex-1 overflow-auto">
-          <div className="mt-2">
+        <div className="flex flex-1 min-w-0 overflow-hidden">
+          {mobileSidebarOpen && (
+            <button
+              aria-label="Close sidebar"
+              className="fixed inset-0 top-14 z-20 bg-black/20 md:hidden"
+              onClick={closeMobileSidebar}
+            />
+          )}
+          <div
+            className={`${
+              mobileSidebarOpen
+                ? "fixed left-0 top-14 bottom-0 z-30 block overflow-y-auto bg-white shadow-xl"
+                : "hidden"
+            } flex-shrink-0 md:mt-2 md:block md:static md:z-auto md:overflow-visible md:shadow-none`}
+          >
             <SidebarProvider
               setPage={handleSetPage}
               defaultSelectedKey={page}
-              sidebarCollapsed={sidebarCollapsed}
+              sidebarCollapsed={isMobileViewport ? false : sidebarCollapsed}
             />
           </div>
-          <main className="flex-1">{children}</main>
+          <main className="flex-1 min-w-0 overflow-x-hidden overflow-y-auto">{children}</main>
         </div>
       </div>
     </ThemeProvider>
