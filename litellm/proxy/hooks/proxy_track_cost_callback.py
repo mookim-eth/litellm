@@ -19,7 +19,10 @@ from litellm.proxy.auth.auth_checks import (
 )
 from litellm.proxy.auth.route_checks import RouteChecks
 from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
-from litellm.proxy.utils import ProxyUpdateSpend
+from litellm.proxy.utils import (
+    ProxyUpdateSpend,
+    _ensure_failure_logging_request_context,
+)
 from litellm.types.utils import StandardLoggingPayload
 from litellm.utils import get_end_user_id_for_cost_tracking
 
@@ -45,6 +48,8 @@ class _ProxyDBLogger(CustomLogger):
             or RouteChecks.is_info_route(route=request_route)
         ):
             return
+
+        _ensure_failure_logging_request_context(request_data=request_data)
 
         from litellm.proxy.proxy_server import proxy_logging_obj
 

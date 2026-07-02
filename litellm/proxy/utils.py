@@ -89,7 +89,10 @@ from litellm.integrations.custom_guardrail import (
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.SlackAlerting.slack_alerting import SlackAlerting
 from litellm.integrations.SlackAlerting.utils import _add_langfuse_trace_id_to_alert
-from litellm.litellm_core_utils.litellm_logging import Logging
+from litellm.litellm_core_utils.litellm_logging import (
+    Logging,
+    StandardLoggingPayloadSetup,
+)
 from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
@@ -156,6 +159,126 @@ def print_verbose(print_statement):
     verbose_proxy_logger.debug("{}\n{}".format(print_statement, traceback.format_exc()))
     if litellm.set_verbose:
         print(f"LiteLLM Proxy: {print_statement}")  # noqa
+
+
+def _metadata_has_value(value: Any) -> bool:
+    return value not in (None, "", [], {})
+
+
+def _merge_metadata_for_failure_logging(
+    existing_metadata: Optional[dict],
+    metadata_to_add: Optional[dict],
+) -> dict:
+    """
+    Merge request metadata variants for failure logging.
+
+    Some proxy routes (for example Responses API / Batch / Files) store proxy
+    metadata in `litellm_metadata` to avoid colliding with provider-facing
+    `metadata`. Failure logging ultimately reads `litellm_params.metadata`, so
+    proxy-only failures need a single merged view of both names.
+    """
+    merged_metadata: dict = {}
+    if isinstance(existing_metadata, dict):
+        merged_metadata.update(existing_metadata)
+
+    if not isinstance(metadata_to_add, dict):
+        return merged_metadata
+
+    for key, value in metadata_to_add.items():
+        if key == "tags":
+            merged_metadata["tags"] = LiteLLMProxyRequestSetup._merge_tags(
+                request_tags=(
+                    merged_metadata.get("tags")
+                    if isinstance(merged_metadata.get("tags"), list)
+                    else None
+                ),
+                tags_to_add=value if isinstance(value, list) else None,
+            )
+        elif not _metadata_has_value(merged_metadata.get(key)):
+            merged_metadata[key] = value
+
+    return merged_metadata
+
+
+def _get_proxy_server_request_for_failure_logging(request_data: dict) -> dict:
+    litellm_params = request_data.get("litellm_params")
+    if not isinstance(litellm_params, dict):
+        litellm_params = {}
+
+    proxy_server_request = request_data.get("proxy_server_request") or litellm_params.get(
+        "proxy_server_request"
+    )
+    if isinstance(proxy_server_request, dict):
+        return proxy_server_request
+    return {}
+
+
+def _get_merged_metadata_for_failure_logging(request_data: dict) -> dict:
+    """
+    Build metadata used for proxy failure spend logs from every location where
+    request context can exist.
+    """
+    litellm_params = request_data.get("litellm_params")
+    if not isinstance(litellm_params, dict):
+        litellm_params = {}
+
+    metadata = {}
+    for metadata_candidate in (
+        request_data.get("metadata"),
+        request_data.get("litellm_metadata"),
+        litellm_params.get("metadata"),
+        litellm_params.get("litellm_metadata"),
+    ):
+        metadata = _merge_metadata_for_failure_logging(metadata, metadata_candidate)
+
+    requester_ip_address = request_data.get("requester_ip_address")
+    if not _metadata_has_value(metadata.get("requester_ip_address")) and _metadata_has_value(
+        requester_ip_address
+    ):
+        metadata["requester_ip_address"] = requester_ip_address
+
+    proxy_server_request = _get_proxy_server_request_for_failure_logging(request_data)
+    user_agent_tags = StandardLoggingPayloadSetup._get_user_agent_tags(
+        proxy_server_request=proxy_server_request
+    )
+    if user_agent_tags:
+        metadata["tags"] = LiteLLMProxyRequestSetup._merge_tags(
+            request_tags=(
+                metadata.get("tags") if isinstance(metadata.get("tags"), list) else None
+            ),
+            tags_to_add=user_agent_tags,
+        )
+
+    return metadata
+
+
+def _ensure_failure_logging_request_context(request_data: dict) -> None:
+    """
+    Normalize request context before proxy failure logging.
+
+    This covers all proxy failure paths that have already run
+    `add_litellm_data_to_request`: pre-call hook rejects (rate limits,
+    budgets, guardrails), provider errors routed through `_handle_llm_api_exception`,
+    and streaming failures. Auth failures that happen before this stage already
+    populate the same fields in the auth exception handler.
+    """
+    if not isinstance(request_data, dict):
+        return
+
+    litellm_params = request_data.get("litellm_params")
+    if not isinstance(litellm_params, dict):
+        litellm_params = {}
+        request_data["litellm_params"] = litellm_params
+
+    proxy_server_request = _get_proxy_server_request_for_failure_logging(request_data)
+    if proxy_server_request:
+        request_data["proxy_server_request"] = proxy_server_request
+        litellm_params["proxy_server_request"] = proxy_server_request
+
+    metadata = _get_merged_metadata_for_failure_logging(request_data)
+    if metadata:
+        request_data["metadata"] = metadata
+        litellm_params["metadata"] = metadata
 
 
 def _get_email_logger_class():
@@ -1772,6 +1895,8 @@ class ProxyLogging:
                                       Otherwise, returns None and the original exception is used.
         """
 
+        _ensure_failure_logging_request_context(request_data=request_data)
+
         ### ALERTING ###
         await self.update_request_status(
             litellm_call_id=request_data.get("litellm_call_id", ""), status="fail"
@@ -1902,6 +2027,8 @@ class ProxyLogging:
 
         Is triggered when self._is_proxy_only_error() returns True
         """
+        _ensure_failure_logging_request_context(request_data=request_data)
+
         litellm_logging_obj: Optional[Logging] = request_data.get(
             "litellm_logging_obj", None
         )
@@ -1928,7 +2055,7 @@ class ProxyLogging:
         if litellm_logging_obj is not None:
             ## UPDATE LOGGING INPUT
             _optional_params = {}
-            _litellm_params = {}
+            _litellm_params = dict(request_data.get("litellm_params") or {})
 
             litellm_param_keys = LoggedLiteLLMParams.__annotations__.keys()
             for k, v in request_data.items():

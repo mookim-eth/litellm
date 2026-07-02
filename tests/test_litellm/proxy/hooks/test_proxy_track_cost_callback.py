@@ -84,6 +84,60 @@ async def test_async_post_call_failure_hook():
 
 
 @pytest.mark.asyncio
+async def test_async_post_call_failure_hook_preserves_litellm_metadata_context():
+    logger = _ProxyDBLogger()
+
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="test_api_key",
+        user_id="test_user_id",
+        request_route="/v1/responses",
+    )
+
+    request_data = {
+        "model": "gpt-4",
+        "input": "Hello",
+        "litellm_metadata": {
+            "requester_ip_address": "198.51.100.30",
+            "tags": ["env:test"],
+        },
+        "proxy_server_request": {
+            "url": "http://testserver/v1/responses",
+            "method": "POST",
+            "headers": {"User-Agent": "codex-tui/0.142.4"},
+            "body": {},
+        },
+    }
+
+    original_exception = Exception("Test exception")
+
+    with patch(
+        "litellm.proxy.db.db_spend_update_writer.DBSpendUpdateWriter.update_database",
+        new_callable=AsyncMock,
+    ) as mock_update_database:
+        await logger.async_post_call_failure_hook(
+            request_data=request_data,
+            original_exception=original_exception,
+            user_api_key_dict=user_api_key_dict,
+        )
+
+        mock_update_database.assert_called_once()
+        call_kwargs = mock_update_database.call_args[1]["kwargs"]
+
+    litellm_params = call_kwargs["litellm_params"]
+    metadata = litellm_params["metadata"]
+
+    assert metadata["requester_ip_address"] == "198.51.100.30"
+    assert metadata["tags"] == [
+        "env:test",
+        "User-Agent: codex-tui",
+        "User-Agent: codex-tui/0.142.4",
+    ]
+    assert litellm_params["proxy_server_request"]["headers"] == {
+        "User-Agent": "codex-tui/0.142.4"
+    }
+
+
+@pytest.mark.asyncio
 async def test_async_post_call_failure_hook_non_llm_route():
     # Setup
     logger = _ProxyDBLogger()

@@ -5339,7 +5339,11 @@ class StandardLoggingPayloadSetup:
             request_tags.extend(user_agent_tags)
         if additional_header_tags is not None:
             request_tags.extend(additional_header_tags)
-        return request_tags
+        deduped_request_tags = []
+        for tag in request_tags:
+            if tag not in deduped_request_tags:
+                deduped_request_tags.append(tag)
+        return deduped_request_tags
 
 
 def _get_status_fields(
