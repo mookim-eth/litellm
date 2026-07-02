@@ -437,6 +437,48 @@ describe("KeyInfoView handleKeyUpdate guardrails guard", () => {
   });
 });
 
+describe("KeyInfoView handleKeyUpdate allowed_routes guard", () => {
+  it("should remove allowed_routes for non-proxy-admin key owners", async () => {
+    const keyDataWithOwner = { ...baseKeyData, user_id: "user_1" };
+    mockUseAuthorized.mockReturnValue({
+      accessToken: "access_abc",
+      userId: "user_1",
+      userRole: "Internal User",
+      premiumUser: false,
+      token: "token_123",
+      userEmail: "test@example.com",
+      disabledPersonalKeyCreation: false,
+      showSSOBanner: false,
+    });
+
+    render(
+      <KeyInfoView
+        keyId="tok_123"
+        onClose={() => {}}
+        keyData={keyDataWithOwner as any}
+        onKeyDataUpdate={() => {}}
+        teams={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("Edit Settings"));
+    (globalThis as any).__TEST_FORM_VALUES = {
+      token: "tok_123",
+      allowed_routes: ["llm_api_routes"],
+      tpm_limit: 100,
+    };
+
+    fireEvent.click(screen.getByText("Mock Submit"));
+
+    await waitFor(() => expect(keyUpdateCallMock).toHaveBeenCalled());
+
+    const [, sentPayload] = keyUpdateCallMock.mock.calls[0];
+    expect(sentPayload.tpm_limit).toBe(100);
+    expect(sentPayload).not.toHaveProperty("allowed_routes");
+  });
+});
+
 describe("KeyInfoView handleKeyUpdate empty strings", () => {
   ["tpm_limit", "rpm_limit", "max_parallel_requests", "max_budget"].forEach((limit) => {
     it(`maps empty strings to null for ${limit}`, async () => {

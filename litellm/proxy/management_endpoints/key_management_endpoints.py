@@ -554,6 +554,39 @@ def _check_allowed_routes_caller_permission(
     )
 
 
+def _remove_model_field_from_update_payload(data: Any, field_name: str) -> None:
+    """Remove a field from pydantic's explicitly-set fields for exclude_unset dumps."""
+    try:
+        data.fields_set().discard(field_name)
+    except Exception:
+        for fields_set_attr in (
+            "model_fields_set",
+            "__fields_set__",
+            "__pydantic_fields_set__",
+        ):
+            fields_set = getattr(data, fields_set_attr, None)
+            if fields_set is not None:
+                fields_set.discard(field_name)
+
+
+def _ignore_allowed_routes_for_non_admin_update(
+    data: UpdateKeyRequest,
+    user_api_key_dict: UserAPIKeyAuth,
+) -> None:
+    """
+    Non-admin key updates must not modify `allowed_routes`.
+
+    The UI can send the existing `allowed_routes` value while users edit unrelated
+    fields like TPM/RPM. Treat that field as read-only for non-admin updates and
+    silently drop it from the update payload instead of rejecting the whole
+    request.
+    """
+    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+    data.allowed_routes = None
+    _remove_model_field_from_update_payload(data=data, field_name="allowed_routes")
+
+
 def _validate_caller_can_change_key_ownership(
     data: Optional[Any],
     existing_key_row: Any,
@@ -2073,6 +2106,11 @@ async def _validate_update_key_data(
 ) -> None:
     """Validate permissions and constraints for key update."""
     _is_proxy_admin = user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value
+
+    _ignore_allowed_routes_for_non_admin_update(
+        data=data,
+        user_api_key_dict=user_api_key_dict,
+    )
 
     _check_allowed_routes_caller_permission(
         allowed_routes=data.allowed_routes,

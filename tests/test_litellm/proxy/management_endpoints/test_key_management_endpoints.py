@@ -8665,10 +8665,11 @@ def test_enforce_upperbound_no_config_is_noop():
 
 class TestAllowedRoutesCallerPermission:
     """
-    Non-admins must not be able to set `allowed_routes` on a key. The field
-    bypasses the role-based route gate in
-    RouteChecks.non_proxy_admin_allowed_routes_check, so allowing a non-admin
-    to populate it grants them arbitrary endpoint access.
+    Non-admins must not be able to set `allowed_routes` on a key.
+
+    Key creation rejects the field. Key update ignores the field because the UI
+    may echo an existing read-only value while users edit unrelated fields like
+    TPM/RPM.
     """
 
     @pytest.mark.asyncio
@@ -8757,38 +8758,76 @@ class TestAllowedRoutesCallerPermission:
         assert result is stub_response
 
     @pytest.mark.asyncio
-    async def test_non_admin_update_key_with_allowed_routes_rejected(self):
-        from litellm.proxy.management_endpoints.key_management_endpoints import (
-            update_key_fn,
+    async def test_non_admin_update_key_with_allowed_routes_ignored(self):
+        data = UpdateKeyRequest(
+            key="sk-test",
+            allowed_routes=["/*"],
+            tpm_limit=123,
         )
-
-        data = UpdateKeyRequest(key="sk-test", allowed_routes=["/*"])
         user_api_key_dict = UserAPIKeyAuth(
             user_id="internal-user-123",
             user_role=LitellmUserRoles.INTERNAL_USER,
         )
-        mock_prisma_client = AsyncMock()
+        existing_key_row = LiteLLM_VerificationToken(
+            token="hashed-token",
+            user_id="internal-user-123",
+            team_id=None,
+            metadata={},
+            tpm_limit=10,
+        )
 
-        with patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client), patch(
-            "litellm.proxy.proxy_server.user_api_key_cache", MagicMock()
-        ), patch("litellm.proxy.proxy_server.user_custom_key_update", None), patch(
-            "litellm.proxy.proxy_server.llm_router", None
-        ), patch("litellm.proxy.proxy_server.premium_user", True), patch(
-            "litellm.proxy.proxy_server.proxy_logging_obj", MagicMock()
-        ), patch(
-            "litellm.proxy.management_endpoints.key_management_endpoints._get_and_validate_existing_key",
-            new_callable=AsyncMock,
-            return_value=MagicMock(),
-        ):
-            with pytest.raises(ProxyException) as exc_info:
-                await update_key_fn(
-                    request=MagicMock(),
-                    data=data,
-                    user_api_key_dict=user_api_key_dict,
-                    litellm_changed_by=None,
-                )
-        assert str(exc_info.value.code) == "403"
-        assert "allowed_routes" in str(exc_info.value.message)
+        await _validate_update_key_data(
+            data=data,
+            existing_key_row=existing_key_row,
+            user_api_key_dict=user_api_key_dict,
+            llm_router=None,
+            premium_user=True,
+            prisma_client=None,
+            user_api_key_cache=MagicMock(),
+        )
+
+        prepared_update = await prepare_key_update_data(
+            data=data,
+            existing_key_row=existing_key_row,
+        )
+
+        assert prepared_update["tpm_limit"] == 123
+        assert "allowed_routes" not in prepared_update
+        assert "allowed_routes" not in data.model_dump(exclude_unset=True)
+
+    @pytest.mark.asyncio
+    async def test_admin_update_key_with_allowed_routes_allowed(self):
+        data = UpdateKeyRequest(
+            key="sk-test",
+            allowed_routes=["/chat/completions"],
+        )
+        user_api_key_dict = UserAPIKeyAuth(
+            user_id="admin-user",
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+        )
+        existing_key_row = LiteLLM_VerificationToken(
+            token="hashed-token",
+            user_id="other-user",
+            team_id=None,
+            metadata={},
+        )
+
+        await _validate_update_key_data(
+            data=data,
+            existing_key_row=existing_key_row,
+            user_api_key_dict=user_api_key_dict,
+            llm_router=None,
+            premium_user=True,
+            prisma_client=None,
+            user_api_key_cache=MagicMock(),
+        )
+
+        prepared_update = await prepare_key_update_data(
+            data=data,
+            existing_key_row=existing_key_row,
+        )
+
+        assert prepared_update["allowed_routes"] == ["/chat/completions"]
 
 
 def test_jinja_prompt_manager_is_sandboxed():

@@ -146,6 +146,10 @@ export default function KeyInfoView({
         delete formValues.prompts;
       }
 
+      if (!isProxyAdminRole(userRole || "")) {
+        delete formValues.allowed_routes;
+      }
+
       // Handle max budget empty string
       formValues.max_budget = mapEmptyStringToNull(formValues.max_budget);
 

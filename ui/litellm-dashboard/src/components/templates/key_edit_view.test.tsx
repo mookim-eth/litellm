@@ -309,6 +309,25 @@ describe("KeyEditView", () => {
     });
   });
 
+  it("should disable allowed routes input for non-admin users", async () => {
+    renderWithProviders(
+      <KeyEditView
+        keyData={{ ...MOCK_KEY_DATA, allowed_routes: ["llm_api_routes"] }}
+        onCancel={() => { }}
+        onSubmit={async () => { }}
+        accessToken={""}
+        userID={""}
+        userRole={"Internal User"}
+        premiumUser={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/allowed routes/i)).toBeDisabled();
+      expect(screen.getByText("Only proxy admins can edit allowed routes.")).toBeInTheDocument();
+    });
+  });
+
   it("should call onSubmit with form values when form is submitted", async () => {
     const onSubmitMock = vi.fn().mockResolvedValue(undefined);
     renderWithProviders(
@@ -408,7 +427,7 @@ describe("KeyEditView", () => {
         onSubmit={onSubmitMock}
         accessToken={"test-token"}
         userID={"test-user"}
-        userRole={"admin"}
+        userRole={"Admin"}
         premiumUser={false}
       />,
     );
@@ -441,7 +460,7 @@ describe("KeyEditView", () => {
         onSubmit={onSubmitMock}
         accessToken={"test-token"}
         userID={"test-user"}
-        userRole={"admin"}
+        userRole={"Admin"}
         premiumUser={false}
       />,
     );
@@ -460,6 +479,34 @@ describe("KeyEditView", () => {
       expect(onSubmitMock).toHaveBeenCalled();
       const callArgs = onSubmitMock.mock.calls[0][0];
       expect(callArgs.allowed_routes).toEqual([]);
+    });
+  });
+
+  it("should omit allowed_routes on submit for non-admin users", async () => {
+    const onSubmitMock = vi.fn().mockResolvedValue(undefined);
+    renderWithProviders(
+      <KeyEditView
+        keyData={{ ...MOCK_KEY_DATA, allowed_routes: ["llm_api_routes"] }}
+        onCancel={() => { }}
+        onSubmit={onSubmitMock}
+        accessToken={"test-token"}
+        userID={"test-user"}
+        userRole={"Internal User"}
+        premiumUser={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument();
+    });
+
+    const submitButton = screen.getByRole("button", { name: /save changes/i });
+    await userEvent.click(submitButton);
+
+    await waitFor(() => {
+      expect(onSubmitMock).toHaveBeenCalled();
+      const callArgs = onSubmitMock.mock.calls[0][0];
+      expect(callArgs).not.toHaveProperty("allowed_routes");
     });
   });
 
@@ -514,7 +561,7 @@ describe("KeyEditView", () => {
         onSubmit={async () => {}}
         accessToken={""}
         userID={""}
-        userRole={""}
+        userRole={"Admin"}
         premiumUser={false}
       />,
     );

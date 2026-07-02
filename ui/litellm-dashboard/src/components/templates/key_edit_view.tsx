@@ -7,7 +7,7 @@ import { InfoCircleOutlined } from "@ant-design/icons";
 import { TextInput, Button as TremorButton } from "@tremor/react";
 import { Form, Input, Select, Switch, Tooltip } from "antd";
 import { useEffect, useState } from "react";
-import { rolesWithWriteAccess } from "../../utils/roles";
+import { isProxyAdminRole, rolesWithWriteAccess } from "../../utils/roles";
 import AgentSelector from "../agent_management/AgentSelector";
 import AccessGroupSelector from "../common_components/AccessGroupSelector";
 import { mapInternalToDisplayNames } from "../callback_info_helpers";
@@ -88,6 +88,7 @@ export function KeyEditView({
   premiumUser = false,
 }: KeyEditViewProps) {
   const canEditGuardrails = premiumUser || (userRole != null && rolesWithWriteAccess.includes(userRole));
+  const canEditAllowedRoutes = userRole != null && isProxyAdminRole(userRole);
   const [form] = Form.useForm();
   const [promptsList, setPromptsList] = useState<string[]>([]);
   const [tagsList, setTagsList] = useState<Record<string, Tag>>({});
@@ -256,8 +257,10 @@ export function KeyEditView({
     try {
       setIsKeySaving(true);
 
-      // Parse allowed_routes from comma-separated string to array
-      if (typeof values.allowed_routes === "string") {
+      if (!canEditAllowedRoutes) {
+        delete values.allowed_routes;
+      } else if (typeof values.allowed_routes === "string") {
+        // Parse allowed_routes from comma-separated string to array
         const trimmedInput = values.allowed_routes.trim();
         if (trimmedInput === "") {
           values.allowed_routes = [];
@@ -350,6 +353,7 @@ export function KeyEditView({
                 style={{ width: "100%" }}
                 optionLabelProp="label"
                 value={keyTypeValue}
+                disabled={!canEditAllowedRoutes}
                 onChange={(value) => {
                   switch (value) {
                     case "default":
@@ -393,6 +397,11 @@ export function KeyEditView({
             );
           }}
         </Form.Item>
+        {!canEditAllowedRoutes && (
+          <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "2px" }}>
+            Only proxy admins can edit key type / allowed routes
+          </div>
+        )}
       </Form.Item>
 
       <Form.Item
@@ -405,8 +414,10 @@ export function KeyEditView({
           </span>
         }
         name="allowed_routes"
+        help={!canEditAllowedRoutes ? "Only proxy admins can edit allowed routes." : undefined}
       >
         <Input
+          disabled={!canEditAllowedRoutes}
           placeholder="Enter allowed routes (comma-separated). Special values: llm_api_routes, management_routes. Examples: llm_api_routes, /chat/completions, /keys/*. Leave empty to allow all routes"
         />
       </Form.Item>
