@@ -97,9 +97,6 @@ class UserAPIKeyAuthExceptionHandler:
                 use_cloudflare_header=general_settings.get(
                     "use_cloudflare_header", False
                 ),
-                cloudflare_trusted_proxy_ranges=general_settings.get(
-                    "cloudflare_trusted_proxy_ranges"
-                ),
             )
             or ""
         )

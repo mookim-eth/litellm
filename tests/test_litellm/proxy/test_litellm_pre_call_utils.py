@@ -84,10 +84,7 @@ async def test_add_litellm_data_to_request_prefers_cloudflare_request_ip():
             request=request_mock,
             user_api_key_dict=user_api_key_dict,
             proxy_config=MagicMock(),
-            general_settings={
-                "use_cloudflare_header": True,
-                "cloudflare_trusted_proxy_ranges": ["10.0.0.10/32"],
-            },
+            general_settings={"use_cloudflare_header": True},
             version="test-version",
         )
 

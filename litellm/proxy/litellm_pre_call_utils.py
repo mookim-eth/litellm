@@ -1520,11 +1520,6 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
                     and general_settings.get("use_x_forwarded_for") is True
                 ),
                 use_cloudflare_header=use_cloudflare_header,
-                cloudflare_trusted_proxy_ranges=(
-                    general_settings.get("cloudflare_trusted_proxy_ranges")
-                    if general_settings is not None
-                    else None
-                ),
             )
             or ""
         )

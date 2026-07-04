@@ -93,7 +93,7 @@ class TestMCPServerIPFiltering:
 
 
 class TestGetMCPClientIP:
-    """Tests for MCP client IP extraction through trusted proxies."""
+    """Tests for MCP client IP extraction with Cloudflare headers."""
 
     def test_cloudflare_header_is_ignored_by_default(self):
         request = MagicMock()
@@ -105,7 +105,7 @@ class TestGetMCPClientIP:
             == "172.26.0.4"
         )
 
-    def test_cloudflare_header_requires_trusted_proxy(self):
+    def test_cloudflare_header_is_used_when_enabled(self):
         request = MagicMock()
         request.client.host = "10.0.0.10"
         request.headers = {"CF-Connecting-IP": "203.0.113.10"}
@@ -113,25 +113,25 @@ class TestGetMCPClientIP:
         assert (
             IPAddressUtils.get_mcp_client_ip(
                 request=request,
-                general_settings={
-                    "use_cloudflare_header": True,
-                    "cloudflare_trusted_proxy_ranges": ["172.26.0.4/32"],
-                },
+                general_settings={"use_cloudflare_header": True},
             )
-            == "10.0.0.10"
+            == "203.0.113.10"
         )
 
-    def test_cloudflare_header_is_used_from_trusted_proxy(self):
+    def test_cloudflare_header_precedes_x_forwarded_for(self):
         request = MagicMock()
         request.client.host = "172.26.0.4"
-        request.headers = {"CF-Connecting-IP": "203.0.113.10"}
+        request.headers = {
+            "CF-Connecting-IP": "203.0.113.10",
+            "X-Forwarded-For": "198.51.100.20",
+        }
 
         assert (
             IPAddressUtils.get_mcp_client_ip(
                 request=request,
                 general_settings={
                     "use_cloudflare_header": True,
-                    "cloudflare_trusted_proxy_ranges": ["172.26.0.4/32"],
+                    "use_x_forwarded_for": True,
                 },
             )
             == "203.0.113.10"

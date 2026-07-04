@@ -116,8 +116,7 @@ class IPAddressUtils:
 
         Security:
         1. Only trusts Cloudflare client-IP headers when use_cloudflare_header is
-           enabled and the direct connection is from cloudflare_trusted_proxy_ranges
-           (if configured).
+           enabled.
         2. Only trusts X-Forwarded-For if use_x_forwarded_for is enabled in
            settings and the direct connection is from a trusted proxy (if
            mcp_trusted_proxy_ranges configured).
@@ -142,9 +141,6 @@ class IPAddressUtils:
 
         use_xff = general_settings.get("use_x_forwarded_for", False)
         use_cloudflare_header = general_settings.get("use_cloudflare_header", False)
-        cloudflare_trusted_proxy_ranges = general_settings.get(
-            "cloudflare_trusted_proxy_ranges"
-        )
 
         # If XFF is enabled, validate the request comes from a trusted proxy
         if use_xff and "x-forwarded-for" in request.headers:
@@ -165,5 +161,4 @@ class IPAddressUtils:
             request,
             use_x_forwarded_for=use_xff,
             use_cloudflare_header=use_cloudflare_header,
-            cloudflare_trusted_proxy_ranges=cloudflare_trusted_proxy_ranges,
         )
