@@ -2321,6 +2321,14 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
         None,
         description="CIDR ranges of trusted reverse proxies. When set, X-Forwarded-For headers are only trusted from these IPs.",
     )
+    use_cloudflare_header: Optional[bool] = Field(
+        None,
+        description="When True, use Cloudflare client-IP headers (CF-Connecting-IP / True-Client-IP) for requester IP extraction, but only from direct clients in cloudflare_trusted_proxy_ranges.",
+    )
+    cloudflare_trusted_proxy_ranges: Optional[List[str]] = Field(
+        None,
+        description="CIDR ranges of trusted reverse proxies that are allowed to supply Cloudflare client-IP headers. Cloudflare headers are ignored unless the direct client IP is in one of these ranges.",
+    )
     store_model_in_db: Optional[bool] = Field(
         None,
         description="If True, models and config are stored in and loaded from the database. Default is False.",

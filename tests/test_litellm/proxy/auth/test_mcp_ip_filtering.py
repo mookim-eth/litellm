@@ -5,8 +5,7 @@ Tests that internal callers see all MCP servers while
 external callers only see servers with available_on_public_internet=True.
 """
 
-import ipaddress
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from litellm.proxy.auth.ip_address_utils import IPAddressUtils
 from litellm.types.mcp_server.mcp_server_manager import MCPServer
@@ -91,6 +90,52 @@ class TestMCPServerIPFiltering:
 
         result = manager.filter_server_ids_by_ip(["priv"], client_ip=None)
         assert result == ["priv"]
+
+
+class TestGetMCPClientIP:
+    """Tests for MCP client IP extraction through trusted proxies."""
+
+    def test_cloudflare_header_is_ignored_by_default(self):
+        request = MagicMock()
+        request.client.host = "172.26.0.4"
+        request.headers = {"CF-Connecting-IP": "203.0.113.10"}
+
+        assert (
+            IPAddressUtils.get_mcp_client_ip(request=request, general_settings={})
+            == "172.26.0.4"
+        )
+
+    def test_cloudflare_header_requires_trusted_proxy(self):
+        request = MagicMock()
+        request.client.host = "10.0.0.10"
+        request.headers = {"CF-Connecting-IP": "203.0.113.10"}
+
+        assert (
+            IPAddressUtils.get_mcp_client_ip(
+                request=request,
+                general_settings={
+                    "use_cloudflare_header": True,
+                    "cloudflare_trusted_proxy_ranges": ["172.26.0.4/32"],
+                },
+            )
+            == "10.0.0.10"
+        )
+
+    def test_cloudflare_header_is_used_from_trusted_proxy(self):
+        request = MagicMock()
+        request.client.host = "172.26.0.4"
+        request.headers = {"CF-Connecting-IP": "203.0.113.10"}
+
+        assert (
+            IPAddressUtils.get_mcp_client_ip(
+                request=request,
+                general_settings={
+                    "use_cloudflare_header": True,
+                    "cloudflare_trusted_proxy_ranges": ["172.26.0.4/32"],
+                },
+            )
+            == "203.0.113.10"
+        )
 
 
 class TestFilterServerIdsByIpWithInfo:

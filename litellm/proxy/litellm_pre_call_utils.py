@@ -1503,11 +1503,15 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
         data["allowed_model_region"] = user_api_key_dict.allowed_model_region
     start_time = time.time()
     ## [Enterprise Only]
-    # Add User-IP Address. Prefer Cloudflare's original client IP header when
-    # present, then fall back to the existing X-Forwarded-For/direct-client
-    # behavior.
+    # Add User-IP Address. Prefer Cloudflare's original client IP header only
+    # when explicitly enabled, then fall back to the existing
+    # X-Forwarded-For/direct-client behavior.
     requester_ip_address = ""
     if request is not None:
+        use_cloudflare_header = (
+            general_settings is not None
+            and general_settings.get("use_cloudflare_header") is True
+        )
         requester_ip_address = (
             _get_request_ip_address(
                 request=request,
@@ -1515,7 +1519,12 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
                     general_settings is not None
                     and general_settings.get("use_x_forwarded_for") is True
                 ),
-                use_cloudflare_header=True,
+                use_cloudflare_header=use_cloudflare_header,
+                cloudflare_trusted_proxy_ranges=(
+                    general_settings.get("cloudflare_trusted_proxy_ranges")
+                    if general_settings is not None
+                    else None
+                ),
             )
             or ""
         )

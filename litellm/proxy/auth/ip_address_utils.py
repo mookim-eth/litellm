@@ -114,9 +114,13 @@ class IPAddressUtils:
         """
         Extract client IP from a FastAPI request for MCP access control.
 
-        Security: Only trusts X-Forwarded-For if:
-        1. use_x_forwarded_for is enabled in settings
-        2. The direct connection is from a trusted proxy (if mcp_trusted_proxy_ranges configured)
+        Security:
+        1. Only trusts Cloudflare client-IP headers when use_cloudflare_header is
+           enabled and the direct connection is from cloudflare_trusted_proxy_ranges
+           (if configured).
+        2. Only trusts X-Forwarded-For if use_x_forwarded_for is enabled in
+           settings and the direct connection is from a trusted proxy (if
+           mcp_trusted_proxy_ranges configured).
 
         Args:
             request: FastAPI request object
@@ -137,6 +141,10 @@ class IPAddressUtils:
             general_settings = {}
 
         use_xff = general_settings.get("use_x_forwarded_for", False)
+        use_cloudflare_header = general_settings.get("use_cloudflare_header", False)
+        cloudflare_trusted_proxy_ranges = general_settings.get(
+            "cloudflare_trusted_proxy_ranges"
+        )
 
         # If XFF is enabled, validate the request comes from a trusted proxy
         if use_xff and "x-forwarded-for" in request.headers:
@@ -153,4 +161,9 @@ class IPAddressUtils:
                         "XFF header from untrusted IP %s, ignoring", direct_ip
                     )
                     return direct_ip
-        return _get_request_ip_address(request, use_x_forwarded_for=use_xff)
+        return _get_request_ip_address(
+            request,
+            use_x_forwarded_for=use_xff,
+            use_cloudflare_header=use_cloudflare_header,
+            cloudflare_trusted_proxy_ranges=cloudflare_trusted_proxy_ranges,
+        )

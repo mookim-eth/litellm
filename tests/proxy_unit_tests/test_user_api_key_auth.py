@@ -32,7 +32,7 @@ class Request:
     def __init__(self, client_ip: Optional[str] = None, headers: Optional[dict] = None):
         self.client = MagicMock()
         self.client.host = client_ip
-        self.headers: Dict[str, str] = {}
+        self.headers: Dict[str, str] = headers or {}
 
 
 @pytest.mark.parametrize(
@@ -103,8 +103,28 @@ def test_get_request_ip_address_prefers_cloudflare_header_when_enabled():
             request,
             use_x_forwarded_for=True,
             use_cloudflare_header=True,
+            cloudflare_trusted_proxy_ranges=["10.0.0.10/32"],
         )
         == "203.0.113.10"
+    )
+
+
+def test_get_request_ip_address_requires_trusted_proxy_for_cloudflare_header():
+    from litellm.proxy.auth.auth_utils import _get_request_ip_address
+
+    request = MagicMock()
+    request.client.host = "10.0.0.10"
+    request.headers = {
+        "CF-Connecting-IP": "203.0.113.10",
+        "X-Forwarded-For": "198.51.100.20",
+    }
+
+    assert (
+        _get_request_ip_address(
+            request,
+            use_cloudflare_header=True,
+        )
+        == "10.0.0.10"
     )
 
 
@@ -125,6 +145,101 @@ def test_get_request_ip_address_preserves_x_forwarded_for_default_behavior():
         )
         == "198.51.100.20"
     )
+
+
+def test_get_request_ip_address_ignores_cloudflare_header_from_untrusted_proxy():
+    from litellm.proxy.auth.auth_utils import _get_request_ip_address
+
+    request = MagicMock()
+    request.client.host = "10.0.0.10"
+    request.headers = {
+        "CF-Connecting-IP": "203.0.113.10",
+        "X-Forwarded-For": "198.51.100.20",
+    }
+
+    assert (
+        _get_request_ip_address(
+            request,
+            use_cloudflare_header=True,
+            cloudflare_trusted_proxy_ranges=["172.26.0.4/32"],
+        )
+        == "10.0.0.10"
+    )
+
+
+def test_get_request_ip_address_trusts_cloudflare_header_from_trusted_proxy():
+    from litellm.proxy.auth.auth_utils import _get_request_ip_address
+
+    request = MagicMock()
+    request.client.host = "172.26.0.4"
+    request.headers = {
+        "CF-Connecting-IP": "203.0.113.10",
+        "X-Forwarded-For": "198.51.100.20",
+    }
+
+    assert (
+        _get_request_ip_address(
+            request,
+            use_x_forwarded_for=True,
+            use_cloudflare_header=True,
+            cloudflare_trusted_proxy_ranges=["172.26.0.4/32"],
+        )
+        == "203.0.113.10"
+    )
+
+
+def test_get_request_ip_address_ignores_invalid_cloudflare_header():
+    from litellm.proxy.auth.auth_utils import _get_request_ip_address
+
+    request = MagicMock()
+    request.client.host = "172.26.0.4"
+    request.headers = {
+        "CF-Connecting-IP": "not-an-ip",
+        "X-Forwarded-For": "198.51.100.20",
+    }
+
+    assert (
+        _get_request_ip_address(
+            request,
+            use_x_forwarded_for=True,
+            use_cloudflare_header=True,
+            cloudflare_trusted_proxy_ranges=["172.26.0.4/32"],
+        )
+        == "198.51.100.20"
+    )
+
+
+def test_check_valid_ip_does_not_use_cloudflare_header_by_default():
+    from litellm.proxy.auth.auth_utils import _check_valid_ip
+
+    request = Request(
+        "10.0.0.10",
+        headers={"CF-Connecting-IP": "203.0.113.10"},
+    )
+
+    is_valid, passed_in_ip = _check_valid_ip(["203.0.113.10"], request)  # type: ignore[arg-type]
+
+    assert is_valid is False
+    assert passed_in_ip == "10.0.0.10"
+
+
+def test_check_valid_ip_uses_cloudflare_header_when_enabled_and_trusted():
+    from litellm.proxy.auth.auth_utils import _check_valid_ip
+
+    request = Request(
+        "172.26.0.4",
+        headers={"CF-Connecting-IP": "203.0.113.10"},
+    )
+
+    is_valid, passed_in_ip = _check_valid_ip(
+        ["203.0.113.10"],
+        request,  # type: ignore[arg-type]
+        use_cloudflare_header=True,
+        cloudflare_trusted_proxy_ranges=["172.26.0.4/32"],
+    )
+
+    assert is_valid is True
+    assert passed_in_ip == "203.0.113.10"
 
 
 @pytest.mark.asyncio

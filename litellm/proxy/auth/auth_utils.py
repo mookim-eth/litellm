@@ -1,3 +1,4 @@
+import ipaddress
 import os
 import re
 import sys
@@ -14,6 +15,12 @@ from litellm.types.router import CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS
 from litellm.types.utils import CustomPricingLiteLLMParams
 
 CLOUDFLARE_CLIENT_IP_HEADERS = ("cf-connecting-ip", "true-client-ip")
+
+
+def _get_direct_client_ip_address(request: Request) -> Optional[str]:
+    if request.client is not None:
+        return request.client.host
+    return None
 
 
 def _get_request_header_value(request: Request, header_name: str) -> Optional[str]:
@@ -59,6 +66,28 @@ def _get_request_header_value(request: Request, header_name: str) -> Optional[st
     return value or None
 
 
+def _get_valid_single_ip_header_value(
+    request: Request, header_name: str
+) -> Optional[str]:
+    header_value = _get_request_header_value(request=request, header_name=header_name)
+    if header_value is None:
+        return None
+
+    # Cloudflare client-IP headers should contain exactly one IP address, not an
+    # X-Forwarded-For style comma chain.
+    if "," in header_value:
+        verbose_proxy_logger.debug(
+            "Ignoring %s header with multiple IP values", header_name
+        )
+        return None
+
+    try:
+        return str(ipaddress.ip_address(header_value))
+    except ValueError:
+        verbose_proxy_logger.debug("Ignoring invalid %s header", header_name)
+        return None
+
+
 def _get_cloudflare_request_ip_address(request: Request) -> Optional[str]:
     """
     Extract the original client IP from Cloudflare headers.
@@ -67,22 +96,64 @@ def _get_cloudflare_request_ip_address(request: Request) -> Optional[str]:
     customers can also enable ``True-Client-IP``; it carries the same value.
     """
     for header_name in CLOUDFLARE_CLIENT_IP_HEADERS:
-        client_ip = _get_request_header_value(request=request, header_name=header_name)
+        client_ip = _get_valid_single_ip_header_value(
+            request=request, header_name=header_name
+        )
         if client_ip is not None:
             return client_ip
     return None
+
+
+def _is_direct_client_in_trusted_proxy_ranges(
+    request: Request, trusted_proxy_ranges: Optional[List[str]]
+) -> bool:
+    if not trusted_proxy_ranges:
+        return False
+
+    direct_client_ip = _get_direct_client_ip_address(request=request)
+    if direct_client_ip is None:
+        return False
+
+    try:
+        direct_client_addr = ipaddress.ip_address(str(direct_client_ip).strip())
+    except ValueError:
+        return False
+
+    for cidr in trusted_proxy_ranges:
+        try:
+            trusted_network = ipaddress.ip_network(str(cidr), strict=False)
+        except ValueError:
+            verbose_proxy_logger.warning(
+                "Invalid CIDR in cloudflare_trusted_proxy_ranges: %s, skipping",
+                cidr,
+            )
+            continue
+        if direct_client_addr in trusted_network:
+            return True
+
+    return False
 
 
 def _get_request_ip_address(
     request: Request,
     use_x_forwarded_for: Optional[bool] = False,
     use_cloudflare_header: Optional[bool] = False,
+    cloudflare_trusted_proxy_ranges: Optional[List[str]] = None,
 ) -> Optional[str]:
     client_ip = None
     if use_cloudflare_header is True:
-        client_ip = _get_cloudflare_request_ip_address(request=request)
-        if client_ip is not None:
-            return client_ip
+        if _is_direct_client_in_trusted_proxy_ranges(
+            request=request,
+            trusted_proxy_ranges=cloudflare_trusted_proxy_ranges,
+        ):
+            client_ip = _get_cloudflare_request_ip_address(request=request)
+            if client_ip is not None:
+                return client_ip
+        else:
+            verbose_proxy_logger.debug(
+                "Ignoring Cloudflare client IP header from untrusted direct client %s",
+                _get_direct_client_ip_address(request=request),
+            )
 
     x_forwarded_for = _get_request_header_value(
         request=request, header_name="x-forwarded-for"
@@ -101,6 +172,8 @@ def _check_valid_ip(
     allowed_ips: Optional[List[str]],
     request: Request,
     use_x_forwarded_for: Optional[bool] = False,
+    use_cloudflare_header: Optional[bool] = False,
+    cloudflare_trusted_proxy_ranges: Optional[List[str]] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Returns if ip is allowed or not
@@ -110,7 +183,10 @@ def _check_valid_ip(
 
     # if general_settings.get("use_x_forwarded_for") is True then use x-forwarded-for
     client_ip = _get_request_ip_address(
-        request=request, use_x_forwarded_for=use_x_forwarded_for
+        request=request,
+        use_x_forwarded_for=use_x_forwarded_for,
+        use_cloudflare_header=use_cloudflare_header,
+        cloudflare_trusted_proxy_ranges=cloudflare_trusted_proxy_ranges,
     )
 
     # Check if IP address is allowed
@@ -325,6 +401,10 @@ async def pre_db_read_auth_checks(
     is_valid_ip, passed_in_ip = _check_valid_ip(
         allowed_ips=general_settings.get("allowed_ips", None),
         use_x_forwarded_for=general_settings.get("use_x_forwarded_for", False),
+        use_cloudflare_header=general_settings.get("use_cloudflare_header", False),
+        cloudflare_trusted_proxy_ranges=general_settings.get(
+            "cloudflare_trusted_proxy_ranges"
+        ),
         request=request,
     )
 

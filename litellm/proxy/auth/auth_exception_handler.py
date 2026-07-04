@@ -94,7 +94,12 @@ class UserAPIKeyAuthExceptionHandler:
                 use_x_forwarded_for=general_settings.get(
                     "use_x_forwarded_for", False
                 ),
-                use_cloudflare_header=True,
+                use_cloudflare_header=general_settings.get(
+                    "use_cloudflare_header", False
+                ),
+                cloudflare_trusted_proxy_ranges=general_settings.get(
+                    "cloudflare_trusted_proxy_ranges"
+                ),
             )
             or ""
         )
