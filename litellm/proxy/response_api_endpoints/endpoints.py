@@ -24,7 +24,9 @@ router = APIRouter()
 CODEX_RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
 
 
-def _forward_codex_responses_lite_header(data: Dict[str, Any], request: Request) -> None:
+def _apply_codex_responses_lite_request_overrides(
+    data: Dict[str, Any], request: Request
+) -> None:
     header_value = request.headers.get(CODEX_RESPONSES_LITE_HEADER)
     if header_value is None:
         return
@@ -34,6 +36,7 @@ def _forward_codex_responses_lite_header(data: Dict[str, Any], request: Request)
         extra_headers = {}
         data["extra_headers"] = extra_headers
     extra_headers[CODEX_RESPONSES_LITE_HEADER] = header_value
+    data["parallel_tool_calls"] = False
 
 
 @router.post(
@@ -106,7 +109,7 @@ async def responses_api(
 
     data = await _read_request_body(request=request)
     apply_pro_header_model_override(data=data, request=request)
-    _forward_codex_responses_lite_header(data=data, request=request)
+    _apply_codex_responses_lite_request_overrides(data=data, request=request)
 
     # Check if polling via cache should be used for this request
     from litellm.proxy.response_polling.polling_handler import (
