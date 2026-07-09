@@ -79,6 +79,24 @@ class ChatCompletionSession(TypedDict, total=False):
 
 class LiteLLMCompletionResponsesConfig:
     @staticmethod
+    def _extract_additional_tools_from_input(
+        input: Union[str, ResponseInputParam],
+    ) -> List[Any]:
+        if not isinstance(input, list):
+            return []
+
+        tools: List[Any] = []
+        for input_item in input:
+            if not isinstance(input_item, dict):
+                continue
+            if input_item.get("type") != "additional_tools":
+                continue
+            additional_tools = input_item.get("tools")
+            if isinstance(additional_tools, list):
+                tools.extend(additional_tools)
+        return tools
+
+    @staticmethod
     def get_supported_openai_params(model: str) -> list:
         """
         LiteLLM Adapter from OpenAI Responses API to Chat Completion API supports a subset of OpenAI Responses API params
@@ -170,7 +188,10 @@ class LiteLLMCompletionResponsesConfig:
             tools,
             web_search_options,
         ) = LiteLLMCompletionResponsesConfig.transform_responses_api_tools_to_chat_completion_tools(
-            responses_api_request.get("tools") or []  # type: ignore
+            LiteLLMCompletionResponsesConfig._extract_additional_tools_from_input(
+                input=input
+            )
+            + list(responses_api_request.get("tools") or [])  # type: ignore
         )
 
         response_format = None

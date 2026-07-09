@@ -1,9 +1,11 @@
 """
 Test for response_format to text.format conversion in completion -> responses bridge
 """
-import pytest
 from litellm.completion_extras.litellm_responses_transformation.transformation import (
     LiteLLMResponsesTransformationHandler,
+)
+from litellm.responses.litellm_completion_transformation.transformation import (
+    LiteLLMCompletionResponsesConfig,
 )
 
 
@@ -156,6 +158,66 @@ def test_transform_request_includes_extra_headers():
         litellm_logging_obj=MockLoggingObj(),
     )
     assert result.get("extra_headers") == headers
+
+
+def test_responses_to_completion_extracts_codex_lite_additional_tools():
+    """Test Codex Responses Lite tools embedded in input are not dropped."""
+    input_items = [
+        {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "execute",
+                    "description": "Run code mode",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "code": {"type": "string"},
+                        },
+                        "required": ["code"],
+                    },
+                    "strict": True,
+                }
+            ],
+        },
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "read a file"}],
+        },
+    ]
+
+    result = LiteLLMCompletionResponsesConfig.transform_responses_api_request_to_chat_completion_request(
+        model="gpt-5.6-sol",
+        input=input_items,
+        responses_api_request={"tool_choice": "auto"},
+    )
+
+    assert result["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "execute",
+                "description": "Run code mode",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string"},
+                    },
+                    "required": ["code"],
+                },
+                "strict": True,
+            },
+        }
+    ]
+    assert result["messages"] == [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "read a file"}],
+        }
+    ]
 
 
 def test_transform_request_strips_internal_metadata_to_litellm_metadata():
