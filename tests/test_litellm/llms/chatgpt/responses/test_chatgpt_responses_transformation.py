@@ -18,7 +18,10 @@ from litellm.completion_extras.litellm_responses_transformation.transformation i
     LiteLLMResponsesTransformationHandler,
 )
 from litellm.llms.openai.common_utils import OpenAIError
-from litellm.llms.chatgpt.responses.transformation import ChatGPTResponsesAPIConfig
+from litellm.llms.chatgpt.responses.transformation import (
+    CODEX_RESPONSES_LITE_HEADER,
+    ChatGPTResponsesAPIConfig,
+)
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.utils import LlmProviders
 from litellm.utils import ProviderConfigManager
@@ -140,6 +143,18 @@ class TestChatGPTResponsesAPITransformation:
         assert request["stream"] is True
         assert "reasoning.encrypted_content" in request["include"]
         assert request["instructions"] == ""
+
+    def test_chatgpt_codex_responses_lite_forces_parallel_tool_calls_false(self):
+        config = ChatGPTResponsesAPIConfig()
+        request = config.transform_responses_api_request(
+            model="chatgpt/gpt-5.6-sol",
+            input="hi",
+            response_api_optional_request_params={"parallel_tool_calls": True},
+            litellm_params=GenericLiteLLMParams(),
+            headers={CODEX_RESPONSES_LITE_HEADER: "true"},
+        )
+
+        assert request["parallel_tool_calls"] is False
 
     def test_chatgpt_responses_extracts_system_and_developer_input_to_instructions(self):
         config = ChatGPTResponsesAPIConfig()

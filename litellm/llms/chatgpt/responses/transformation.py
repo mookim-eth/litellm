@@ -26,6 +26,8 @@ from ..common_utils import (
     get_chatgpt_default_headers,
 )
 
+CODEX_RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
+
 
 class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
     def __init__(self) -> None:
@@ -539,6 +541,8 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         request["stream"] = True
         if request.get("service_tier") == "fast":
             request["service_tier"] = "priority"
+        if headers.get(CODEX_RESPONSES_LITE_HEADER):
+            request["parallel_tool_calls"] = False
         include = list(request.get("include") or [])
         if "reasoning.encrypted_content" not in include:
             include.append("reasoning.encrypted_content")
@@ -556,6 +560,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             "reasoning",
             "prompt_cache_key",
             "previous_response_id",
+            "parallel_tool_calls",
             "truncation",
             "service_tier",
         }
