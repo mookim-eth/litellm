@@ -79,7 +79,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
                 continue
 
             role = item.get("role")
-            if role in ("system", "developer"):
+            if item.get("type") == "message" and role in ("system", "developer"):
                 instruction_text = self._stringify_instruction_content(
                     item.get("content")
                 )

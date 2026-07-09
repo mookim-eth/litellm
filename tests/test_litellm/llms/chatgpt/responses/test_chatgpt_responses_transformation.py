@@ -191,6 +191,50 @@ class TestChatGPTResponsesAPITransformation:
         ]
         assert request["instructions"] == "Be terse.\n\nPrefer patches."
 
+    def test_chatgpt_responses_preserves_codex_responses_lite_additional_tools(self):
+        config = ChatGPTResponsesAPIConfig()
+        additional_tools = {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "shell",
+                    "description": "Run a shell command",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+        }
+        request = config.transform_responses_api_request(
+            model="chatgpt/gpt-5.6-sol",
+            input=[
+                additional_tools,
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "Use tools."}],
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "List files"}],
+                },
+            ],
+            response_api_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={CODEX_RESPONSES_LITE_HEADER: "true"},
+        )
+
+        assert request["input"] == [
+            additional_tools,
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "List files"}],
+            },
+        ]
+        assert request["instructions"] == "Use tools."
+
     def test_chatgpt_responses_extracted_instructions_replace_existing_instructions(self):
         config = ChatGPTResponsesAPIConfig()
         request = config.transform_responses_api_request(
