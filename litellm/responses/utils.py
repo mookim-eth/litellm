@@ -929,13 +929,22 @@ class ResponseAPILoggingUtils:
         prompt_tokens_details: Optional[PromptTokensDetailsWrapper] = None
         if response_api_usage.input_tokens_details:
             if isinstance(response_api_usage.input_tokens_details, dict):
+                input_tokens_details = dict(response_api_usage.input_tokens_details)
+                input_tokens_details["cache_creation_tokens"] = (
+                    input_tokens_details.get("cache_write_tokens", 0)
+                )
                 prompt_tokens_details = PromptTokensDetailsWrapper(
-                    **response_api_usage.input_tokens_details
+                    **input_tokens_details
                 )
             else:
                 prompt_tokens_details = PromptTokensDetailsWrapper(
                     cached_tokens=getattr(
                         response_api_usage.input_tokens_details, "cached_tokens", None
+                    ),
+                    cache_creation_tokens=getattr(
+                        response_api_usage.input_tokens_details,
+                        "cache_write_tokens",
+                        None,
                     ),
                     audio_tokens=getattr(
                         response_api_usage.input_tokens_details, "audio_tokens", None

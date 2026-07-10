@@ -658,6 +658,43 @@ def test_cost_calculator_with_cache_creation():
     print(result)
 
 
+def test_responses_cache_write_tokens_are_billed_at_cache_creation_rate(monkeypatch):
+    from litellm.responses.utils import ResponseAPILoggingUtils
+
+    model = "gpt-5.6-cache-write-test"
+    monkeypatch.setitem(
+        litellm.model_cost,
+        f"chatgpt/{model}",
+        {
+            "input_cost_per_token": 1.0,
+            "cache_read_input_token_cost": 0.1,
+            "cache_creation_input_token_cost": 1.25,
+            "output_cost_per_token": 2.0,
+            "litellm_provider": "chatgpt",
+        },
+    )
+    usage = ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(
+        {
+            "input_tokens": 100,
+            "input_tokens_details": {
+                "cached_tokens": 20,
+                "cache_write_tokens": 30,
+            },
+            "output_tokens": 10,
+            "total_tokens": 110,
+        }
+    )
+
+    input_cost, output_cost = litellm.cost_per_token(
+        model=model,
+        custom_llm_provider="chatgpt",
+        usage_object=usage,
+    )
+
+    assert input_cost == 50 + 20 * 0.1 + 30 * 1.25
+    assert output_cost == 10 * 2.0
+
+
 def test_bedrock_cost_calculator_comparison_with_without_cache():
     """Test that Bedrock caching reduces costs compared to non-cached requests"""
     from litellm import completion_cost

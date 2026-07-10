@@ -214,6 +214,25 @@ class TestResponseAPILoggingUtils:
         assert result.total_tokens == 30
         assert result.prompt_tokens_details and result.prompt_tokens_details.cached_tokens == 2
 
+    def test_transform_response_api_usage_maps_cache_write_tokens(self):
+        usage = {
+            "input_tokens": 100,
+            "input_tokens_details": {
+                "cached_tokens": 20,
+                "cache_write_tokens": 30,
+            },
+            "output_tokens": 10,
+            "total_tokens": 110,
+        }
+
+        result = ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(
+            usage
+        )
+
+        assert result.prompt_tokens_details is not None
+        assert result.prompt_tokens_details.cached_tokens == 20
+        assert result.prompt_tokens_details.cache_creation_tokens == 30
+
     def test_transform_response_api_usage_with_none_values(self):
         """Test transformation handles None values properly"""
         # Setup
