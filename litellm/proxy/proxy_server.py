@@ -612,8 +612,12 @@ from fastapi.staticfiles import StaticFiles
 from litellm.types.agents import AgentConfig
 
 PRO_HEADER_MODEL_OVERRIDE_SKIP_ALIAS_KEY = "_litellm_skip_model_alias_mapping"
-PRO_HEADER_SOURCE_MODEL = "gpt-5.5"
-PRO_HEADER_TARGET_MODEL = "pro1-gpt-5.5"
+PRO_HEADER_MODEL_OVERRIDES = {
+    "gpt-5.5": "pro1-gpt-5.5",
+    "gpt-5.6-sol": "pro1-gpt-5.6-sol",
+    "gpt-5.6-terra": "pro1-gpt-5.6-terra",
+    "gpt-5.6-luna": "pro1-gpt-5.6-luna",
+}
 
 
 def _is_pro_header_enabled(request: Request) -> bool:
@@ -623,23 +627,30 @@ def _is_pro_header_enabled(request: Request) -> bool:
 def apply_pro_header_model_override(
     data: dict, request: Request, model: Optional[str] = None
 ) -> Optional[str]:
-    """Route gpt-5.5 to pro1-gpt-5.5 when the client sends pro=1.
+    """Route supported GPT models to their pro1 model group when pro=1.
 
     This runs before normal alias mapping so the pro request targets the pro1
-    model group directly instead of following gpt-5.5's alias/fallback path.
+    model group directly instead of following the source model's alias/fallback path.
     """
 
     if not _is_pro_header_enabled(request=request):
         return model
 
-    if data.get("model") == PRO_HEADER_SOURCE_MODEL:
-        data["model"] = PRO_HEADER_TARGET_MODEL
+    body_model = data.get("model")
+    target_model = (
+        PRO_HEADER_MODEL_OVERRIDES.get(body_model)
+        if isinstance(body_model, str)
+        else None
+    )
+    if target_model is not None:
+        data["model"] = target_model
         data[PRO_HEADER_MODEL_OVERRIDE_SKIP_ALIAS_KEY] = True
         return model
 
-    if data.get("model") is None and model == PRO_HEADER_SOURCE_MODEL:
+    target_model = PRO_HEADER_MODEL_OVERRIDES.get(model) if model is not None else None
+    if data.get("model") is None and target_model is not None:
         data[PRO_HEADER_MODEL_OVERRIDE_SKIP_ALIAS_KEY] = True
-        return PRO_HEADER_TARGET_MODEL
+        return target_model
 
     return model
 

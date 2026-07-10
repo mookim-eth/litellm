@@ -54,15 +54,26 @@ async def test_chat_completion_metadata_population():
             assert data_arg["metadata"]["user_api_key_org_id"] == "test_org_id"
 
 
+PRO_HEADER_MODEL_OVERRIDES = [
+    ("gpt-5.5", "pro1-gpt-5.5"),
+    ("gpt-5.6-sol", "pro1-gpt-5.6-sol"),
+    ("gpt-5.6-terra", "pro1-gpt-5.6-terra"),
+    ("gpt-5.6-luna", "pro1-gpt-5.6-luna"),
+]
+
+
+@pytest.mark.parametrize(("source_model", "target_model"), PRO_HEADER_MODEL_OVERRIDES)
 @pytest.mark.asyncio
-async def test_chat_completion_pro_header_routes_gpt_55_to_pro1_model():
+async def test_chat_completion_pro_header_routes_to_pro1_model(
+    source_model, target_model
+):
     request = MagicMock(spec=Request)
     request.headers = {"pro": "1"}
 
     with patch(
         "litellm.proxy.proxy_server._read_request_body", new_callable=AsyncMock
     ) as mock_read_body:
-        mock_read_body.return_value = {"model": "gpt-5.5", "messages": []}
+        mock_read_body.return_value = {"model": source_model, "messages": []}
 
         user_api_key_dict = UserAPIKeyAuth()
         fastapi_response = MagicMock(spec=Response)
@@ -82,12 +93,15 @@ async def test_chat_completion_pro_header_routes_gpt_55_to_pro1_model():
             )
 
             data_arg = MockProcessor.call_args.kwargs["data"]
-            assert data_arg["model"] == "pro1-gpt-5.5"
+            assert data_arg["model"] == target_model
             assert data_arg["_litellm_skip_model_alias_mapping"] is True
 
 
+@pytest.mark.parametrize(("source_model", "target_model"), PRO_HEADER_MODEL_OVERRIDES)
 @pytest.mark.asyncio
-async def test_cursor_chat_completion_pro_header_routes_gpt_55_to_pro1_model():
+async def test_cursor_chat_completion_pro_header_routes_to_pro1_model(
+    source_model, target_model
+):
     request = MagicMock(spec=Request)
     request.headers = {"pro": "1"}
 
@@ -95,7 +109,7 @@ async def test_cursor_chat_completion_pro_header_routes_gpt_55_to_pro1_model():
         "litellm.proxy.proxy_server._read_request_body", new_callable=AsyncMock
     ) as mock_read_body:
         mock_read_body.return_value = {
-            "model": "gpt-5.5",
+            "model": source_model,
             "messages": [{"role": "user", "content": "hi"}],
         }
 
@@ -117,14 +131,15 @@ async def test_cursor_chat_completion_pro_header_routes_gpt_55_to_pro1_model():
             )
 
             data_arg = MockProcessor.call_args.kwargs["data"]
-            assert data_arg["model"] == "pro1-gpt-5.5"
+            assert data_arg["model"] == target_model
             assert data_arg["_litellm_skip_model_alias_mapping"] is True
             assert "messages" not in data_arg
             assert data_arg["input"] == [{"role": "user", "content": "hi"}]
 
 
+@pytest.mark.parametrize(("source_model", "target_model"), PRO_HEADER_MODEL_OVERRIDES)
 @pytest.mark.asyncio
-async def test_responses_api_pro_header_routes_gpt_55_to_pro1_model():
+async def test_responses_api_pro_header_routes_to_pro1_model(source_model, target_model):
     request = MagicMock(spec=Request)
     request.headers = {"pro": "1"}
 
@@ -132,7 +147,7 @@ async def test_responses_api_pro_header_routes_gpt_55_to_pro1_model():
         "litellm.proxy.proxy_server._read_request_body", new_callable=AsyncMock
     ) as mock_read_body:
         mock_read_body.return_value = {
-            "model": "gpt-5.5",
+            "model": source_model,
             "input": "hi",
         }
 
@@ -154,7 +169,7 @@ async def test_responses_api_pro_header_routes_gpt_55_to_pro1_model():
             )
 
             data_arg = MockProcessor.call_args.kwargs["data"]
-            assert data_arg["model"] == "pro1-gpt-5.5"
+            assert data_arg["model"] == target_model
             assert data_arg["_litellm_skip_model_alias_mapping"] is True
 
 
