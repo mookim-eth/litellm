@@ -1278,7 +1278,7 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
                 return ModelResponseStream(
                     choices=[
                         StreamingChoices(
-                            index=0,
+                            index=parsed_chunk.get("output_index", 0),
                             delta=Delta(content=content_part),
                             finish_reason=None,
                         )
@@ -1373,7 +1373,9 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
             ]
         )
 
-    def chunk_parser(self, chunk: dict) -> "ModelResponseStream":
+    def chunk_parser(
+        self, chunk: dict
+    ) -> Union["GenericStreamingChunk", "ModelResponseStream"]:
         """
         Parse a Responses API streaming chunk and convert to OpenAI format.
 
@@ -1386,6 +1388,23 @@ class OpenAiResponsesToChatCompletionStreamIterator(BaseModelResponseIterator):
         verbose_logger.debug(
             f"Chat provider: transform_streaming_response called with chunk: {chunk}"
         )
+        event_type = chunk.get("type")
+        if isinstance(event_type, ResponsesAPIStreamEvents):
+            event_type = event_type.value
+        if event_type == "response.output_text.delta":
+            content_part = chunk.get("delta")
+            if content_part is None:
+                raise ValueError(f"Chat provider: Invalid text delta {chunk}")
+            # The wrapper immediately unpacks and rebuilds text-only chunks, so
+            # avoid constructing an intermediate Pydantic response tree here.
+            return GenericStreamingChunk(
+                text=content_part,
+                tool_use=None,
+                is_finished=False,
+                finish_reason="",
+                usage=None,
+                index=chunk.get("output_index", 0),
+            )
         return OpenAiResponsesToChatCompletionStreamIterator.translate_responses_chunk_to_openai_stream(
             chunk
         )

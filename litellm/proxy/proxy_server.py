@@ -5931,6 +5931,100 @@ def _restamp_streaming_chunk_model(
     return chunk, model_mismatch_logged
 
 
+_STREAM_TEXT_COALESCE_SECONDS = 0.300
+_STREAM_TEXT_COALESCE_MAX_CHARS = 1024
+
+
+def _get_coalescible_text_delta(chunk: Any) -> Optional[str]:
+    """Return content only for a plain, non-terminal chat text delta."""
+    if not isinstance(chunk, ModelResponseStream) or len(chunk.choices) != 1:
+        return None
+    choice = chunk.choices[0]
+    if choice.finish_reason is not None or getattr(chunk, "usage", None) is not None:
+        return None
+    delta = choice.delta
+    content = getattr(delta, "content", None)
+    if not isinstance(content, str) or not content:
+        return None
+    if not delta.model_fields_set.issubset({"content", "role"}):
+        return None
+    if getattr(choice, "logprobs", None) is not None:
+        return None
+    return content
+
+
+def _can_coalesce_text_chunks(first: Any, following: Any) -> bool:
+    if _get_coalescible_text_delta(following) is None:
+        return False
+    first_choice = first.choices[0]
+    following_choice = following.choices[0]
+    return (
+        first_choice.index == following_choice.index
+        and getattr(first, "id", None) == getattr(following, "id", None)
+        and getattr(first, "model", None) == getattr(following, "model", None)
+    )
+
+
+async def _coalesce_plain_text_stream(response: Any):  # noqa: PLR0915
+    """Micro-batch adjacent text-only deltas before callbacks and JSON encoding."""
+    iterator = response.__aiter__()
+    pending_chunk: Any = None
+    pending_task: Optional[asyncio.Task] = None
+    try:
+        while True:
+            try:
+                if pending_chunk is not None:
+                    chunk = pending_chunk
+                    pending_chunk = None
+                elif pending_task is not None:
+                    chunk = await pending_task
+                    pending_task = None
+                else:
+                    chunk = await iterator.__anext__()
+            except StopAsyncIteration:
+                return
+
+            content = _get_coalescible_text_delta(chunk)
+            if content is None:
+                yield chunk
+                continue
+
+            deadline = asyncio.get_running_loop().time() + _STREAM_TEXT_COALESCE_SECONDS
+            while len(content) < _STREAM_TEXT_COALESCE_MAX_CHARS:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    break
+                pending_task = asyncio.create_task(iterator.__anext__())
+                done, _ = await asyncio.wait({pending_task}, timeout=remaining)
+                if not done:
+                    break
+                try:
+                    following = pending_task.result()
+                except StopAsyncIteration:
+                    pending_task = None
+                    break
+                pending_task = None
+                if not _can_coalesce_text_chunks(chunk, following):
+                    pending_chunk = following
+                    break
+                following_content = _get_coalescible_text_delta(following)
+                if following_content is None:
+                    pending_chunk = following
+                    break
+                chunk.choices[0].delta.content = content + following_content
+                content = chunk.choices[0].delta.content
+            yield chunk
+    finally:
+        if pending_task is not None and not pending_task.done():
+            pending_task.cancel()
+            with contextlib.suppress(BaseException):
+                await pending_task
+        close = getattr(iterator, "aclose", None)
+        if callable(close):
+            with contextlib.suppress(BaseException):
+                await close()
+
+
 async def async_data_generator(
     response, user_api_key_dict: UserAPIKeyAuth, request_data: dict
 ):
@@ -5945,9 +6039,10 @@ async def async_data_generator(
         # Previously "".join(str_so_far_parts) was called every chunk, re-joining
         # the entire accumulated response. String += is O(n) amortized total.
         _str_so_far: str = ""
+        coalesced_response = _coalesce_plain_text_stream(response=response)
         async for chunk in proxy_logging_obj.async_post_call_streaming_iterator_hook(
             user_api_key_dict=user_api_key_dict,
-            response=response,
+            response=coalesced_response,
             request_data=request_data,
         ):
             ### CALL HOOKS ### - modify outgoing data

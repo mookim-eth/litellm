@@ -260,8 +260,6 @@ def test_chunk_parser_string_output_text_delta_produces_text():
     from litellm.completion_extras.litellm_responses_transformation.transformation import (
         OpenAiResponsesToChatCompletionStreamIterator,
     )
-    from litellm.types.utils import ModelResponseStream
-
     iterator = OpenAiResponsesToChatCompletionStreamIterator(
         streaming_response=None, sync_stream=True
     )
@@ -270,12 +268,14 @@ def test_chunk_parser_string_output_text_delta_produces_text():
 
     result = iterator.chunk_parser(chunk)
 
-    assert isinstance(result, ModelResponseStream)
-    assert len(result.choices) == 1
-    choice = result.choices[0]
-    assert choice.delta.content == "literal text"
-    assert choice.delta.tool_calls is None
-    assert choice.finish_reason is None
+    assert result == {
+        "text": "literal text",
+        "tool_use": None,
+        "is_finished": False,
+        "finish_reason": "",
+        "usage": None,
+        "index": 0,
+    }
 
 
 def test_chunk_parser_enum_output_text_delta_produces_text():
@@ -283,8 +283,6 @@ def test_chunk_parser_enum_output_text_delta_produces_text():
         OpenAiResponsesToChatCompletionStreamIterator,
     )
     from litellm.types.llms.openai import ResponsesAPIStreamEvents
-    from litellm.types.utils import ModelResponseStream
-
     iterator = OpenAiResponsesToChatCompletionStreamIterator(
         streaming_response=None, sync_stream=True
     )
@@ -293,12 +291,14 @@ def test_chunk_parser_enum_output_text_delta_produces_text():
 
     result = iterator.chunk_parser(chunk)
 
-    assert isinstance(result, ModelResponseStream)
-    assert len(result.choices) == 1
-    choice = result.choices[0]
-    assert choice.delta.content == "enum text"
-    assert choice.delta.tool_calls is None
-    assert choice.finish_reason is None
+    assert result == {
+        "text": "enum text",
+        "tool_use": None,
+        "is_finished": False,
+        "finish_reason": "",
+        "usage": None,
+        "index": 0,
+    }
 
 
 def test_chunk_parser_function_call_added_produces_tool_use():
