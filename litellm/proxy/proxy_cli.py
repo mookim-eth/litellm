@@ -130,6 +130,7 @@ class ProxyInitializationHelpers:
         port: int,
         log_config: Optional[str] = None,
         keepalive_timeout: Optional[int] = None,
+        disable_access_log: bool = False,
     ) -> dict:
         """
         Get the arguments for `uvicorn` worker
@@ -141,6 +142,7 @@ class ProxyInitializationHelpers:
             "app": "litellm.proxy.proxy_server:app",
             "host": host,
             "port": port,
+            "access_log": not disable_access_log,
         }
         if log_config is not None:
             print(f"Using log_config: {log_config}")  # noqa
@@ -196,6 +198,7 @@ class ProxyInitializationHelpers:
         ssl_certfile_path: str,
         ssl_keyfile_path: str,
         max_requests_before_restart: Optional[int] = None,
+        disable_access_log: bool = False,
     ):
         """
         Run litellm with `gunicorn`
@@ -271,7 +274,7 @@ class ProxyInitializationHelpers:
             "workers": num_workers,  # default is 1
             "worker_class": "uvicorn.workers.UvicornWorker",
             "preload": True,  # Add the preload flag,
-            "accesslog": "-",  # Log to stdout
+            "accesslog": None if disable_access_log else "-",
             "timeout": 600,  # default to very high number, bedrock/anthropic.claude-v2:1 can take 30+ seconds for the 1st chunk to come in
             "access_log_format": '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s',
         }
@@ -470,6 +473,13 @@ class ProxyInitializationHelpers:
     help="Path to the logging configuration file",
 )
 @click.option(
+    "--disable_access_log",
+    is_flag=True,
+    default=False,
+    help="Disable Uvicorn/Gunicorn HTTP access logs while keeping application logs.",
+    envvar="DISABLE_ACCESS_LOG",
+)
+@click.option(
     "--setup",
     is_flag=True,
     default=False,
@@ -613,6 +623,7 @@ def run_server(  # noqa: PLR0915
     ssl_certfile_path,
     ciphers,
     log_config,
+    disable_access_log: bool,
     use_prisma_db_push: bool,
     skip_server_startup,
     keepalive_timeout,
@@ -944,6 +955,7 @@ def run_server(  # noqa: PLR0915
             port=port,
             log_config=log_config,
             keepalive_timeout=keepalive_timeout,
+            disable_access_log=disable_access_log,
         )
         # Optional: recycle uvicorn workers after N requests
         if max_requests_before_restart is not None:
@@ -973,6 +985,7 @@ def run_server(  # noqa: PLR0915
                 ssl_certfile_path=ssl_certfile_path,
                 ssl_keyfile_path=ssl_keyfile_path,
                 max_requests_before_restart=max_requests_before_restart,
+                disable_access_log=disable_access_log,
             )
         elif run_hypercorn is True:
             ProxyInitializationHelpers._init_hypercorn_server(

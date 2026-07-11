@@ -92,6 +92,12 @@ class TestProxyInitializationHelpers:
         assert args["app"] == "litellm.proxy.proxy_server:app"
         assert args["host"] == "localhost"
         assert args["port"] == 8000
+        assert args["access_log"] is True
+
+        args = ProxyInitializationHelpers._get_default_unvicorn_init_args(
+            "localhost", 8000, disable_access_log=True
+        )
+        assert args["access_log"] is False
 
         # Test with log_config
         args = ProxyInitializationHelpers._get_default_unvicorn_init_args(
@@ -364,6 +370,7 @@ class TestProxyInitializationHelpers:
                 port=4000,
                 log_config=None,
                 keepalive_timeout=30,
+                disable_access_log=False,
             )
             mock_uvicorn_run.assert_called_once()
 

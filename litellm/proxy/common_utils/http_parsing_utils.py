@@ -3,7 +3,8 @@ import re
 from typing import Any, Collection, Dict, List, Optional
 
 import orjson
-from fastapi import Request, UploadFile, status
+from fastapi import HTTPException, Request, UploadFile, status
+from starlette.requests import ClientDisconnect
 
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import ProxyException
@@ -84,6 +85,15 @@ async def _read_request_body(request: Optional[Request]) -> Dict:
         _safe_set_request_parsed_body(request=request, parsed_body=parsed_body)
         return parsed_body
 
+    except ClientDisconnect:
+        # The client is already gone. Do not turn an incomplete body into an
+        # empty request and continue into model validation (for example,
+        # producing a misleading model=None error).
+        verbose_proxy_logger.debug("Client disconnected while reading request body")
+        raise HTTPException(
+            status_code=499,
+            detail="Client disconnected while reading request body",
+        ) from None
     except (json.JSONDecodeError, orjson.JSONDecodeError, ProxyException) as e:
         # Re-raise ProxyException as-is
         verbose_proxy_logger.error(f"Invalid JSON payload received: {str(e)}")

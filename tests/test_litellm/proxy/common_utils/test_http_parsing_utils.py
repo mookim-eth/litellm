@@ -5,8 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import orjson
 import pytest
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
+from starlette.requests import ClientDisconnect
 
 sys.path.insert(
     0, os.path.abspath("../../../..")
@@ -324,6 +325,21 @@ async def test_empty_request_body():
 
     # Verify the body was read
     mock_request.body.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_client_disconnect_raises_499_without_returning_empty_body():
+    mock_request = MagicMock()
+    mock_request.body = AsyncMock(side_effect=ClientDisconnect())
+    mock_request.headers = {"content-type": "application/json"}
+    mock_request.scope = {}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _read_request_body(mock_request)
+
+    assert exc_info.value.status_code == 499
+    assert exc_info.value.detail == "Client disconnected while reading request body"
+    assert "parsed_body" not in mock_request.scope
 
 
 @pytest.mark.asyncio
