@@ -37,9 +37,10 @@ from litellm.types.llms.openai import (
 )
 from litellm.types.utils import CallTypes
 from litellm.utils import CustomStreamWrapper, async_post_call_success_deployment_hook
+from litellm.constants import STREAM_TEXT_COALESCE_SECONDS
 
-RESPONSES_TEXT_COALESCE_SECONDS = 0.300
 RESPONSES_TEXT_COALESCE_MAX_CHARS = 1024
+_RESPONSES_OUTBOUND_SEQUENCE_KEY = "_litellm_responses_outbound_sequence_number"
 
 
 class BaseResponsesAPIStreamingIterator:
@@ -74,7 +75,9 @@ class BaseResponsesAPIStreamingIterator:
         # track request context for hooks
         self.litellm_metadata = litellm_metadata
         self.custom_llm_provider = custom_llm_provider
-        self.request_data: Dict[str, Any] = request_data or {}
+        self.request_data: Dict[str, Any] = (
+            request_data if request_data is not None else {}
+        )
         self.call_type: Optional[str] = call_type
 
         # set hidden params for response headers (e.g., x-litellm-model-id)
@@ -571,7 +574,6 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
         self.stream_iterator = response.aiter_lines()
         self._pending_stream_line: Optional[str] = None
         self._pending_stream_line_task: Optional[asyncio.Task] = None
-        self._outbound_sequence_number = 0
 
     @staticmethod
     def _coalescible_output_text_delta(chunk: str) -> Optional[Dict[str, Any]]:
@@ -582,7 +584,10 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             event = json.loads(stripped)
         except json.JSONDecodeError:
             return None
-        if not isinstance(event, dict) or event.get("type") != "response.output_text.delta":
+        if (
+            not isinstance(event, dict)
+            or event.get("type") != "response.output_text.delta"
+        ):
             return None
         if not isinstance(event.get("delta"), str):
             return None
@@ -604,7 +609,9 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
         return event
 
     @staticmethod
-    def _same_output_text_target(first: Dict[str, Any], following: Dict[str, Any]) -> bool:
+    def _same_output_text_target(
+        first: Dict[str, Any], following: Dict[str, Any]
+    ) -> bool:
         return all(
             first.get(field) == following.get(field)
             for field in ("item_id", "output_index", "content_index", "model")
@@ -626,7 +633,7 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
         if event is None:
             return chunk
 
-        deadline = asyncio.get_running_loop().time() + RESPONSES_TEXT_COALESCE_SECONDS
+        deadline = asyncio.get_running_loop().time() + STREAM_TEXT_COALESCE_SECONDS
         while len(event["delta"]) < RESPONSES_TEXT_COALESCE_MAX_CHARS:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
@@ -691,8 +698,20 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                 if self.finished:
                     raise StopAsyncIteration
                 elif result is not None:
-                    setattr(result, "sequence_number", self._outbound_sequence_number)
-                    self._outbound_sequence_number += 1
+                    next_sequence = self.request_data.get(
+                        _RESPONSES_OUTBOUND_SEQUENCE_KEY
+                    )
+                    if not isinstance(next_sequence, int):
+                        provider_sequence = getattr(result, "sequence_number", None)
+                        next_sequence = (
+                            provider_sequence
+                            if isinstance(provider_sequence, int)
+                            else 0
+                        )
+                    setattr(result, "sequence_number", next_sequence)
+                    self.request_data[_RESPONSES_OUTBOUND_SEQUENCE_KEY] = (
+                        next_sequence + 1
+                    )
                     # Await hook directly instead of run_async_function
                     # (which spawns a thread + event loop per call)
                     result = await self._call_post_streaming_deployment_hook(

@@ -1,20 +1,13 @@
 import ast
 import inspect
-import json
 import os
 import sys
 from unittest import mock
 
-import httpx
 import pytest
-import respx
-from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.abspath("../.."))  #
 
-import importlib
-
-import litellm
 from litellm import constants
 
 
@@ -71,3 +64,22 @@ def _build_constant_env_var_map() -> dict[str, str]:
             env_var_map[constant_name] = env_var_name
 
     return env_var_map
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "not-a-number"])
+def test_stream_close_timeout_rejects_non_positive_or_non_finite_values(value):
+    with mock.patch.dict(os.environ, {"LITELLM_STREAM_CLOSE_TIMEOUT_SECONDS": value}):
+        with pytest.raises(ValueError, match="LITELLM_STREAM_CLOSE_TIMEOUT_SECONDS"):
+            constants._get_finite_float_env(
+                "LITELLM_STREAM_CLOSE_TIMEOUT_SECONDS", 2.0, allow_zero=False
+            )
+
+
+def test_stream_text_coalescing_allows_zero_to_disable():
+    with mock.patch.dict(os.environ, {"LITELLM_STREAM_TEXT_COALESCE_SECONDS": "0"}):
+        assert (
+            constants._get_finite_float_env(
+                "LITELLM_STREAM_TEXT_COALESCE_SECONDS", 0.3, allow_zero=True
+            )
+            == 0
+        )

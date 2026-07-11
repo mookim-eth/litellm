@@ -1,8 +1,26 @@
+import math
 import os
 import sys
 from typing import List, Literal
 
 from litellm.litellm_core_utils.env_utils import get_env_int
+
+
+def _get_finite_float_env(name: str, default: float, *, allow_zero: bool) -> float:
+    raw_value = os.getenv(name, str(default))
+    try:
+        value = float(raw_value)
+    except ValueError as e:
+        raise ValueError(f"{name} must be a number, got {raw_value!r}") from e
+    if not math.isfinite(value) or value < 0 or (value == 0 and not allow_zero):
+        qualifier = (
+            "a finite non-negative number"
+            if allow_zero
+            else "a finite positive number"
+        )
+        raise ValueError(f"{name} must be {qualifier}, got {raw_value!r}")
+    return value
+
 
 DEFAULT_HEALTH_CHECK_PROMPT = str(
     os.getenv("DEFAULT_HEALTH_CHECK_PROMPT", "test from litellm")
@@ -59,8 +77,14 @@ LITELLM_MAX_STREAMING_DURATION_SECONDS = (
 
 # Bound cancellation cleanup for providers that respond normally to task
 # cancellation. A timed-out close is cancelled and is not retried.
-STREAM_CLOSE_TIMEOUT_SECONDS = float(
-    os.getenv("LITELLM_STREAM_CLOSE_TIMEOUT_SECONDS", "2")
+STREAM_CLOSE_TIMEOUT_SECONDS = _get_finite_float_env(
+    "LITELLM_STREAM_CLOSE_TIMEOUT_SECONDS", 2.0, allow_zero=False
+)
+
+# Micro-batching reduces per-chunk CPU. Lower this value for latency-sensitive
+# workloads, or set it to 0 to disable coalescing.
+STREAM_TEXT_COALESCE_SECONDS = _get_finite_float_env(
+    "LITELLM_STREAM_TEXT_COALESCE_SECONDS", 0.3, allow_zero=True
 )
 
 # Maximum number of base64 characters to keep in logging payloads.

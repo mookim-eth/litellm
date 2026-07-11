@@ -11,13 +11,15 @@ import time
 import urllib
 import urllib.parse
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, Optional, Set, Union
+from typing import Any, Callable, Optional, Set, Union
 
 from litellm._logging import verbose_proxy_logger
 from litellm.secret_managers.main import str_to_bool
 
 
 class PrismaWrapper:
+    PLANNED_DISCONNECT_TIMEOUT_SECONDS = 5.0
+
     """
     Wrapper around Prisma client that handles RDS IAM token authentication.
 
@@ -52,13 +54,11 @@ class PrismaWrapper:
     def _get_engine_pid(self) -> int:
         """Get the PID of the current Prisma engine subprocess, or 0 if unavailable."""
         try:
-            if self._original_prisma.is_connected() is not True:
-                return 0
             engine = self._original_prisma._engine
             process = getattr(engine, "process", None) if engine is not None else None
             if process is not None and isinstance(process.pid, int):
                 return process.pid
-        except (AttributeError, TypeError):
+        except (AttributeError, RuntimeError, TypeError):
             pass
         return 0
 
@@ -260,6 +260,18 @@ class PrismaWrapper:
             if len(self._expected_engine_deaths) >= 64:
                 self._expected_engine_deaths.clear()
             self._expected_engine_deaths.add(old_engine_pid)
+        try:
+            await asyncio.wait_for(
+                self._original_prisma.disconnect(),
+                timeout=self.PLANNED_DISCONNECT_TIMEOUT_SECONDS,
+            )
+        except Exception as e:
+            verbose_proxy_logger.warning(
+                "Graceful Prisma disconnect failed during planned restart; "
+                "terminating engine PID %s. error=%s",
+                old_engine_pid,
+                e,
+            )
             await self._kill_engine_process(old_engine_pid)
 
         if http_client is not None:

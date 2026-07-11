@@ -21,6 +21,7 @@ def _wrapper(pid: int = 111) -> PrismaWrapper:
     prisma = MagicMock()
     prisma.is_connected.return_value = True
     prisma._engine.process.pid = pid
+    prisma.disconnect = AsyncMock()
     return PrismaWrapper(prisma, iam_token_db_auth=False)
 
 
@@ -34,6 +35,40 @@ async def test_planned_recreate_records_pid_and_advances_generation(mock_prisma_
 
     assert wrapper._expected_engine_deaths == {111}
     assert wrapper._engine_generation == 1
+
+
+@pytest.mark.asyncio
+async def test_planned_recreate_gracefully_disconnects_without_killing_engine(
+    mock_prisma_binary,
+):
+    wrapper = _wrapper()
+    mock_prisma_binary.Prisma.return_value = MagicMock(connect=AsyncMock())
+    old_prisma = wrapper._original_prisma
+
+    with patch.object(wrapper, "_kill_engine_process", new_callable=AsyncMock) as kill:
+        assert await wrapper.recreate_prisma_client("postgresql://new") is True
+
+    old_prisma.disconnect.assert_awaited_once()
+    kill.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_planned_recreate_kills_engine_after_disconnect_timeout(
+    mock_prisma_binary,
+):
+    wrapper = _wrapper()
+    wrapper.PLANNED_DISCONNECT_TIMEOUT_SECONDS = 0.01
+
+    async def stalled_disconnect():
+        await asyncio.Event().wait()
+
+    wrapper._original_prisma.disconnect = AsyncMock(side_effect=stalled_disconnect)
+    mock_prisma_binary.Prisma.return_value = MagicMock(connect=AsyncMock())
+
+    with patch.object(wrapper, "_kill_engine_process", new_callable=AsyncMock) as kill:
+        assert await wrapper.recreate_prisma_client("postgresql://new") is True
+
+    kill.assert_awaited_once_with(111)
 
 
 @pytest.mark.asyncio

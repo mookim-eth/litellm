@@ -52,6 +52,7 @@ from litellm.constants import (
     DEFAULT_SHARED_HEALTH_CHECK_TTL,
     DEFAULT_SLACK_ALERTING_THRESHOLD,
     STREAM_CLOSE_TIMEOUT_SECONDS,
+    STREAM_TEXT_COALESCE_SECONDS,
     LITELLM_EMBEDDING_PROVIDERS_SUPPORTING_INPUT_ARRAY_OF_TOKENS,
     LITELLM_SETTINGS_SAFE_DB_OVERRIDES,
     LITELLM_UI_ALLOW_HEADERS,
@@ -5932,7 +5933,6 @@ def _restamp_streaming_chunk_model(
     return chunk, model_mismatch_logged
 
 
-_STREAM_TEXT_COALESCE_SECONDS = 0.300
 _STREAM_TEXT_COALESCE_MAX_CHARS = 1024
 
 
@@ -5990,7 +5990,7 @@ async def _coalesce_plain_text_stream(response: Any):  # noqa: PLR0915
                 yield chunk
                 continue
 
-            deadline = asyncio.get_running_loop().time() + _STREAM_TEXT_COALESCE_SECONDS
+            deadline = asyncio.get_running_loop().time() + STREAM_TEXT_COALESCE_SECONDS
             while len(content) < _STREAM_TEXT_COALESCE_MAX_CHARS:
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
@@ -6020,9 +6020,16 @@ async def _coalesce_plain_text_stream(response: Any):  # noqa: PLR0915
             pending_task.cancel()
             with contextlib.suppress(BaseException):
                 await pending_task
+        # This wrapper owns the concrete iterator returned by __aiter__. In
+        # proxy use that is the hook generator, while async_data_generator owns
+        # and closes the original provider response separately.
+        close = getattr(iterator, "aclose", None)
+        if callable(close):
+            with contextlib.suppress(BaseException):
+                await close()
 
 
-async def async_data_generator(
+async def async_data_generator(  # noqa: PLR0915
     response, user_api_key_dict: UserAPIKeyAuth, request_data: dict
 ):
     verbose_proxy_logger.debug("inside generator")
@@ -6036,23 +6043,29 @@ async def async_data_generator(
         # Previously "".join(str_so_far_parts) was called every chunk, re-joining
         # the entire accumulated response. String += is O(n) amortized total.
         _str_so_far: str = ""
-        coalesced_response = _coalesce_plain_text_stream(response=response)
-        async for chunk in proxy_logging_obj.async_post_call_streaming_iterator_hook(
-            user_api_key_dict=user_api_key_dict,
-            response=coalesced_response,
-            request_data=request_data,
-        ):
-            ### CALL HOOKS ### - modify outgoing data
-            chunk = await proxy_logging_obj.async_post_call_streaming_hook(
-                user_api_key_dict=user_api_key_dict,
-                response=chunk,
-                data=request_data,
-                str_so_far=_str_so_far if _str_so_far else None,
-            )
 
-            if isinstance(chunk, (ModelResponse, ModelResponseStream)):
-                response_str = litellm.get_response_string(response_obj=chunk)
-                _str_so_far += response_str
+        async def _stream_with_hooks():
+            nonlocal _str_so_far
+            hook_iterator = proxy_logging_obj.async_post_call_streaming_iterator_hook(
+                user_api_key_dict=user_api_key_dict,
+                response=response,
+                request_data=request_data,
+            )
+            async for hook_chunk in hook_iterator:
+                hook_chunk = await proxy_logging_obj.async_post_call_streaming_hook(
+                    user_api_key_dict=user_api_key_dict,
+                    response=hook_chunk,
+                    data=request_data,
+                    str_so_far=_str_so_far if _str_so_far else None,
+                )
+                if isinstance(hook_chunk, (ModelResponse, ModelResponseStream)):
+                    response_str = litellm.get_response_string(response_obj=hook_chunk)
+                    _str_so_far += response_str
+                yield hook_chunk
+
+        # Preserve provider chunk boundaries for callbacks and guardrails, then
+        # coalesce only the outbound serialization path.
+        async for chunk in _coalesce_plain_text_stream(_stream_with_hooks()):
 
             chunk, model_mismatch_logged = _restamp_streaming_chunk_model(
                 chunk=chunk,

@@ -3912,13 +3912,11 @@ class PrismaClient:
 
     def _get_engine_pid(self) -> int:
         try:
-            if self.db._original_prisma.is_connected() is not True:  # type: ignore[attr-defined]
-                return 0
             engine = self.db._original_prisma._engine  # type: ignore[attr-defined]
             process = getattr(engine, "process", None) if engine is not None else None
-            if process is not None:
+            if process is not None and isinstance(process.pid, int):
                 return process.pid
-        except (AttributeError, TypeError):
+        except (AttributeError, RuntimeError, TypeError):
             pass
         return 0
 

@@ -42,7 +42,7 @@ def _text(delta, sequence, **extra):
     }
 
 
-def _iterator(events, *, sse_separators=False):
+def _iterator(events, *, sse_separators=False, request_data=None):
     config = Mock()
 
     def transform_streaming_response(*, parsed_chunk, **_kwargs):
@@ -63,11 +63,12 @@ def _iterator(events, *, sse_separators=False):
         model="test-model",
         responses_api_provider_config=config,
         logging_obj=logging,
+        request_data=request_data,
     )
 
 
 @pytest.mark.asyncio
-async def test_coalesces_text_and_renumbers_outbound_events():
+async def test_coalesces_text_and_preserves_sequence_start():
     events = [
         _text("alpha", 10),
         _text(" beta", 11),
@@ -83,7 +84,7 @@ async def test_coalesces_text_and_renumbers_outbound_events():
 
     chunks = [chunk async for chunk in _iterator(events)]
 
-    assert [chunk.sequence_number for chunk in chunks] == [0, 1]
+    assert [chunk.sequence_number for chunk in chunks] == [10, 11]
     assert chunks[0].delta == "alpha beta"
     assert chunks[1].text == "alpha beta"
 
@@ -105,7 +106,7 @@ async def test_coalesces_across_real_sse_empty_separator_lines():
 
     chunks = [chunk async for chunk in _iterator(events, sse_separators=True)]
 
-    assert [chunk.sequence_number for chunk in chunks] == [0, 1]
+    assert [chunk.sequence_number for chunk in chunks] == [10, 11]
     assert chunks[0].delta == "alpha beta"
     assert chunks[1].text == "alpha beta"
 
@@ -183,9 +184,48 @@ async def test_flushes_after_coalescing_deadline():
     iterator.stream_iterator = response.aiter_lines()
 
     with patch(
-        "litellm.responses.streaming_iterator.RESPONSES_TEXT_COALESCE_SECONDS",
+        "litellm.responses.streaming_iterator.STREAM_TEXT_COALESCE_SECONDS",
         0.01,
     ):
         chunks = [chunk async for chunk in iterator]
 
     assert [chunk.delta for chunk in chunks] == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_sequence_numbers_continue_across_fallback_iterators():
+    request_data = {}
+    first_attempt = _iterator(
+        [
+            _text("first", 20),
+            {
+                "type": "response.output_text.done",
+                "item_id": "msg-1",
+                "output_index": 0,
+                "content_index": 0,
+                "text": "first",
+                "sequence_number": 21,
+            },
+        ],
+        request_data=request_data,
+    )
+    fallback_attempt = _iterator(
+        [
+            _text(" fallback", 0),
+            {
+                "type": "response.output_text.done",
+                "item_id": "msg-1",
+                "output_index": 0,
+                "content_index": 0,
+                "text": " fallback",
+                "sequence_number": 1,
+            },
+        ],
+        request_data=request_data,
+    )
+
+    first_chunks = [chunk async for chunk in first_attempt]
+    fallback_chunks = [chunk async for chunk in fallback_attempt]
+
+    assert [chunk.sequence_number for chunk in first_chunks] == [20, 21]
+    assert [chunk.sequence_number for chunk in fallback_chunks] == [22, 23]

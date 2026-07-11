@@ -1,8 +1,10 @@
 import asyncio
+import time
+from unittest.mock import patch
 
 import pytest
 
-from litellm.proxy.proxy_server import _coalesce_plain_text_stream
+from litellm.proxy.proxy_server import _coalesce_plain_text_stream, async_data_generator
 from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
 
 
@@ -85,3 +87,82 @@ async def test_preserves_text_order_across_reasoning_and_finish_boundaries():
     assert text == "alpha beta gamma delta"
     assert chunks[1].choices[0].delta.reasoning_content == "think"
     assert chunks[-1].choices[0].finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_first_chunk_delay_is_bounded_by_configured_window():
+    async def stream():
+        yield _chunk("first")
+        await asyncio.Event().wait()
+
+    with patch("litellm.proxy.proxy_server.STREAM_TEXT_COALESCE_SECONDS", 0.05):
+        iterator = _coalesce_plain_text_stream(stream())
+        started = time.monotonic()
+        first = await asyncio.wait_for(iterator.__anext__(), timeout=0.2)
+        elapsed = time.monotonic() - started
+        await iterator.aclose()
+
+    assert first.choices[0].delta.content == "first"
+    assert 0.03 <= elapsed < 0.15
+
+
+@pytest.mark.asyncio
+async def test_closes_concrete_iterator_when_async_iterable_has_no_aclose():
+    inner_closed = asyncio.Event()
+
+    async def inner():
+        try:
+            yield _chunk("first")
+            await asyncio.Event().wait()
+        finally:
+            inner_closed.set()
+
+    class IterableOnly:
+        def __aiter__(self):
+            return inner()
+
+    with patch("litellm.proxy.proxy_server.STREAM_TEXT_COALESCE_SECONDS", 0):
+        coalesced = _coalesce_plain_text_stream(IterableOnly())
+        await coalesced.__anext__()
+        await coalesced.aclose()
+
+    assert inner_closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_callbacks_keep_original_chunk_boundaries_before_outbound_coalescing():
+    iterator_hook_chunks = []
+    per_chunk_hook_chunks = []
+
+    class RecordingProxyLogging:
+        async def async_post_call_streaming_iterator_hook(self, response, **_kwargs):
+            async for chunk in response:
+                iterator_hook_chunks.append(chunk.choices[0].delta.content)
+                yield chunk
+
+        async def async_post_call_streaming_hook(self, response, **_kwargs):
+            per_chunk_hook_chunks.append(response.choices[0].delta.content)
+            return response
+
+        async def post_call_failure_hook(self, **_kwargs):
+            raise AssertionError("failure hook should not run")
+
+    async def response():
+        yield _chunk("one")
+        yield _chunk(" two")
+        yield _chunk(" three")
+
+    with (
+        patch("litellm.proxy.proxy_server.proxy_logging_obj", RecordingProxyLogging()),
+        patch("litellm.proxy.proxy_server.STREAM_TEXT_COALESCE_SECONDS", 0.05),
+    ):
+        outbound = [
+            event
+            async for event in async_data_generator(
+                response(), object(), {"model": "test-model"}
+            )
+        ]
+
+    assert iterator_hook_chunks == ["one", " two", " three"]
+    assert per_chunk_hook_chunks == ["one", " two", " three"]
+    assert len([event for event in outbound if "[DONE]" not in event]) == 1
