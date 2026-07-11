@@ -47,6 +47,18 @@ def test_dynamic_key_extraction_from_litellm_params_metadata():
     assert params.get("langfuse_secret_key") == "sk-litellm"
 
 
+def test_request_environment_references_are_not_resolved():
+    params = initialize_standard_callback_dynamic_params(
+        {
+            "langfuse_secret_key": "os.environ/LANGFUSE_SECRET_KEY",
+            "metadata": {"langfuse_public_key": "os.environ/LANGFUSE_PUBLIC_KEY"},
+        }
+    )
+
+    assert "langfuse_secret_key" not in params
+    assert "langfuse_public_key" not in params
+
+
 if __name__ == "__main__":
     test_dynamic_key_extraction_from_metadata()
     test_dynamic_key_extraction_from_litellm_params_metadata()

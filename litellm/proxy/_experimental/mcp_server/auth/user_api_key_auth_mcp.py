@@ -117,7 +117,7 @@ class MCPRequestHandler:
             return b"{}"
 
         request.body = mock_body  # type: ignore
-        if ".well-known" in str(request.url):  # public routes
+        if request.url.path.startswith("/.well-known/"):
             validated_user_api_key_auth = UserAPIKeyAuth()
         elif has_explicit_litellm_key:
             # Explicit x-litellm-api-key provided - always validate normally
@@ -133,20 +133,16 @@ class MCPRequestHandler:
                 validated_user_api_key_auth = await user_api_key_auth(
                     api_key=litellm_api_key, request=request
                 )
-            except HTTPException as e:
-                if e.status_code in (401, 403):
+            except (HTTPException, ProxyException) as e:
+                status_code = (
+                    e.status_code if isinstance(e, HTTPException) else int(e.code)
+                )
+                if status_code in (401, 403) and MCPRequestHandler._target_servers_use_oauth2(
+                    path=request.url.path, mcp_servers=mcp_servers
+                ):
                     verbose_logger.debug(
-                        "MCP OAuth2: Authorization header is not a valid LiteLLM key, "
-                        "treating as OAuth2 token passthrough"
-                    )
-                    validated_user_api_key_auth = UserAPIKeyAuth()
-                else:
-                    raise
-            except ProxyException as e:
-                if str(e.code) in ("401", "403"):
-                    verbose_logger.debug(
-                        "MCP OAuth2: Authorization header is not a valid LiteLLM key, "
-                        "treating as OAuth2 token passthrough"
+                        "MCP OAuth2: target server is OAuth2-mode, treating "
+                        "Authorization as upstream OAuth2 token passthrough"
                     )
                     validated_user_api_key_auth = UserAPIKeyAuth()
                 else:
@@ -164,6 +160,37 @@ class MCPRequestHandler:
             oauth2_headers,
             dict(headers),
         )
+
+    @staticmethod
+    def _extract_target_server_names_from_path(path: str) -> List[str]:
+        segments = [segment for segment in path.split("/") if segment]
+        if len(segments) >= 2 and segments[0] == "mcp":
+            return [segments[1]]
+        if len(segments) >= 2 and segments[1] == "mcp":
+            return [segments[0]]
+        return []
+
+    @staticmethod
+    def _target_servers_use_oauth2(
+        path: str, mcp_servers: Optional[List[str]]
+    ) -> bool:
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
+            global_mcp_server_manager,
+        )
+        from litellm.types.mcp import MCPAuth
+
+        target_names = (
+            mcp_servers
+            if mcp_servers is not None
+            else MCPRequestHandler._extract_target_server_names_from_path(path)
+        )
+        if not target_names:
+            return False
+        for name in target_names:
+            server = global_mcp_server_manager.get_mcp_server_by_name(name)
+            if server is None or server.auth_type != MCPAuth.oauth2:
+                return False
+        return True
 
     @staticmethod
     def _get_mcp_auth_header_from_headers(headers: Headers) -> Optional[str]:

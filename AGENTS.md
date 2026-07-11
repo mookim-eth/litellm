@@ -170,7 +170,7 @@ When opening issues or pull requests, follow these templates:
 
 ### Upstream security advisory sync status
 
-As of 2026-06-20, the following GitHub Security Advisories have already been
+As of 2026-07-11, the following GitHub Security Advisories have already been
 synced into this branch. During future upstream sync/rebase work, use this list
 to quickly filter advisory-related upstream commits or release notes that are
 already covered here:
@@ -189,6 +189,30 @@ already covered here:
   - Upstream fix introduced a caller-budget ceiling for key generation. When
     syncing newer upstream releases, watch for follow-up fixes around UI/SSO/CLI
     session-token budget-ceiling handling and preserve the secure behavior.
+- `GHSA-f9v2-4w9p-2cwc` / `CVE-2026-34182` — critical OpenSSL vulnerability.
+  - The Wolfi build and runtime images in `Dockerfile` and `docker/Dockerfile*`
+    use the fixed upstream stable digest from `fda08dd727`. After changing the
+    base image, verify the installed `openssl` and `libssl3` packages in the
+    built runtime image remain at the fixed versions.
+- `GHSA-4g5m-c9r5-49xf` / `CVE-2026-59819` — server secret disclosure through
+  request-supplied environment and OIDC file references.
+  - Backported from `06a0d4498a`: `/health/test_connection` rejects nested
+    `os.environ/` request values, dynamic callback request metadata does not
+    resolve environment references, and `oidc/file/` reads are restricted to
+    configured credential directories.
+  - Preserve the related cross-team deployment ownership authorization from
+    `a2f5bb1868`: health probes that load a deployment must authorize against
+    the loaded deployment's `model_info`, not caller-supplied ownership data.
+- SpendLogs Bearer key hardening from `b487a80f4c`.
+  - `litellm/proxy/spend_tracking/spend_tracking_utils.py` strips the Bearer
+    scheme and hashes `sk-` keys in both the SpendLogs API-key column and
+    `metadata.user_api_key` fallback paths.
+- `GHSA-7488-6r32-c95q` / `CVE-2026-59822` — MCP authentication bypass.
+  - Backported from `73869f0faf`: only exact `/.well-known/` paths are public,
+    and a failed LiteLLM Bearer authentication may fall back to OAuth2
+    passthrough only when every explicitly resolved target MCP server is
+    operator-configured with `auth_type=oauth2`; unresolved, empty, mixed, and
+    non-OAuth2 targets fail closed.
 
 Do not treat this section as a local patch inventory. It is only a security
 advisory filter for future upstream syncs. If a future upstream sync contains

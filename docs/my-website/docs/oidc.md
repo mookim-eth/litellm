@@ -60,8 +60,19 @@ oidc/config_name_here/
 For the unofficial `file` provider, you can use the following format:
 
 ```
-oidc/file/home/user/dave/this_is_a_file_with_a_token.txt
+oidc/file/var/run/secrets/my-token
 ```
+
+For safety, the resolved path must live inside an allowed credential
+directory. The defaults are `/var/run/secrets` and `/run/secrets`. To use a
+different mount, set `LITELLM_OIDC_ALLOWED_CREDENTIAL_DIRS` to a comma-separated
+list of absolute directories; this replaces the default list:
+
+```bash
+export LITELLM_OIDC_ALLOWED_CREDENTIAL_DIRS="/var/run/secrets,/etc/litellm/creds"
+```
+
+Paths that resolve through symlinks or `..` outside the allowlist are rejected.
 
 For the unofficial `env`, use the following format, where `SECRET_TOKEN` is the name of the environment variable that contains the token:
 

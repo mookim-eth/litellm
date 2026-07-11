@@ -15,6 +15,7 @@ from prisma.errors import ClientNotConnectedError, HTTPClientClosedError, Prisma
 import litellm.proxy.health_endpoints._health_endpoints as _health_endpoints_module
 
 from litellm.proxy.health_endpoints._health_endpoints import (
+    _reject_os_environ_references,
     _db_health_readiness_check,
     get_callback_identifier,
     health_license_endpoint,
@@ -429,6 +430,7 @@ async def test_test_model_connection_loads_config_from_router():
         "model_info": {},
     }
     mock_router.get_model_list.return_value = [mock_deployment]
+    mock_router.get_deployment.return_value = None
     
     # Mock ModelManagementAuthChecks - patch at the source module since it's imported inside the function
     mock_can_user_make_model_call = AsyncMock()
@@ -448,10 +450,6 @@ async def test_test_model_connection_loads_config_from_router():
         # Just return params with messages added
         params = litellm_params.copy()
         params["messages"] = [{"role": "user", "content": "test"}]
-        return params
-    
-    # Mock _resolve_os_environ_variables
-    def mock_resolve_os_environ(params):
         return params
     
     with patch(
@@ -475,9 +473,6 @@ async def test_test_model_connection_loads_config_from_router():
     ), patch(
         "litellm.proxy.health_endpoints._health_endpoints._update_litellm_params_for_health_check",
         mock_update_params,
-    ), patch(
-        "litellm.proxy.health_endpoints._health_endpoints._resolve_os_environ_variables",
-        mock_resolve_os_environ,
     ):
         # Call the endpoint with only model name (no credentials)
         result = await health_test_model_connection(
@@ -514,6 +509,46 @@ async def test_test_model_connection_loads_config_from_router():
         # Verify result
         assert result["status"] == "success"
         assert "result" in result
+
+
+def test_reject_os_environ_references_nested():
+    with pytest.raises(Exception) as exc_info:
+        _reject_os_environ_references(
+            {"metadata": {"credentials": ["os.environ/PROVIDER_API_KEY"]}}
+        )
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_test_model_connection_authorizes_loaded_deployment_team():
+    from litellm.types.router import Deployment, LiteLLM_Params, ModelInfo
+
+    loaded = Deployment(
+        model_name="team-b-model",
+        litellm_params=LiteLLM_Params(model="openai/gpt-4o", api_key="secret"),
+        model_info=ModelInfo(id="deployment-b", team_id="team-b"),
+    )
+    router = MagicMock()
+    router.get_deployment.return_value = loaded
+    auth_check = AsyncMock(side_effect=PermissionError("denied"))
+
+    with patch("litellm.proxy.proxy_server.prisma_client", MagicMock()), patch(
+        "litellm.proxy.proxy_server.llm_router", router
+    ), patch("litellm.proxy.proxy_server.premium_user", False), patch(
+        "litellm.proxy.management_endpoints.model_management_endpoints.ModelManagementAuthChecks.can_user_make_model_call",
+        auth_check,
+    ):
+        with pytest.raises(PermissionError):
+            await health_test_model_connection(
+                request=MagicMock(),
+                mode="chat",
+                litellm_params={"model": "team-b-model"},
+                model_info={"id": "deployment-b", "team_id": "team-a"},
+                user_api_key_dict=MagicMock(),
+            )
+
+    authorized_deployment = auth_check.call_args.kwargs["model_params"]
+    assert authorized_deployment.model_info.team_id == "team-b"
 
 
 @pytest.mark.asyncio

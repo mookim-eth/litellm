@@ -55,6 +55,13 @@ def _get_max_string_length_prompt_in_db() -> int:
         return DEFAULT_MAX_STRING_LENGTH_PROMPT_IN_DB
 
 
+def _hash_api_key_for_spend_log(api_key: str) -> str:
+    stripped = api_key[7:] if api_key[:7].lower() == "bearer " else api_key
+    if stripped.startswith("sk-"):
+        return hash_token(stripped)
+    return stripped
+
+
 def _is_master_key(api_key: Optional[str], _master_key: Optional[str]) -> bool:
     if _master_key is None or api_key is None:
         return False
@@ -127,6 +134,9 @@ def _get_spend_logs_metadata(
             key: metadata.get(key) for key in SpendLogsMetadata.__annotations__.keys()
         }
     )
+    raw_user_api_key = clean_metadata.get("user_api_key")
+    if isinstance(raw_user_api_key, str):
+        clean_metadata["user_api_key"] = _hash_api_key_for_spend_log(raw_user_api_key)
     clean_metadata["applied_guardrails"] = applied_guardrails
     clean_metadata["batch_models"] = batch_models
     clean_metadata["mcp_tool_call_metadata"] = mcp_tool_call_metadata
@@ -302,9 +312,7 @@ def get_logging_payload(  # noqa: PLR0915
         )
         standard_logging_total_tokens = standard_logging_payload.get("total_tokens", 0)
     if api_key is not None and isinstance(api_key, str):
-        if api_key.startswith("sk-"):
-            # hash the api_key
-            api_key = hash_token(api_key)
+        api_key = _hash_api_key_for_spend_log(api_key)
         if (
             _is_master_key(api_key=api_key, _master_key=master_key)
             and general_settings.get("disable_adding_master_key_hash_to_db") is True

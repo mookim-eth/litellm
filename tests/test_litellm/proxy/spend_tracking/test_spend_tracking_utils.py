@@ -23,6 +23,7 @@ from litellm.constants import (
 )
 from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 from litellm.proxy.spend_tracking.spend_tracking_utils import (
+    _hash_api_key_for_spend_log,
     _get_messages_for_spend_logs_payload,
     _get_proxy_server_request_for_spend_logs_payload,
     _get_request_duration_ms,
@@ -34,6 +35,23 @@ from litellm.proxy.spend_tracking.spend_tracking_utils import (
     _should_store_prompts_and_responses_in_spend_logs,
     get_logging_payload,
 )
+
+
+def test_hash_api_key_for_spend_log_strips_bearer_and_hashes_sk_key():
+    bare = "sk-sensitive-test-key"
+    hashed = _hash_api_key_for_spend_log(f"Bearer {bare}")
+    assert hashed == _hash_api_key_for_spend_log(bare)
+    assert bare not in hashed
+    assert len(hashed) == 64
+
+
+def test_spend_logs_metadata_hashes_bearer_key():
+    metadata = _get_spend_logs_metadata(
+        metadata={"user_api_key": "Bearer sk-sensitive-test-key"}
+    )
+    assert metadata["user_api_key"] == _hash_api_key_for_spend_log(
+        "sk-sensitive-test-key"
+    )
 from litellm.types.utils import (
     StandardLoggingHiddenParams,
     StandardLoggingMetadata,

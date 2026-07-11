@@ -23,8 +23,21 @@ from litellm.llms.bedrock.chat import BedrockConverseLLM, BedrockLLM
 from litellm.secret_managers.aws_secret_manager_v2 import AWSSecretsManagerV2
 from litellm.secret_managers.main import (
     get_secret,
+    _resolve_oidc_file_path,
     _should_read_secret_from_secret_manager,
 )
+
+
+def test_oidc_file_path_restricted_to_allowed_directories(monkeypatch, tmp_path):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    credential = allowed / "token"
+    credential.write_text("secret")
+    monkeypatch.setenv("LITELLM_OIDC_ALLOWED_CREDENTIAL_DIRS", str(allowed))
+
+    assert _resolve_oidc_file_path(str(credential)) == str(credential.resolve())
+    with pytest.raises(ValueError):
+        _resolve_oidc_file_path("/etc/passwd")
 from unittest.mock import AsyncMock, patch, MagicMock
 
 
@@ -183,13 +196,13 @@ def test_oidc_env_variable():
     del os.environ[env_var_name]
 
 
-def test_oidc_file():
-    # Create a temporary file
-    with tempfile.NamedTemporaryFile(mode="w+") as temp_file:
+def test_oidc_file(monkeypatch):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        monkeypatch.setenv("LITELLM_OIDC_ALLOWED_CREDENTIAL_DIRS", temp_dir)
+        temp_file_path = os.path.join(temp_dir, "token.txt")
         secret_value = "secret-" + uuid4().hex
-        temp_file.write(secret_value)
-        temp_file.flush()
-        temp_file_path = temp_file.name
+        with open(temp_file_path, "w") as temp_file:
+            temp_file.write(secret_value)
 
         secret_val = get_secret(f"oidc/file/{temp_file_path}")
 

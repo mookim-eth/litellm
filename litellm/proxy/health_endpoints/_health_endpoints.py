@@ -36,79 +36,35 @@ from litellm.proxy.health_check import (
 from litellm.proxy.middleware.in_flight_requests_middleware import (
     get_in_flight_requests,
 )
-from litellm.secret_managers.main import get_secret
-
 #### Health ENDPOINTS ####
 
 
-def _resolve_os_environ_variables(params: dict) -> dict:
+def _reject_os_environ_references(params: dict) -> dict:
     """
-    Resolve ``os.environ/`` environment variables in ``litellm_params``.
-
-    This walks the input dict/list structure iteratively (no Python recursion) to
-    avoid unbounded recursion / stack overflows on deeply nested inputs.
+    Reject request-supplied ``os.environ/`` references at any nesting depth.
     """
     if not isinstance(params, dict):
         return params
 
-    # Use an explicit stack to avoid recursion and handle nested dicts/lists.
-    # We also keep a `seen` set to guard against accidental cycles.
-    resolved_root: dict = {}
-    stack: list[tuple[object, object]] = [(params, resolved_root)]
+    stack: list[object] = [params]
     seen: set[int] = {id(params)}
 
     while stack:
-        src, dst = stack.pop()
+        src = stack.pop()
+        values = src.values() if isinstance(src, dict) else src
+        for value in values:
+            if isinstance(value, str) and value.startswith("os.environ/"):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "Environment variable references are not permitted in request parameters."
+                    },
+                )
+            if isinstance(value, (dict, list)) and id(value) not in seen:
+                seen.add(id(value))
+                stack.append(value)
 
-        if isinstance(src, dict) and isinstance(dst, dict):
-            for key, value in src.items():
-                # Direct string replacement for os.environ/ references
-                if isinstance(value, str) and value.startswith("os.environ/"):
-                    dst[key] = get_secret(value)
-                elif isinstance(value, dict):
-                    if id(value) in seen:
-                        # Cycle detected – keep a shallow copy reference to prevent infinite loops
-                        dst[key] = {}
-                        continue
-                    seen.add(id(value))
-                    new_dict: dict = {}
-                    dst[key] = new_dict
-                    stack.append((value, new_dict))
-                elif isinstance(value, list):
-                    if id(value) in seen:
-                        dst[key] = []
-                        continue
-                    seen.add(id(value))
-                    new_list: list = []
-                    dst[key] = new_list
-                    stack.append((value, new_list))
-                else:
-                    dst[key] = value
-
-        elif isinstance(src, list) and isinstance(dst, list):
-            for item in src:
-                if isinstance(item, str) and item.startswith("os.environ/"):
-                    dst.append(get_secret(item))
-                elif isinstance(item, dict):
-                    if id(item) in seen:
-                        dst.append({})
-                        continue
-                    seen.add(id(item))
-                    new_dict = {}
-                    dst.append(new_dict)
-                    stack.append((item, new_dict))
-                elif isinstance(item, list):
-                    if id(item) in seen:
-                        dst.append([])
-                        continue
-                    seen.add(id(item))
-                    new_list = []
-                    dst.append(new_list)
-                    stack.append((item, new_list))
-                else:
-                    dst.append(item)
-
-    return resolved_root
+    return params
 
 
 def get_callback_identifier(callback):
@@ -1476,8 +1432,8 @@ async def test_model_connection(
       -d '{
         "litellm_params": {
             "model": "azure/gpt-4o",
-            "api_key": "os.environ/AZURE_OPENAI_API_KEY",
-            "api_base": "os.environ/AZURE_OPENAI_ENDPOINT",
+            "api_key": "your-api-key",
+            "api_base": "https://your-endpoint.example.com",
             "api_version": "2024-10-21"
         },
         "mode": "chat"
@@ -1488,8 +1444,8 @@ async def test_model_connection(
     - If the model is configured in proxy_config.yaml, credentials (api_key, api_base, etc.) 
       will be automatically loaded from the config (with resolved environment variables).
     - You can override specific params by including them in the request.
-    - You can use `os.environ/VARIABLE_NAME` syntax to reference environment variables,
-      which will be resolved automatically (same as in proxy_config.yaml).
+    - Environment references are accepted only in server-side configuration,
+      not in request parameters.
     
     Returns:
         dict: A dictionary containing the health check result with either success information or error details.
@@ -1510,18 +1466,37 @@ async def test_model_connection(
 
         # Get model name from litellm_params
         request_litellm_params = litellm_params or {}
+        _reject_os_environ_references(request_litellm_params)
         model_name = request_litellm_params.get("model")
 
         # Look up model configuration from router if model name is provided
         # This gets the litellm_params from proxy config (with resolved env vars)
         config_litellm_params: dict = {}
-        if model_name and llm_router is not None:
+        loaded_model_info: Optional[dict] = None
+        if llm_router is not None:
             try:
+                requested_model_id = (model_info or {}).get("id")
+                deployment_by_id = (
+                    llm_router.get_deployment(model_id=requested_model_id)
+                    if requested_model_id
+                    else None
+                )
+                if deployment_by_id is not None:
+                    config_litellm_params = deployment_by_id.litellm_params.model_dump(
+                        exclude_none=True
+                    )
+                    loaded_model_info = deployment_by_id.model_info.model_dump(
+                        exclude_none=True
+                    )
                 # First try to find by proxy model_name (e.g., "gpt-4o")
-                deployments = llm_router.get_model_list(model_name=model_name)
+                deployments = (
+                    llm_router.get_model_list(model_name=model_name)
+                    if deployment_by_id is None and model_name
+                    else []
+                )
 
                 # If not found, try to find by litellm model name (e.g., "azure/gpt-4o")
-                if not deployments or len(deployments) == 0:
+                if deployment_by_id is None and model_name and not deployments:
                     all_deployments = llm_router.get_model_list(model_name=None)
                     if all_deployments:
                         for deployment in all_deployments:
@@ -1538,6 +1513,7 @@ async def test_model_connection(
                     config_litellm_params = dict(
                         deployments[0].get("litellm_params", {})
                     )
+                    loaded_model_info = dict(deployments[0].get("model_info") or {})
             except Exception as e:
                 verbose_proxy_logger.debug(
                     f"Could not find model {model_name} in router: {e}. "
@@ -1546,18 +1522,16 @@ async def test_model_connection(
 
         # Merge: config params (from proxy config) as base, request params override
         # This allows users to override specific params while using config for credentials
-        merged_litellm_params = {**config_litellm_params, **request_litellm_params}
-
-        # Resolve os.environ/ environment variables in any remaining request params
-        # This handles cases where user explicitly passes os.environ/ values to override config
-        litellm_params = _resolve_os_environ_variables(merged_litellm_params)
+        litellm_params = {**config_litellm_params, **request_litellm_params}
 
         ## Auth check
         await ModelManagementAuthChecks.can_user_make_model_call(
             model_params=Deployment(
                 model_name="test_model",
                 litellm_params=LiteLLM_Params(**litellm_params),
-                model_info=model_info,
+                model_info=(
+                    loaded_model_info if loaded_model_info is not None else model_info
+                ),
             ),
             user_api_key_dict=user_api_key_dict,
             prisma_client=prisma_client,
