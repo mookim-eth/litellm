@@ -42,8 +42,8 @@ async def test_attempt_db_reconnect_should_succeed(mock_proxy_logging):
     )
 
     assert result is True
-    client.db.disconnect.assert_awaited_once()
-    client.db.connect.assert_awaited_once()
+    client.db.disconnect.assert_not_awaited()
+    client.db.connect.assert_not_awaited()
     client.db.query_raw.assert_awaited_once_with("SELECT 1")
 
 
@@ -105,9 +105,9 @@ async def test_attempt_db_reconnect_singleflight_waiters_do_not_reconnect_again(
     )
 
     assert results == [True, True, True, True, True]
-    client.db.disconnect.assert_awaited_once()
-    client.db.connect.assert_awaited_once()
-    client.db.query_raw.assert_awaited_once_with("SELECT 1")
+    client.db.disconnect.assert_not_awaited()
+    client.db.connect.assert_not_awaited()
+    assert client.db.query_raw.await_count == 5
 
 
 @pytest.mark.asyncio
@@ -223,8 +223,8 @@ async def test_run_reconnect_cycle_watchdog_should_use_direct_db_ops(mock_proxy_
 
     await client._run_reconnect_cycle(timeout_seconds=None)
 
-    client.db.disconnect.assert_awaited_once()
-    client.db.connect.assert_awaited_once()
+    client.db.disconnect.assert_not_awaited()
+    client.db.connect.assert_not_awaited()
     client.db.query_raw.assert_awaited_once_with("SELECT 1")
 
 
@@ -236,15 +236,15 @@ async def test_run_reconnect_cycle_watchdog_should_use_default_timeout_budget(
     client._db_watchdog_reconnect_timeout_seconds = 0.1
     client.db.disconnect = AsyncMock(return_value=None)
 
-    async def _slow_connect():
-        await asyncio.sleep(0.08)
-
     async def _slow_query(_query: str):
         await asyncio.sleep(0.08)
-        return [{"result": 1}]
+        raise ConnectionError("probe failed")
 
-    client.db.connect = AsyncMock(side_effect=_slow_connect)
+    async def _slow_recreate(*_args, **_kwargs):
+        await asyncio.sleep(0.08)
+
     client.db.query_raw = AsyncMock(side_effect=_slow_query)
+    client.db.recreate_prisma_client = AsyncMock(side_effect=_slow_recreate)
 
     with pytest.raises(asyncio.TimeoutError):
         await client._run_reconnect_cycle(timeout_seconds=None)
@@ -257,15 +257,15 @@ async def test_run_reconnect_cycle_timeout_should_use_single_overall_budget(
     client = PrismaClient(database_url="mock://test", proxy_logging_obj=mock_proxy_logging)
     client.db.disconnect = AsyncMock(return_value=None)
 
-    async def _slow_connect():
-        await asyncio.sleep(0.08)
-
     async def _slow_query(_query: str):
         await asyncio.sleep(0.08)
-        return [{"result": 1}]
+        raise ConnectionError("probe failed")
 
-    client.db.connect = AsyncMock(side_effect=_slow_connect)
+    async def _slow_recreate(*_args, **_kwargs):
+        await asyncio.sleep(0.08)
+
     client.db.query_raw = AsyncMock(side_effect=_slow_query)
+    client.db.recreate_prisma_client = AsyncMock(side_effect=_slow_recreate)
 
     with pytest.raises(asyncio.TimeoutError):
         await client._run_reconnect_cycle(timeout_seconds=0.1)
@@ -346,8 +346,8 @@ async def test_db_health_watchdog_start_stop_lifecycle(mock_proxy_logging):
 
 
 @pytest.mark.asyncio
-async def test_lightweight_reconnect_kills_engine_on_disconnect_failure(mock_proxy_logging):
-    """Lightweight reconnect must kill the old engine PID when disconnect() fails."""
+async def test_direct_reconnect_does_not_kill_healthy_engine(mock_proxy_logging):
+    """A successful writer probe avoids an unnecessary planned restart."""
     client = PrismaClient(database_url="mock://test", proxy_logging_obj=mock_proxy_logging)
     client.db.disconnect = AsyncMock(side_effect=Exception("disconnect failed"))
     client.db.connect = AsyncMock(return_value=None)
@@ -360,8 +360,8 @@ async def test_lightweight_reconnect_kills_engine_on_disconnect_failure(mock_pro
     ):
         await client._run_reconnect_cycle(timeout_seconds=5.0)
 
-    mock_kill.assert_any_call(9999, signal.SIGTERM)
-    client.db.connect.assert_awaited_once()
+    mock_kill.assert_not_called()
+    client.db.connect.assert_not_awaited()
     client.db.query_raw.assert_awaited_once_with("SELECT 1")
 
 

@@ -216,7 +216,9 @@ async def test_run_reconnect_cycle_uses_heavy_path_when_engine_dead(
     ):
         await engine_client._run_reconnect_cycle(timeout_seconds=5.0)
 
-    engine_client.db.recreate_prisma_client.assert_awaited_once_with("postgresql://test")
+    engine_client.db.recreate_prisma_client.assert_awaited_once_with(
+        "postgresql://test", expected_generation=None
+    )
     engine_client._start_engine_watcher.assert_awaited_once()
     engine_client.db.connect.assert_not_awaited()
 
@@ -241,7 +243,9 @@ async def test_run_reconnect_cycle_uses_heavy_path_when_confirmed_dead(
     ):
         await engine_client._run_reconnect_cycle(timeout_seconds=5.0)
 
-    engine_client.db.recreate_prisma_client.assert_awaited_once_with("postgresql://test")
+    engine_client.db.recreate_prisma_client.assert_awaited_once_with(
+        "postgresql://test", expected_generation=None
+    )
     engine_client._start_engine_watcher.assert_awaited_once()
     engine_client.db.connect.assert_not_awaited()
     assert engine_client._engine_confirmed_dead is False  # Reset after use
@@ -251,13 +255,13 @@ async def test_run_reconnect_cycle_uses_heavy_path_when_confirmed_dead(
 async def test_run_reconnect_cycle_uses_lightweight_path_when_engine_alive(
     engine_client,
 ) -> None:
-    """_run_reconnect_cycle uses disconnect/connect when engine is alive."""
+    """_run_reconnect_cycle probes and keeps a healthy engine alive."""
     engine_client._engine_pid = 1234
 
     with patch.object(engine_client, "_is_engine_alive", return_value=True):
         await engine_client._run_reconnect_cycle(timeout_seconds=5.0)
 
-    engine_client.db.connect.assert_awaited_once()
+    engine_client.db.connect.assert_not_awaited()
     engine_client.db.query_raw.assert_awaited_once_with("SELECT 1")
     engine_client.db.recreate_prisma_client.assert_not_awaited()
 
@@ -266,12 +270,12 @@ async def test_run_reconnect_cycle_uses_lightweight_path_when_engine_alive(
 async def test_run_reconnect_cycle_uses_lightweight_path_when_pid_unknown(
     engine_client,
 ) -> None:
-    """_run_reconnect_cycle uses lightweight path when engine PID is not tracked."""
+    """_run_reconnect_cycle probes when engine PID is not tracked."""
     engine_client._engine_pid = 0
 
     await engine_client._run_reconnect_cycle(timeout_seconds=5.0)
 
-    engine_client.db.connect.assert_awaited_once()
+    engine_client.db.connect.assert_not_awaited()
     engine_client.db.query_raw.assert_awaited_once_with("SELECT 1")
     engine_client.db.recreate_prisma_client.assert_not_awaited()
 
@@ -461,6 +465,19 @@ def test_on_engine_death_from_thread_ignores_stale_pid(engine_client):
     mock_create_task.assert_not_called()
 
 
+def test_on_engine_death_from_thread_consumes_planned_restart(engine_client):
+    """A deliberately replaced engine must not trigger a cascading reconnect."""
+    engine_client._engine_pid = 1234
+    engine_client.db._expected_engine_deaths = {1234}
+
+    with patch("asyncio.create_task") as mock_create_task:
+        engine_client._on_engine_death_from_thread(1234)
+
+    mock_create_task.assert_not_called()
+    assert engine_client.db._expected_engine_deaths == set()
+    assert engine_client._engine_confirmed_dead is False
+
+
 # ---------------------------------------------------------------------------
 # Reconnect escalation: lightweight -> heavy after consecutive failures
 # ---------------------------------------------------------------------------
@@ -475,8 +492,10 @@ async def test_escalation_after_consecutive_lightweight_failures(engine_client):
     engine_client._db_reconnect_cooldown_seconds = 0  # disable cooldown for test
 
     # Make lightweight reconnect fail every time
-    engine_client.db.disconnect = AsyncMock(return_value=None)
-    engine_client.db.connect = AsyncMock(side_effect=Exception("connect failed"))
+    engine_client.db.query_raw = AsyncMock(side_effect=Exception("probe failed"))
+    engine_client.db.recreate_prisma_client = AsyncMock(
+        side_effect=Exception("recreate failed")
+    )
 
     # Run 3 failed reconnect attempts
     for i in range(3):
@@ -488,7 +507,7 @@ async def test_escalation_after_consecutive_lightweight_failures(engine_client):
     assert engine_client._consecutive_reconnect_failures == 3
 
     # Next attempt should escalate: _engine_confirmed_dead set to True before _run_reconnect_cycle
-    engine_client.db.recreate_prisma_client = AsyncMock(return_value=None)
+    engine_client.db.recreate_prisma_client = AsyncMock(return_value=True)
     engine_client._start_engine_watcher = AsyncMock(return_value=None)
 
     with patch.dict(os.environ, {"DATABASE_URL": "postgresql://test"}):

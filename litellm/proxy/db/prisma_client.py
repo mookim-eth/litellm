@@ -11,7 +11,7 @@ import time
 import urllib
 import urllib.parse
 from datetime import datetime, timedelta
-from typing import Any, Optional, Union
+from typing import Any, Callable, Dict, Optional, Set, Union
 
 from litellm._logging import verbose_proxy_logger
 from litellm.secret_managers.main import str_to_bool
@@ -45,13 +45,18 @@ class PrismaWrapper:
         self._token_refresh_task: Optional[asyncio.Task] = None
         self._reconnection_lock = asyncio.Lock()
         self._last_refresh_time: Optional[datetime] = None
+        self._expected_engine_deaths: Set[int] = set()
+        self._engine_generation: int = 0
+        self.on_engine_replaced: Optional[Callable[[], None]] = None
 
     def _get_engine_pid(self) -> int:
         """Get the PID of the current Prisma engine subprocess, or 0 if unavailable."""
         try:
+            if self._original_prisma.is_connected() is not True:
+                return 0
             engine = self._original_prisma._engine
             process = getattr(engine, "process", None) if engine is not None else None
-            if process is not None:
+            if process is not None and isinstance(process.pid, int):
                 return process.pid
         except (AttributeError, TypeError):
             pass
@@ -215,17 +220,46 @@ class PrismaWrapper:
         return None
 
     async def recreate_prisma_client(
-        self, new_db_url: str, http_client: Optional[Any] = None
-    ):
-        """Disconnect and reconnect the Prisma client with a new database URL."""
+        self,
+        new_db_url: str,
+        http_client: Optional[Any] = None,
+        *,
+        expected_generation: Optional[int] = None,
+    ) -> bool:
+        """Recreate the client while serializing and deduplicating engine restarts."""
+        async with self._reconnection_lock:
+            return await self._recreate_prisma_client_locked(
+                new_db_url,
+                http_client=http_client,
+                expected_generation=expected_generation,
+            )
+
+    async def _recreate_prisma_client_locked(
+        self,
+        new_db_url: str,
+        http_client: Optional[Any] = None,
+        *,
+        expected_generation: Optional[int] = None,
+    ) -> bool:
+        """Recreate implementation; caller must hold ``_reconnection_lock``."""
         from prisma import Prisma  # type: ignore
 
-        old_engine_pid = self._get_engine_pid()
+        if (
+            expected_generation is not None
+            and expected_generation != self._engine_generation
+        ):
+            verbose_proxy_logger.info(
+                "Skipping Prisma client recreate: engine generation %s != expected %s.",
+                self._engine_generation,
+                expected_generation,
+            )
+            return False
 
-        try:
-            await self._original_prisma.disconnect()
-        except Exception as e:
-            verbose_proxy_logger.warning(f"Failed to disconnect Prisma client: {e}")
+        old_engine_pid = self._get_engine_pid()
+        if old_engine_pid > 0:
+            if len(self._expected_engine_deaths) >= 64:
+                self._expected_engine_deaths.clear()
+            self._expected_engine_deaths.add(old_engine_pid)
             await self._kill_engine_process(old_engine_pid)
 
         if http_client is not None:
@@ -234,6 +268,10 @@ class PrismaWrapper:
             self._original_prisma = Prisma()
 
         await self._original_prisma.connect()
+        self._engine_generation += 1
+        if self.on_engine_replaced is not None:
+            self.on_engine_replaced()
+        return True
 
     async def start_token_refresh_task(self) -> None:
         """
@@ -328,7 +366,7 @@ class PrismaWrapper:
         async with self._reconnection_lock:
             new_db_url = self.get_rds_iam_token()
             if new_db_url:
-                await self.recreate_prisma_client(new_db_url)
+                await self._recreate_prisma_client_locked(new_db_url)
                 self._last_refresh_time = datetime.utcnow()
                 verbose_proxy_logger.info(
                     "RDS IAM token refreshed successfully. New token valid for ~15 minutes."

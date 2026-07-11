@@ -3912,6 +3912,8 @@ class PrismaClient:
 
     def _get_engine_pid(self) -> int:
         try:
+            if self.db._original_prisma.is_connected() is not True:  # type: ignore[attr-defined]
+                return 0
             engine = self.db._original_prisma._engine  # type: ignore[attr-defined]
             process = getattr(engine, "process", None) if engine is not None else None
             if process is not None:
@@ -3919,6 +3921,13 @@ class PrismaClient:
         except (AttributeError, TypeError):
             pass
         return 0
+
+    def _consume_expected_death(self, pid: int) -> bool:
+        expected = getattr(self.db, "_expected_engine_deaths", None)
+        if isinstance(expected, set) and pid in expected:
+            expected.discard(pid)
+            return True
+        return False
 
     def _is_engine_alive(self) -> bool:
         if self._engine_pid <= 0:
@@ -3982,6 +3991,9 @@ class PrismaClient:
                 "prisma-query-engine PID %s already dead at watch start.",
                 pid,
             )
+            if self._consume_expected_death(pid):
+                self._cleanup_engine_watcher()
+                return True
             self._engine_confirmed_dead = True
             self._reap_all_zombies()
             self._cleanup_engine_watcher()
@@ -4031,6 +4043,13 @@ class PrismaClient:
         if self._engine_confirmed_dead:
             return
         if dead_pid != self._engine_pid:
+            return
+        if self._consume_expected_death(dead_pid):
+            verbose_proxy_logger.info(
+                "prisma-query-engine PID %s exited as part of a planned restart; not reconnecting.",
+                dead_pid,
+            )
+            self._cleanup_engine_watcher()
             return
         verbose_proxy_logger.error(
             "prisma-query-engine PID %s exited (waitpid thread); triggering reconnect.",
@@ -4086,6 +4105,9 @@ class PrismaClient:
                 self._engine_pidfd = -1
             return
         dead_pid = self._engine_pid
+        if self._consume_expected_death(dead_pid):
+            self._cleanup_engine_watcher()
+            return
         verbose_proxy_logger.error(
             "prisma-query-engine PID %s exited (pidfd event); triggering reconnect.",
             dead_pid,
@@ -4109,6 +4131,10 @@ class PrismaClient:
             try:
                 os.kill(self._engine_pid, 0)
             except ProcessLookupError:
+                dead_pid = self._engine_pid
+                if self._consume_expected_death(dead_pid):
+                    self._cleanup_engine_watcher()
+                    return
                 verbose_proxy_logger.error(
                     "prisma-query-engine PID %s gone; triggering reconnect.",
                     self._engine_pid,
@@ -4198,6 +4224,11 @@ class PrismaClient:
         self._engine_confirmed_dead = False
         verbose_proxy_logger.debug("Stopped engine process watcher.")
 
+    def _handle_writer_engine_replaced(self) -> None:
+        self._engine_confirmed_dead = False
+        self._cleanup_engine_watcher()
+        asyncio.create_task(self._start_engine_watcher())
+
     async def _run_reconnect_cycle(
         self, timeout_seconds: Optional[float] = None
     ) -> None:
@@ -4214,6 +4245,9 @@ class PrismaClient:
             if timeout_seconds is not None
             else self._db_watchdog_reconnect_timeout_seconds
         )
+        expected_generation = getattr(self.db, "_engine_generation", None)
+        if not isinstance(expected_generation, int):
+            expected_generation = None
 
         engine_is_dead = self._engine_confirmed_dead or (
             self._engine_pid > 0 and not self._is_engine_alive()
@@ -4227,8 +4261,6 @@ class PrismaClient:
             )
             self._reap_all_zombies()
             self._cleanup_engine_watcher()
-            self._engine_confirmed_dead = False
-
             async def _do_heavy_reconnect() -> None:
                 db_url = os.getenv("DATABASE_URL", "")
                 if not db_url:
@@ -4236,27 +4268,36 @@ class PrismaClient:
                         "DATABASE_URL not set; cannot recreate Prisma client."
                     )
                     raise RuntimeError("DATABASE_URL not set")
-                await self.db.recreate_prisma_client(db_url)
+                await self.db.recreate_prisma_client(
+                    db_url, expected_generation=expected_generation
+                )
                 await self._start_engine_watcher()
 
             await asyncio.wait_for(_do_heavy_reconnect(), timeout=effective_timeout)
+            self._engine_confirmed_dead = False
         else:
             verbose_proxy_logger.debug(
                 "Performing Prisma DB reconnect (engine alive or unknown)."
             )
 
             async def _do_direct_reconnect() -> None:
-                old_pid = self._get_engine_pid()
+                db_url = os.getenv("DATABASE_URL", "")
+                if not db_url:
+                    raise RuntimeError("DATABASE_URL not set")
                 try:
-                    await self.db.disconnect()
-                except Exception as disconnect_err:
+                    await self.db.query_raw("SELECT 1")
+                    await self._start_engine_watcher()
+                    return
+                except Exception as probe_err:
                     verbose_proxy_logger.warning(
-                        "Prisma DB disconnect before reconnect failed: %s",
-                        disconnect_err,
+                        "Prisma writer probe failed (%s); recreating client.",
+                        probe_err,
                     )
-                    await PrismaWrapper._kill_engine_process(old_pid)
-
-                await self.db.connect()
+                self._cleanup_engine_watcher()
+                await self.db.recreate_prisma_client(
+                    db_url, expected_generation=expected_generation
+                )
+                await self._start_engine_watcher()
                 await self.db.query_raw("SELECT 1")
 
             await asyncio.wait_for(_do_direct_reconnect(), timeout=effective_timeout)
@@ -4445,6 +4486,7 @@ class PrismaClient:
             return
         if self._db_health_watchdog_task is not None:
             return
+        self.db.on_engine_replaced = self._handle_writer_engine_replaced
         self._db_health_watchdog_task = asyncio.create_task(
             self._db_health_watchdog_loop()
         )
