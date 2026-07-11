@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import inspect
 import json
 import time
@@ -36,6 +37,9 @@ from litellm.types.llms.openai import (
 )
 from litellm.types.utils import CallTypes
 from litellm.utils import CustomStreamWrapper, async_post_call_success_deployment_hook
+
+RESPONSES_TEXT_COALESCE_SECONDS = 0.300
+RESPONSES_TEXT_COALESCE_MAX_CHARS = 1024
 
 
 class BaseResponsesAPIStreamingIterator:
@@ -565,6 +569,106 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             call_type,
         )
         self.stream_iterator = response.aiter_lines()
+        self._pending_stream_line: Optional[str] = None
+        self._pending_stream_line_task: Optional[asyncio.Task] = None
+        self._outbound_sequence_number = 0
+
+    @staticmethod
+    def _coalescible_output_text_delta(chunk: str) -> Optional[Dict[str, Any]]:
+        stripped = CustomStreamWrapper._strip_sse_data_from_chunk(chunk)
+        if stripped is None or stripped == STREAM_SSE_DONE_STRING:
+            return None
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(event, dict) or event.get("type") != "response.output_text.delta":
+            return None
+        if not isinstance(event.get("delta"), str):
+            return None
+        allowed_fields = {
+            "type",
+            "item_id",
+            "output_index",
+            "content_index",
+            "delta",
+            "sequence_number",
+            "logprobs",
+            "model",
+            "obfuscation",
+        }
+        if not set(event).issubset(allowed_fields):
+            return None
+        if event.get("logprobs") not in (None, []):
+            return None
+        return event
+
+    @staticmethod
+    def _same_output_text_target(first: Dict[str, Any], following: Dict[str, Any]) -> bool:
+        return all(
+            first.get(field) == following.get(field)
+            for field in ("item_id", "output_index", "content_index", "model")
+        )
+
+    async def _next_stream_line(self) -> str:
+        if self._pending_stream_line is not None:
+            line = self._pending_stream_line
+            self._pending_stream_line = None
+            return line
+        if self._pending_stream_line_task is not None:
+            task = self._pending_stream_line_task
+            self._pending_stream_line_task = None
+            return await task
+        return await self.stream_iterator.__anext__()
+
+    async def _coalesce_output_text_delta(self, chunk: str) -> str:
+        event = self._coalescible_output_text_delta(chunk)
+        if event is None:
+            return chunk
+
+        deadline = asyncio.get_running_loop().time() + RESPONSES_TEXT_COALESCE_SECONDS
+        while len(event["delta"]) < RESPONSES_TEXT_COALESCE_MAX_CHARS:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            self._pending_stream_line_task = asyncio.create_task(
+                self.stream_iterator.__anext__()
+            )
+            done, _ = await asyncio.wait(
+                {self._pending_stream_line_task}, timeout=remaining
+            )
+            if not done:
+                break
+            try:
+                following_line = self._pending_stream_line_task.result()
+            except StopAsyncIteration:
+                self._pending_stream_line_task = None
+                break
+            self._pending_stream_line_task = None
+            # httpx ``aiter_lines()`` exposes SSE framing separately. The
+            # JSON payload already carries its event type, so neither the
+            # optional ``event:`` line nor the empty terminator is a boundary.
+            stripped_following_line = following_line.strip()
+            if not stripped_following_line or stripped_following_line.startswith(
+                "event:"
+            ):
+                continue
+            following = self._coalescible_output_text_delta(following_line)
+            if following is None or not self._same_output_text_target(event, following):
+                self._pending_stream_line = following_line
+                break
+            event["delta"] += following["delta"]
+
+        return f"data: {json.dumps(event, separators=(',', ':'))}"
+
+    async def aclose(self) -> None:
+        task = self._pending_stream_line_task
+        self._pending_stream_line_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+        await super().aclose()
 
     def __aiter__(self):
         return self
@@ -575,17 +679,20 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             while True:
                 # Get the next chunk from the stream
                 try:
-                    chunk = await self.stream_iterator.__anext__()
+                    chunk = await self._next_stream_line()
                 except StopAsyncIteration:
                     self.finished = True
                     raise StopAsyncIteration
 
                 self._check_max_streaming_duration()
+                chunk = await self._coalesce_output_text_delta(chunk)
                 result = self._process_chunk(chunk)
 
                 if self.finished:
                     raise StopAsyncIteration
                 elif result is not None:
+                    setattr(result, "sequence_number", self._outbound_sequence_number)
+                    self._outbound_sequence_number += 1
                     # Await hook directly instead of run_async_function
                     # (which spawns a thread + event loop per call)
                     result = await self._call_post_streaming_deployment_hook(
