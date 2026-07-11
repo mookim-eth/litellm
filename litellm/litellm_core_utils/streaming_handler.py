@@ -26,6 +26,7 @@ from pydantic import BaseModel
 import litellm
 from litellm import verbose_logger
 from litellm._uuid import uuid
+from litellm.constants import STREAM_CLOSE_TIMEOUT_SECONDS
 from litellm.litellm_core_utils.model_response_utils import (
     is_model_response_stream_empty,
 )
@@ -205,10 +206,12 @@ class CustomStreamWrapper:
         if self.completion_stream is not None:
             stream_to_close = self.completion_stream
             self.completion_stream = None
-            # Shield from anyio cancellation so cleanup awaits can complete.
-            # Without this, CancelledError is thrown into every await during
-            # task group cancellation, preventing HTTP connection release.
-            with anyio.CancelScope(shield=True):
+            # Give cleanup a bounded shield from request cancellation. The
+            # timeout is cooperative: provider close implementations must not
+            # swallow cancellation or block the event-loop synchronously.
+            with anyio.move_on_after(
+                STREAM_CLOSE_TIMEOUT_SECONDS, shield=True
+            ) as cancel_scope:
                 try:
                     if hasattr(stream_to_close, "aclose"):
                         await stream_to_close.aclose()
@@ -216,11 +219,17 @@ class CustomStreamWrapper:
                         result = stream_to_close.close()
                         if result is not None:
                             await result
-                except BaseException as e:
+                except Exception as e:
                     verbose_logger.debug(
                         "CustomStreamWrapper.aclose: error closing completion_stream: %s",
                         e,
                     )
+            if cancel_scope.cancelled_caught:
+                verbose_logger.warning(
+                    "CustomStreamWrapper.aclose: timed out after %.1fs closing completion_stream type=%s; close will not be retried",
+                    STREAM_CLOSE_TIMEOUT_SECONDS,
+                    type(stream_to_close).__name__,
+                )
 
     def check_send_stream_usage(self, stream_options: Optional[dict]):
         return (

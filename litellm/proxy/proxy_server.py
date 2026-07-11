@@ -51,6 +51,7 @@ from litellm.constants import (
     DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL,
     DEFAULT_SHARED_HEALTH_CHECK_TTL,
     DEFAULT_SLACK_ALERTING_THRESHOLD,
+    STREAM_CLOSE_TIMEOUT_SECONDS,
     LITELLM_EMBEDDING_PROVIDERS_SUPPORTING_INPUT_ARRAY_OF_TOKENS,
     LITELLM_SETTINGS_SAFE_DB_OVERRIDES,
     LITELLM_UI_ALLOW_HEADERS,
@@ -6019,10 +6020,6 @@ async def _coalesce_plain_text_stream(response: Any):  # noqa: PLR0915
             pending_task.cancel()
             with contextlib.suppress(BaseException):
                 await pending_task
-        close = getattr(iterator, "aclose", None)
-        if callable(close):
-            with contextlib.suppress(BaseException):
-                await close()
 
 
 async def async_data_generator(
@@ -6117,16 +6114,27 @@ async def async_data_generator(
         # Close the response stream to release the underlying HTTP connection
         # back to the connection pool. This prevents pool exhaustion when
         # clients disconnect mid-stream.
-        # Shield from cancellation so the close awaits can complete.
-        with anyio.CancelScope(shield=True):
-            if hasattr(response, "aclose"):
+        # Give close a bounded shield from request cancellation. This is the
+        # single owner for the provider response; inner iterator wrappers only
+        # clean up tasks they created themselves.
+        with anyio.move_on_after(
+            STREAM_CLOSE_TIMEOUT_SECONDS, shield=True
+        ) as cancel_scope:
+            close = getattr(response, "aclose", None)
+            if callable(close):
                 try:
-                    await response.aclose()
-                except BaseException as e:
+                    await close()
+                except Exception as e:
                     verbose_proxy_logger.debug(
                         "async_data_generator: error closing response stream: %s",
                         e,
                     )
+        if cancel_scope.cancelled_caught:
+            verbose_proxy_logger.warning(
+                "async_data_generator: timed out after %.1fs closing response stream type=%s; close will not be retried",
+                STREAM_CLOSE_TIMEOUT_SECONDS,
+                type(response).__name__,
+            )
 
 
 def select_data_generator(

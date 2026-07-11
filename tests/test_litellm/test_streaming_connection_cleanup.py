@@ -167,6 +167,43 @@ async def test_aclose_completes_under_cancellation():
     assert aclose_completed
 
 
+@pytest.mark.asyncio
+async def test_aclose_times_out_once_when_provider_close_stalls(caplog):
+    """A stalled provider close must not hold a disconnected request forever."""
+    close_started = 0
+    close_cancelled = asyncio.Event()
+
+    class StalledCloseStream:
+        async def aclose(self):
+            nonlocal close_started
+            close_started += 1
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                close_cancelled.set()
+                raise
+
+    wrapper = CustomStreamWrapper(
+        completion_stream=StalledCloseStream(),
+        model=None,
+        logging_obj=MagicMock(),
+        custom_llm_provider=None,
+    )
+
+    with patch(
+        "litellm.litellm_core_utils.streaming_handler.STREAM_CLOSE_TIMEOUT_SECONDS",
+        0.01,
+    ):
+        await asyncio.wait_for(wrapper.aclose(), timeout=0.2)
+        await wrapper.aclose()
+
+    assert close_cancelled.is_set()
+    assert close_started == 1
+    assert "timed out after 0.0s" in caplog.text
+    assert "type=StalledCloseStream" in caplog.text
+    assert "close will not be retried" in caplog.text
+
+
 # ── Router stream_with_fallbacks cleanup tests ──────────────────
 
 

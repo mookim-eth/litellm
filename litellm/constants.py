@@ -57,6 +57,12 @@ LITELLM_MAX_STREAMING_DURATION_SECONDS = (
     float(_max_stream_duration_env) if _max_stream_duration_env is not None else None
 )
 
+# Bound cancellation cleanup for providers that respond normally to task
+# cancellation. A timed-out close is cancelled and is not retried.
+STREAM_CLOSE_TIMEOUT_SECONDS = float(
+    os.getenv("LITELLM_STREAM_CLOSE_TIMEOUT_SECONDS", "2")
+)
+
 # Maximum number of base64 characters to keep in logging payloads.
 # Data URIs exceeding this are replaced with a size placeholder.
 # Set to 0 to disable truncation.
