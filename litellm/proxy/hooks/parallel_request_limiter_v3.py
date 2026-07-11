@@ -898,14 +898,24 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             get_team_model_rpm_limit,
             get_team_model_tpm_limit,
         )
+        from litellm.proxy.proxy_server import general_settings
 
         descriptors = []
+
+        # A key-specific limit always wins. The server-level setting acts as a
+        # live default for keys that do not have max_parallel_requests set in
+        # LiteLLM_VerificationToken.
+        api_key_max_parallel_requests = user_api_key_dict.max_parallel_requests
+        if api_key_max_parallel_requests is None:
+            api_key_max_parallel_requests = general_settings.get(
+                "max_parallel_requests"
+            )
 
         # API Key rate limits
         if user_api_key_dict.api_key and (
             user_api_key_dict.rpm_limit is not None
             or user_api_key_dict.tpm_limit is not None
-            or user_api_key_dict.max_parallel_requests is not None
+            or api_key_max_parallel_requests is not None
         ):
             descriptors.append(
                 RateLimitDescriptor(
@@ -922,7 +932,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                             limit_type=tpm_limit_type,
                             model_has_failures=model_has_failures,
                         ),
-                        "max_parallel_requests": user_api_key_dict.max_parallel_requests,
+                        "max_parallel_requests": api_key_max_parallel_requests,
                         "window_size": self.window_size,
                     },
                 )

@@ -34,6 +34,49 @@ class TimeController:
         self._current += timedelta(seconds=seconds)
 
 
+@pytest.mark.parametrize(
+    "key_limit,server_limit,expected_limit,expect_descriptor",
+    [
+        (None, 6, 6, True),
+        (4, 6, 4, True),
+        (None, None, None, False),
+    ],
+)
+def test_api_key_max_parallel_requests_uses_server_default(
+    monkeypatch, key_limit, server_limit, expected_limit, expect_descriptor
+):
+    from litellm.proxy import proxy_server
+
+    monkeypatch.setattr(
+        proxy_server,
+        "general_settings",
+        {"max_parallel_requests": server_limit}
+        if server_limit is not None
+        else {},
+    )
+    handler = _PROXY_MaxParallelRequestsHandler(
+        internal_usage_cache=InternalUsageCache(DualCache())
+    )
+    descriptors = handler._create_rate_limit_descriptors(
+        user_api_key_dict=UserAPIKeyAuth(
+            api_key=hash_token("sk-server-default-test"),
+            max_parallel_requests=key_limit,
+        ),
+        data={"model": "gpt-4"},
+        rpm_limit_type=None,
+        tpm_limit_type=None,
+        model_has_failures=False,
+    )
+
+    api_key_descriptors = [d for d in descriptors if d["key"] == "api_key"]
+    assert bool(api_key_descriptors) is expect_descriptor
+    if expect_descriptor:
+        assert (
+            api_key_descriptors[0]["rate_limit"]["max_parallel_requests"]
+            == expected_limit
+        )
+
+
 @pytest.fixture
 def time_controller(monkeypatch):
     controller = TimeController()
