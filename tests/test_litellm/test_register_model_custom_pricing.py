@@ -28,6 +28,10 @@ def test_build_custom_pricing_entry_includes_all_kwargs_fields():
         "output_cost_per_token": 0.002,
         "cache_read_input_token_cost": 0.00025,
         "cache_creation_input_token_cost": 0.005,
+        "cache_creation_input_token_cost_above_272k_tokens": 0.01,
+        "cache_read_input_token_cost_above_272k_tokens": 0.0005,
+        "input_cost_per_token_above_272k_tokens": 0.002,
+        "output_cost_per_token_above_272k_tokens": 0.003,
         "output_cost_per_reasoning_token": 0.01,
         "input_cost_per_audio_token": 0.003,
         "unrelated_kwarg": "should_be_ignored",
@@ -43,6 +47,10 @@ def test_build_custom_pricing_entry_includes_all_kwargs_fields():
     assert entry["output_cost_per_token"] == 0.002
     assert entry["cache_read_input_token_cost"] == 0.00025
     assert entry["cache_creation_input_token_cost"] == 0.005
+    assert entry["cache_creation_input_token_cost_above_272k_tokens"] == 0.01
+    assert entry["cache_read_input_token_cost_above_272k_tokens"] == 0.0005
+    assert entry["input_cost_per_token_above_272k_tokens"] == 0.002
+    assert entry["output_cost_per_token_above_272k_tokens"] == 0.003
     assert entry["output_cost_per_reasoning_token"] == 0.01
     assert entry["input_cost_per_audio_token"] == 0.003
     assert "unrelated_kwarg" not in entry

@@ -176,6 +176,7 @@ class ModelInfoBase(ProviderSpecificModelInfo, total=False):
     ]  # OpenAI priority service tier pricing
     cache_creation_input_token_cost: Optional[float]
     cache_creation_input_token_cost_above_200k_tokens: Optional[float]
+    cache_creation_input_token_cost_above_272k_tokens: Optional[float]
     cache_creation_input_token_cost_above_1hr: Optional[float]
     cache_read_input_token_cost: Optional[float]
     cache_read_input_token_cost_flex: Optional[
@@ -2973,11 +2974,13 @@ class CustomPricingLiteLLMParams(BaseModel):
     cache_creation_input_token_cost: Optional[float] = None
     cache_creation_input_token_cost_above_1hr: Optional[float] = None
     cache_creation_input_token_cost_above_200k_tokens: Optional[float] = None
+    cache_creation_input_token_cost_above_272k_tokens: Optional[float] = None
     cache_creation_input_audio_token_cost: Optional[float] = None
     cache_read_input_token_cost: Optional[float] = None
     cache_read_input_token_cost_flex: Optional[float] = None
     cache_read_input_token_cost_priority: Optional[float] = None
     cache_read_input_token_cost_above_200k_tokens: Optional[float] = None
+    cache_read_input_token_cost_above_272k_tokens: Optional[float] = None
     cache_read_input_audio_token_cost: Optional[float] = None
     input_cost_per_character: Optional[float] = None
     input_cost_per_character_above_128k_tokens: Optional[float] = None
@@ -2985,6 +2988,7 @@ class CustomPricingLiteLLMParams(BaseModel):
     input_cost_per_token_cache_hit: Optional[float] = None
     input_cost_per_token_above_128k_tokens: Optional[float] = None
     input_cost_per_token_above_200k_tokens: Optional[float] = None
+    input_cost_per_token_above_272k_tokens: Optional[float] = None
     input_cost_per_query: Optional[float] = None
     input_cost_per_image: Optional[float] = None
     input_cost_per_image_above_128k_tokens: Optional[float] = None
@@ -3002,6 +3006,7 @@ class CustomPricingLiteLLMParams(BaseModel):
     output_cost_per_audio_token: Optional[float] = None
     output_cost_per_token_above_128k_tokens: Optional[float] = None
     output_cost_per_token_above_200k_tokens: Optional[float] = None
+    output_cost_per_token_above_272k_tokens: Optional[float] = None
     output_cost_per_character_above_128k_tokens: Optional[float] = None
     output_cost_per_image: Optional[float] = None
     output_cost_per_image_token: Optional[float] = None

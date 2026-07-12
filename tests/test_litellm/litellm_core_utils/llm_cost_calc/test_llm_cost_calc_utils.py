@@ -324,6 +324,37 @@ def test_generic_cost_per_token_gpt54_above_272k_tokens():
     assert round(completion_cost, 10) == round(expected_completion, 10)
 
 
+def test_generic_cost_per_token_custom_gpt56_above_272k_includes_cache():
+    """A >272K GPT-5.6 request applies long-context rates to the full request."""
+    model = "custom-gpt-5.6-sol"
+    litellm.register_model(
+        model_cost={
+            model: {
+                "litellm_provider": "openai",
+                "input_cost_per_token": 5e-6,
+                "input_cost_per_token_above_272k_tokens": 10e-6,
+                "output_cost_per_token": 30e-6,
+                "output_cost_per_token_above_272k_tokens": 45e-6,
+                "cache_read_input_token_cost": 0.5e-6,
+                "cache_read_input_token_cost_above_272k_tokens": 1e-6,
+            }
+        }
+    )
+    usage = Usage(
+        prompt_tokens=273000,
+        completion_tokens=1000,
+        total_tokens=274000,
+        prompt_tokens_details=PromptTokensDetailsWrapper(cached_tokens=200000),
+    )
+
+    prompt_cost, completion_cost = generic_cost_per_token(
+        model=model, usage=usage, custom_llm_provider="openai"
+    )
+
+    assert prompt_cost == pytest.approx(73000 * 10e-6 + 200000 * 1e-6)
+    assert completion_cost == pytest.approx(1000 * 45e-6)
+
+
 def test_generic_cost_per_token_anthropic_prompt_caching():
     model = "claude-sonnet-4@20250514"
     usage = Usage(
