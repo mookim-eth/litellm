@@ -9,6 +9,7 @@ from uuid import uuid4
 from typing import Any, Dict, List, Optional, cast
 
 import httpx
+from openai._streaming import SSEDecoder
 
 import litellm
 from litellm.constants import (
@@ -36,7 +37,7 @@ from litellm.types.llms.openai import (
     ResponsesAPIStreamingResponse,
 )
 from litellm.types.utils import CallTypes
-from litellm.utils import CustomStreamWrapper, async_post_call_success_deployment_hook
+from litellm.utils import async_post_call_success_deployment_hook
 from litellm.constants import STREAM_TEXT_COALESCE_SECONDS
 
 RESPONSES_TEXT_COALESCE_MAX_CHARS = 1024
@@ -155,10 +156,8 @@ class BaseResponsesAPIStreamingIterator:
         if not chunk:
             return None
 
-        # Handle SSE format (data: {...})
-        chunk = CustomStreamWrapper._strip_sse_data_from_chunk(chunk)
-        if chunk is None:
-            return None
+        # SSEDecoder already strips the SSE ``data:`` field prefix. Reapplying
+        # the old line-based stripping here could corrupt legitimate payloads.
 
         # Handle "[DONE]" marker
         if chunk == STREAM_SSE_DONE_STRING:
@@ -571,17 +570,16 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             request_data,
             call_type,
         )
-        self.stream_iterator = response.aiter_lines()
-        self._pending_stream_line: Optional[str] = None
-        self._pending_stream_line_task: Optional[asyncio.Task] = None
+        self.stream_iterator = SSEDecoder().aiter_bytes(response.aiter_bytes())
+        self._pending_stream_event: Optional[Any] = None
+        self._pending_stream_event_task: Optional[asyncio.Task] = None
 
     @staticmethod
     def _coalescible_output_text_delta(chunk: str) -> Optional[Dict[str, Any]]:
-        stripped = CustomStreamWrapper._strip_sse_data_from_chunk(chunk)
-        if stripped is None or stripped == STREAM_SSE_DONE_STRING:
+        if chunk == STREAM_SSE_DONE_STRING:
             return None
         try:
-            event = json.loads(stripped)
+            event = json.loads(chunk)
         except json.JSONDecodeError:
             return None
         if (
@@ -617,14 +615,14 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             for field in ("item_id", "output_index", "content_index", "model")
         )
 
-    async def _next_stream_line(self) -> str:
-        if self._pending_stream_line is not None:
-            line = self._pending_stream_line
-            self._pending_stream_line = None
-            return line
-        if self._pending_stream_line_task is not None:
-            task = self._pending_stream_line_task
-            self._pending_stream_line_task = None
+    async def _next_stream_event(self) -> Any:
+        if self._pending_stream_event is not None:
+            event = self._pending_stream_event
+            self._pending_stream_event = None
+            return event
+        if self._pending_stream_event_task is not None:
+            task = self._pending_stream_event_task
+            self._pending_stream_event_task = None
             return await task
         return await self.stream_iterator.__anext__()
 
@@ -638,39 +636,32 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
-            self._pending_stream_line_task = asyncio.create_task(
+            self._pending_stream_event_task = asyncio.create_task(
                 self.stream_iterator.__anext__()
             )
             done, _ = await asyncio.wait(
-                {self._pending_stream_line_task}, timeout=remaining
+                {self._pending_stream_event_task}, timeout=remaining
             )
             if not done:
                 break
             try:
-                following_line = self._pending_stream_line_task.result()
+                following_event = self._pending_stream_event_task.result()
             except StopAsyncIteration:
-                self._pending_stream_line_task = None
+                self._pending_stream_event_task = None
                 break
-            self._pending_stream_line_task = None
-            # httpx ``aiter_lines()`` exposes SSE framing separately. The
-            # JSON payload already carries its event type, so neither the
-            # optional ``event:`` line nor the empty terminator is a boundary.
-            stripped_following_line = following_line.strip()
-            if not stripped_following_line or stripped_following_line.startswith(
-                "event:"
-            ):
-                continue
-            following = self._coalescible_output_text_delta(following_line)
+            self._pending_stream_event_task = None
+            following_data = following_event.data
+            following = self._coalescible_output_text_delta(following_data)
             if following is None or not self._same_output_text_target(event, following):
-                self._pending_stream_line = following_line
+                self._pending_stream_event = following_event
                 break
             event["delta"] += following["delta"]
 
-        return f"data: {json.dumps(event, separators=(',', ':'))}"
+        return json.dumps(event, separators=(",", ":"))
 
     async def aclose(self) -> None:
-        task = self._pending_stream_line_task
-        self._pending_stream_line_task = None
+        task = self._pending_stream_event_task
+        self._pending_stream_event_task = None
         if task is not None and not task.done():
             task.cancel()
             with contextlib.suppress(BaseException):
@@ -686,13 +677,13 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             while True:
                 # Get the next chunk from the stream
                 try:
-                    chunk = await self._next_stream_line()
+                    sse = await self._next_stream_event()
                 except StopAsyncIteration:
                     self.finished = True
                     raise StopAsyncIteration
 
                 self._check_max_streaming_duration()
-                chunk = await self._coalesce_output_text_delta(chunk)
+                chunk = await self._coalesce_output_text_delta(sse.data)
                 result = self._process_chunk(chunk)
 
                 if self.finished:
@@ -820,7 +811,7 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             request_data,
             call_type,
         )
-        self.stream_iterator = response.iter_lines()
+        self.stream_iterator = SSEDecoder().iter_bytes(response.iter_bytes())
 
     def __iter__(self):
         return self
@@ -831,13 +822,13 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             while True:
                 # Get the next chunk from the stream
                 try:
-                    chunk = next(self.stream_iterator)
+                    sse = next(self.stream_iterator)
                 except StopIteration:
                     self.finished = True
                     raise StopIteration
 
                 self._check_max_streaming_duration()
-                result = self._process_chunk(chunk)
+                result = self._process_chunk(sse.data)
 
                 if self.finished:
                     raise StopIteration

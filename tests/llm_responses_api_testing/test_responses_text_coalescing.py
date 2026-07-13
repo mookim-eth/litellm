@@ -2,6 +2,7 @@ import json
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from openai._streaming import SSEDecoder
 
 from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
 from litellm.types.llms.openai import (
@@ -18,16 +19,17 @@ class FakeResponse:
         self._sse_separators = sse_separators
         self.aclose = AsyncMock()
 
-    async def _lines(self):
+    async def _bytes(self):
         for event in self._events:
             if self._sse_separators:
-                yield f"event: {event['type']}"
-            yield f"data: {json.dumps(event)}"
-            if self._sse_separators:
-                yield ""
+                yield f"event: {event['type']}\n".encode()
+                yield f"data: {json.dumps(event)}\n".encode()
+                yield b"\n"
+            else:
+                yield f"data: {json.dumps(event)}\n\n".encode()
 
-    def aiter_lines(self):
-        return self._lines()
+    def aiter_bytes(self):
+        return self._bytes()
 
 
 def _text(delta, sequence, **extra):
@@ -170,18 +172,18 @@ async def test_nonempty_logprobs_delta_is_not_merged():
 
 @pytest.mark.asyncio
 async def test_flushes_after_coalescing_deadline():
-    async def delayed_lines():
-        yield f"data: {json.dumps(_text('first', 0))}"
+    async def delayed_bytes():
+        yield f"data: {json.dumps(_text('first', 0))}\n\n".encode()
         import asyncio
 
         await asyncio.sleep(0.03)
-        yield f"data: {json.dumps(_text('second', 1))}"
+        yield f"data: {json.dumps(_text('second', 1))}\n\n".encode()
 
     response = FakeResponse([])
-    response.aiter_lines = delayed_lines
+    response.aiter_bytes = delayed_bytes
     iterator = _iterator([])
     iterator.response = response
-    iterator.stream_iterator = response.aiter_lines()
+    iterator.stream_iterator = SSEDecoder().aiter_bytes(response.aiter_bytes())
 
     with patch(
         "litellm.responses.streaming_iterator.STREAM_TEXT_COALESCE_SECONDS",

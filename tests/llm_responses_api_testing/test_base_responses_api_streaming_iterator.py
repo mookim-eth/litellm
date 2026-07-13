@@ -40,6 +40,120 @@ from litellm.types.llms.openai import (
 class TestBaseResponsesAPIStreamingIterator:
     """Test cases for BaseResponsesAPIStreamingIterator"""
 
+    @pytest.mark.asyncio
+    async def test_async_iterator_preserves_u2028_in_sse_json(self):
+        """A real U+2028 byte sequence must not split or drop the completed event."""
+        from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
+
+        payload = json.dumps(
+            {
+                "type": "response.completed",
+                "response": {"instructions": "eligible\u2028promo"},
+            },
+            ensure_ascii=False,
+        )
+        assert "\u2028" in payload
+
+        async def mock_aiter_bytes():
+            yield f"data: {payload}\n\n".encode("utf-8")
+
+        mock_response = Mock()
+        mock_response.headers = {}
+        mock_response.aiter_bytes = Mock(side_effect=mock_aiter_bytes)
+        mock_response.aiter_lines = Mock(
+            side_effect=AssertionError("Responses streaming must decode bytes")
+        )
+        mock_response.aclose = AsyncMock()
+        mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
+        mock_logging_obj.model_call_details = {"litellm_params": {}}
+        mock_config = Mock(spec=BaseResponsesAPIConfig)
+        completed_response = Mock(spec=ResponsesAPIResponse)
+        completed_event = Mock(spec=ResponseCompletedEvent)
+        completed_event.type = ResponsesAPIStreamEvents.RESPONSE_COMPLETED
+        completed_event.response = completed_response
+        mock_config.transform_streaming_response.return_value = completed_event
+
+        iterator = ResponsesAPIStreamingIterator(
+            response=mock_response,
+            model="gpt-4",
+            responses_api_provider_config=mock_config,
+            logging_obj=mock_logging_obj,
+            custom_llm_provider="openai",
+        )
+        iterator._handle_logging_completed_response = Mock()
+
+        chunks = [chunk async for chunk in iterator]
+
+        assert chunks == [completed_event]
+        assert iterator.completed_response is completed_event
+        parsed_chunk = mock_config.transform_streaming_response.call_args.kwargs[
+            "parsed_chunk"
+        ]
+        assert parsed_chunk["response"]["instructions"] == "eligible\u2028promo"
+        mock_response.aiter_bytes.assert_called_once_with()
+        mock_response.aiter_lines.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_iterator_still_coalesces_output_text_deltas(self):
+        """SSE byte decoding must retain the local output-text coalescing behavior."""
+        from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
+
+        events = [
+            {
+                "type": "response.output_text.delta",
+                "item_id": "item_1",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "Hello ",
+            },
+            {
+                "type": "response.output_text.delta",
+                "item_id": "item_1",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "world",
+            },
+            {"type": "response.completed", "response": {"id": "resp_1"}},
+        ]
+
+        async def mock_aiter_bytes():
+            for event in events:
+                yield f"data: {json.dumps(event)}\n\n".encode()
+
+        mock_response = Mock()
+        mock_response.headers = {}
+        mock_response.aiter_bytes = mock_aiter_bytes
+        mock_response.aclose = AsyncMock()
+        mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
+        mock_logging_obj.model_call_details = {"litellm_params": {}}
+        mock_config = Mock(spec=BaseResponsesAPIConfig)
+
+        def transform_streaming_response(*, parsed_chunk, **kwargs):
+            transformed = Mock()
+            transformed.type = parsed_chunk["type"]
+            transformed.delta = parsed_chunk.get("delta")
+            if "response" in parsed_chunk:
+                transformed.response = Mock(spec=ResponsesAPIResponse)
+            return transformed
+
+        mock_config.transform_streaming_response.side_effect = transform_streaming_response
+        iterator = ResponsesAPIStreamingIterator(
+            response=mock_response,
+            model="gpt-4",
+            responses_api_provider_config=mock_config,
+            logging_obj=mock_logging_obj,
+            custom_llm_provider="openai",
+        )
+        iterator._handle_logging_completed_response = Mock()
+
+        chunks = [chunk async for chunk in iterator]
+
+        assert [chunk.type for chunk in chunks] == [
+            ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
+            ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
+        ]
+        assert chunks[0].delta == "Hello world"
+
     def test_process_chunk_with_response_completed_event(self):
         """
         Test that _process_chunk correctly processes a ResponseCompletedEvent 
@@ -265,7 +379,7 @@ class TestBaseResponsesAPIStreamingIterator:
         # Mock dependencies
         mock_response = Mock()
         mock_response.headers = {}
-        mock_response.aiter_lines = Mock()
+        mock_response.aiter_bytes = Mock()
         mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {"litellm_params": {}}
         mock_logging_obj.async_success_handler = AsyncMock()
@@ -325,11 +439,11 @@ class TestBaseResponsesAPIStreamingIterator:
         mock_response.headers = {}
         
         # Create an async iterator that raises StopAsyncIteration after yielding one chunk
-        async def mock_aiter_lines():
-            yield 'data: {"type": "response.output_text.delta", "delta": "test"}'
+        async def mock_aiter_bytes():
+            yield b'data: {"type": "response.output_text.delta", "delta": "test"}\n\n'
             # Normal end of stream - raise StopAsyncIteration
         
-        mock_response.aiter_lines = mock_aiter_lines
+        mock_response.aiter_bytes = mock_aiter_bytes
         
         mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {"litellm_params": {}}
@@ -385,11 +499,11 @@ class TestBaseResponsesAPIStreamingIterator:
         mock_response.headers = {}
         
         # Create a sync iterator that raises StopIteration after yielding one chunk
-        def mock_iter_lines():
-            yield 'data: {"type": "response.output_text.delta", "delta": "test"}'
+        def mock_iter_bytes():
+            yield b'data: {"type": "response.output_text.delta", "delta": "test"}\n\n'
             # Normal end of stream - raise StopIteration
         
-        mock_response.iter_lines = mock_iter_lines
+        mock_response.iter_bytes = mock_iter_bytes
         
         mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {"litellm_params": {}}
@@ -442,10 +556,10 @@ class TestBaseResponsesAPIStreamingIterator:
         mock_response.headers = {}
         mock_response.aclose = AsyncMock()
 
-        async def mock_aiter_lines():
-            yield 'data: {"type": "response.output_text.delta", "delta": "test"}'
+        async def mock_aiter_bytes():
+            yield b'data: {"type": "response.output_text.delta", "delta": "test"}\n\n'
 
-        mock_response.aiter_lines = mock_aiter_lines
+        mock_response.aiter_bytes = mock_aiter_bytes
 
         mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {"litellm_params": {}}
@@ -480,13 +594,16 @@ class TestBaseResponsesAPIStreamingIterator:
         from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
 
         class CancelledAsyncIterator:
+            def __aiter__(self):
+                return self
+
             async def __anext__(self):
                 raise asyncio.CancelledError()
 
         mock_response = Mock()
         mock_response.headers = {}
         mock_response.aclose = AsyncMock()
-        mock_response.aiter_lines.return_value = CancelledAsyncIterator()
+        mock_response.aiter_bytes.return_value = CancelledAsyncIterator()
 
         mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {"litellm_params": {}}
@@ -521,7 +638,7 @@ class TestBaseResponsesAPIStreamingIterator:
 
         mock_response = Mock()
         mock_response.headers = {}
-        mock_response.aiter_lines = Mock()
+        mock_response.aiter_bytes = Mock()
         mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {"litellm_params": {}}
         mock_logging_obj.async_success_handler = AsyncMock()
@@ -564,7 +681,7 @@ class TestBaseResponsesAPIStreamingIterator:
 
         mock_response = Mock()
         mock_response.headers = {"retry-after": "60"}
-        mock_response.aiter_lines = Mock()
+        mock_response.aiter_bytes = Mock()
         mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {"litellm_params": {}}
         mock_logging_obj.async_failure_handler = Mock()
@@ -645,7 +762,7 @@ class TestBaseResponsesAPIStreamingIterator:
 
         mock_response = Mock()
         mock_response.headers = {}
-        mock_response.aiter_lines = Mock()
+        mock_response.aiter_bytes = Mock()
         mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {"litellm_params": {}}
         mock_logging_obj.async_failure_handler = AsyncMock()
@@ -709,7 +826,7 @@ class TestBaseResponsesAPIStreamingIterator:
 
         mock_response = Mock()
         mock_response.headers = {}
-        mock_response.aiter_lines = Mock()
+        mock_response.aiter_bytes = Mock()
         mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {"litellm_params": {}}
         mock_logging_obj.async_failure_handler = Mock()
@@ -793,7 +910,7 @@ class TestBaseResponsesAPIStreamingIterator:
 
         mock_response = Mock()
         mock_response.headers = {}
-        mock_response.aiter_lines = Mock()
+        mock_response.aiter_bytes = Mock()
         mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {"litellm_params": {}}
         mock_logging_obj.async_failure_handler = Mock()
@@ -867,7 +984,7 @@ class TestBaseResponsesAPIStreamingIterator:
 
         mock_response = Mock()
         mock_response.headers = {"retry-after": "60"}
-        mock_response.aiter_lines = Mock()
+        mock_response.aiter_bytes = Mock()
         mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
         mock_logging_obj.model_call_details = {"litellm_params": {}}
         mock_logging_obj.async_failure_handler = Mock()
