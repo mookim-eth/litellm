@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import json
 import logging
 import time
@@ -18,11 +17,9 @@ from typing import (
 )
 
 import httpx
-import anyio
 import orjson
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from starlette.requests import ClientDisconnect
 
 import litellm
 from litellm._logging import verbose_proxy_logger
@@ -32,7 +29,6 @@ from litellm.constants import (
     DEFAULT_MAX_RECURSE_DEPTH,
     LITELLM_DETAILED_TIMING,
     MAX_PAYLOAD_SIZE_FOR_DEBUG_LOG,
-    STREAM_CLOSE_TIMEOUT_SECONDS,
     STREAM_SSE_DATA_PREFIX,
 )
 from litellm.integrations.custom_guardrail import CustomGuardrail
@@ -186,70 +182,12 @@ def _extract_error_from_sse_chunk(event_line: Union[str, bytes]) -> dict:
     return default_error
 
 
-async def _wait_for_request_disconnect(request: Request) -> None:
-    """Poll the ASGI receive channel until the downstream client disconnects."""
-    while not await request.is_disconnected():
-        await asyncio.sleep(0.1)
-
-
-async def _cancel_first_chunk_and_close(
-    first_chunk_task: asyncio.Task, generator: AsyncGenerator[str, None]
-) -> None:
-    """Cancel a pending first-chunk read and close its provider chain boundedly."""
-    first_chunk_task.cancel()
-    with anyio.move_on_after(STREAM_CLOSE_TIMEOUT_SECONDS, shield=True) as cancel_scope:
-        with contextlib.suppress(BaseException):
-            await first_chunk_task
-    if cancel_scope.cancelled_caught:
-        verbose_proxy_logger.warning(
-            "Timed out after %.1fs cancelling a disconnected stream's first-chunk read",
-            STREAM_CLOSE_TIMEOUT_SECONDS,
-        )
-
-    close = getattr(generator, "aclose", None)
-    if callable(close):
-        with anyio.move_on_after(
-            STREAM_CLOSE_TIMEOUT_SECONDS, shield=True
-        ) as close_scope:
-            with contextlib.suppress(BaseException):
-                await close()
-        if close_scope.cancelled_caught:
-            verbose_proxy_logger.warning(
-                "Timed out after %.1fs closing a disconnected pre-first-chunk stream",
-                STREAM_CLOSE_TIMEOUT_SECONDS,
-            )
-
-
-async def _get_first_chunk_or_disconnect(
-    generator: AsyncGenerator[str, None], request: Optional[Request]
-) -> str:
-    """Read the first stream chunk while independently watching client liveness."""
-    if request is None:
-        return await generator.__anext__()
-
-    first_chunk_task = asyncio.create_task(generator.__anext__())
-    disconnect_task = asyncio.create_task(_wait_for_request_disconnect(request))
-    done, _ = await asyncio.wait(
-        {first_chunk_task, disconnect_task}, return_when=asyncio.FIRST_COMPLETED
-    )
-
-    if disconnect_task in done:
-        await _cancel_first_chunk_and_close(first_chunk_task, generator)
-        raise ClientDisconnect()
-
-    disconnect_task.cancel()
-    with contextlib.suppress(BaseException):
-        await disconnect_task
-    return first_chunk_task.result()
-
-
 async def create_response(
     generator: AsyncGenerator[str, None],
     media_type: str,
     headers: dict,
     default_status_code: int = status.HTTP_200_OK,
-    request: Optional[Request] = None,
-) -> Union[StreamingResponse, JSONResponse, Response]:
+) -> Union[StreamingResponse, JSONResponse]:
     """
     Create streaming response, checking if the first chunk is an error.
     If the first chunk is an error, return a standard JSON error response.
@@ -264,7 +202,7 @@ async def create_response(
             generator = await generator
 
         # Now get the first chunk from the actual generator
-        first_chunk_value = await _get_first_chunk_or_disconnect(generator, request)
+        first_chunk_value = await generator.__anext__()
 
         if first_chunk_value is not None:
             try:
@@ -297,10 +235,6 @@ async def create_response(
             except Exception as e:
                 verbose_proxy_logger.debug(f"Error parsing first chunk value: {e}")
 
-    except ClientDisconnect:
-        # No response has started yet. End the ASGI request quietly; the client
-        # is already gone, so the status is only useful to internal middleware.
-        return Response(status_code=499)
     except StopAsyncIteration:
         # Generator was empty. Default status
         async def empty_gen() -> AsyncGenerator[str, None]:
@@ -1279,7 +1213,6 @@ class ProxyBaseLLMRequestProcessing:
                             generator=selected_data_generator,
                             media_type="text/event-stream",
                             headers=custom_headers,
-                            request=request,
                         )
                     # Non-streaming response - fall through to normal response handling
                 elif select_data_generator:
@@ -1292,7 +1225,6 @@ class ProxyBaseLLMRequestProcessing:
                         generator=selected_data_generator,
                         media_type="text/event-stream",
                         headers=custom_headers,
-                        request=request,
                     )
 
             ### CALL HOOKS ### - modify outgoing data

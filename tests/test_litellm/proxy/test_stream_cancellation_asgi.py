@@ -7,13 +7,11 @@ from unittest.mock import patch
 
 import pytest
 from starlette.background import BackgroundTask
-from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
 from litellm.proxy.middleware.in_flight_requests_middleware import (
     InFlightRequestsMiddleware,
 )
-from litellm.proxy.common_request_processing import create_response
 from litellm.proxy.proxy_server import async_data_generator
 
 
@@ -233,107 +231,3 @@ async def test_blocked_aclose_times_out_once_and_releases_request():
     assert timeline.at("asgi.app.done") - timeline.at("asgi.http.disconnect") < 0.2
     assert sum(name == "provider.aclose.start" for name, _ in timeline.events) == 1
     assert timeline.at("background.cleanup") >= timeline.at("outer.finally")
-
-
-@pytest.mark.asyncio
-async def test_disconnect_before_first_chunk_cancels_provider_and_releases_backlog():
-    """Regression: a client can disconnect while create_response prefetches chunk 1."""
-    provider_started = asyncio.Event()
-    provider_cancelled = asyncio.Event()
-    disconnect = asyncio.Event()
-    receive_calls = 0
-
-    async def hanging_generator():
-        try:
-            provider_started.set()
-            await asyncio.Event().wait()
-            yield "data: never\n\n"
-        except asyncio.CancelledError:
-            provider_cancelled.set()
-            raise
-
-    async def receive():
-        nonlocal receive_calls
-        receive_calls += 1
-        if receive_calls == 1:
-            return {"type": "http.request", "body": b"", "more_body": False}
-        await disconnect.wait()
-        return {"type": "http.disconnect"}
-
-    sent_messages = []
-
-    async def send(message):
-        sent_messages.append(message)
-
-    async def endpoint(scope, receive, send):
-        request = Request(scope, receive)
-        response = await create_response(
-            hanging_generator(),
-            media_type="text/event-stream",
-            headers={},
-            request=request,
-        )
-        await response(scope, receive, send)
-
-    scope = {
-        "type": "http",
-        "method": "POST",
-        "path": "/v1/responses",
-        "headers": [],
-        "asgi": {"version": "3.0", "spec_version": "2.3"},
-    }
-    InFlightRequestsMiddleware._in_flight = 0
-    task = asyncio.create_task(
-        InFlightRequestsMiddleware(endpoint)(scope, receive, send)
-    )
-    await asyncio.wait_for(provider_started.wait(), 1)
-    disconnect.set()
-    await asyncio.wait_for(task, 1)
-
-    assert provider_cancelled.is_set()
-    assert InFlightRequestsMiddleware.get_count() == 0
-    assert sent_messages[0]["status"] == 499
-    InFlightRequestsMiddleware._in_flight = 0
-
-
-@pytest.mark.asyncio
-async def test_first_chunk_before_disconnect_preserves_complete_stream():
-    """The disconnect watcher must not consume or truncate a healthy stream."""
-    watcher_started = asyncio.Event()
-    watcher_cancelled = asyncio.Event()
-
-    async def healthy_generator():
-        yield "data: first\n\n"
-        yield "data: second\n\n"
-
-    async def wait_for_disconnect():
-        watcher_started.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            watcher_cancelled.set()
-            raise
-
-    request = Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/v1/responses",
-            "headers": [],
-            "asgi": {"version": "3.0", "spec_version": "2.3"},
-        }
-    )
-    request.is_disconnected = wait_for_disconnect  # type: ignore[method-assign]
-
-    response = await create_response(
-        healthy_generator(),
-        media_type="text/event-stream",
-        headers={},
-        request=request,
-    )
-
-    body = [chunk async for chunk in response.body_iterator]
-
-    assert watcher_started.is_set()
-    assert watcher_cancelled.is_set()
-    assert body == ["data: first\n\n", "data: second\n\n"]

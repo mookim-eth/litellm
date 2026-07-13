@@ -111,7 +111,6 @@ async def anthropic_response(  # noqa: PLR0915
                 generator=selected_data_generator,
                 media_type="text/event-stream",
                 headers={},
-                request=request,
             )
 
         return _anthropic_response
