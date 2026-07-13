@@ -2230,6 +2230,14 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
     global_max_parallel_requests: Optional[int] = Field(
         None, description="global max parallel requests to allow for a proxy instance."
     )
+    responses_provider_start_timeout_seconds: Optional[float] = Field(
+        None,
+        gt=0,
+        description=(
+            "Maximum time to wait for a Responses streaming provider to return "
+            "HTTP headers and its first real SSE event."
+        ),
+    )
     max_request_size_mb: Optional[int] = Field(
         None,
         description="max request size in MB, if a request is larger than this size it will be rejected",

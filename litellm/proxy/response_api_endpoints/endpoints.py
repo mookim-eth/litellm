@@ -1,13 +1,19 @@
 import asyncio
+import contextlib
 import json
 import time
-from typing import Any, AsyncIterator, Dict, Optional, cast
+from types import SimpleNamespace
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional, Union, cast
 from uuid import uuid4
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
+from starlette.requests import ClientDisconnect
 from starlette.websockets import WebSocket
 
 from litellm._logging import verbose_proxy_logger
+from litellm.constants import STREAM_CLOSE_TIMEOUT_SECONDS
 from litellm.integrations.custom_guardrail import ModifyResponseException
 from litellm.proxy._types import *
 from litellm.proxy.auth.user_api_key_auth import (
@@ -22,6 +28,12 @@ from litellm.types.responses.main import DeleteResponseResult
 router = APIRouter()
 
 CODEX_RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
+RESPONSES_SSE_KEEPALIVE = b": keepalive\n\n"
+DEFAULT_RESPONSES_KEEPALIVE_INTERVAL_SECONDS = 45.0
+DEFAULT_RESPONSES_PROVIDER_START_TIMEOUT_SECONDS = 300.0
+RESPONSES_PROVIDER_START_TIMEOUT_SETTING = (
+    "responses_provider_start_timeout_seconds"
+)
 
 
 def _apply_codex_responses_lite_request_overrides(
@@ -39,6 +51,233 @@ def _apply_codex_responses_lite_request_overrides(
     data["parallel_tool_calls"] = False
 
 
+def _is_codex_responses_lite_request(data: Dict[str, Any]) -> bool:
+    extra_headers = data.get("extra_headers")
+    return isinstance(extra_headers, dict) and bool(
+        extra_headers.get(CODEX_RESPONSES_LITE_HEADER)
+    )
+
+
+def _get_responses_provider_start_timeout(general_settings: dict) -> float:
+    value = general_settings.get(
+        RESPONSES_PROVIDER_START_TIMEOUT_SETTING,
+        DEFAULT_RESPONSES_PROVIDER_START_TIMEOUT_SECONDS,
+    )
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        timeout = DEFAULT_RESPONSES_PROVIDER_START_TIMEOUT_SECONDS
+    if timeout <= 0:
+        timeout = DEFAULT_RESPONSES_PROVIDER_START_TIMEOUT_SECONDS
+    return timeout
+
+
+async def _wait_for_request_disconnect(request: Request) -> None:
+    while not await request.is_disconnected():
+        await asyncio.sleep(0.1)
+
+
+async def _await_with_request_disconnect(
+    request: Request,
+    operation: Awaitable[Any],
+    provider_start_timeout_seconds: float,
+) -> Any:
+    """Cancel an inline provider operation when its downstream disappears."""
+    request_task = asyncio.current_task()
+    if request_task is None:
+        return await operation
+
+    disconnected = asyncio.Event()
+
+    async def cancel_request_on_disconnect() -> None:
+        await _wait_for_request_disconnect(request)
+        disconnected.set()
+        request_task.cancel()
+
+    watcher = asyncio.create_task(cancel_request_on_disconnect())
+    try:
+        with anyio.fail_after(provider_start_timeout_seconds):
+            return await operation
+    except asyncio.CancelledError:
+        if disconnected.is_set():
+            raise ClientDisconnect() from None
+        raise
+    finally:
+        watcher.cancel()
+        with contextlib.suppress(BaseException):
+            await watcher
+
+
+def _response_failed_sse(
+    error: Any, *, response_id: Optional[str] = None
+) -> bytes:
+    """Serialize an error after the streaming HTTP response has started."""
+    message = getattr(error, "message", None) or str(error)
+    code = (
+        getattr(error, "code", None)
+        or getattr(error, "status_code", None)
+        or "proxy_error"
+    )
+    event = {
+        "type": "response.failed",
+        "sequence_number": 0,
+        "response": {
+            "id": response_id or f"resp_{uuid4()}",
+            "object": "response",
+            "created_at": int(time.time()),
+            "status": "failed",
+            "error": {"code": str(code), "message": message},
+        },
+    }
+    return (
+        "event: response.failed\n"
+        f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+    ).encode()
+
+
+def _response_error_from_started_response(response: Response) -> Any:
+    """Extract an OpenAI-style error from a non-stream response."""
+    body = getattr(response, "body", b"")
+    if isinstance(body, bytes):
+        with contextlib.suppress(UnicodeDecodeError):
+            body = body.decode()
+    if isinstance(body, str):
+        with contextlib.suppress(json.JSONDecodeError):
+            parsed = json.loads(body)
+            if isinstance(parsed, dict):
+                error = parsed.get("error", parsed)
+                if isinstance(error, dict):
+                    return SimpleNamespace(
+                        message=error.get("message", body),
+                        code=error.get("code", response.status_code),
+                    )
+    return RuntimeError(
+        f"Expected a streaming Responses response, got HTTP {response.status_code}"
+    )
+
+
+async def _deferred_responses_stream(
+    process_request: Callable[[], Awaitable[Any]],
+    provider_start_timeout_seconds: float = (
+        DEFAULT_RESPONSES_PROVIDER_START_TIMEOUT_SECONDS
+    ),
+    keepalive_interval_seconds: float = (
+        DEFAULT_RESPONSES_KEEPALIVE_INTERVAL_SECONDS
+    ),
+    error_handler: Optional[Callable[[Exception], Awaitable[Exception]]] = None,
+) -> AsyncIterator[Union[bytes, str]]:
+    """Forward one provider stream while emitting protocol-neutral SSE comments."""
+    queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
+    stream_finished = object()
+
+    async def _produce_provider_stream() -> None:
+        response: Optional[Response] = None
+        body_iterator: Optional[Any] = None
+        producer_cancelled = False
+        try:
+            with anyio.fail_after(provider_start_timeout_seconds):
+                response = await process_request()
+            if not isinstance(response, StreamingResponse):
+                await queue.put(
+                    _response_failed_sse(
+                        _response_error_from_started_response(response)
+                    )
+                )
+                return
+
+            body_iterator = response.body_iterator
+            async for chunk in body_iterator:
+                await queue.put(chunk)
+        except asyncio.CancelledError:
+            producer_cancelled = True
+            raise
+        except TimeoutError:
+            error: Exception = HTTPException(
+                status_code=504,
+                detail=(
+                    "Provider did not start a Responses stream within "
+                    f"{provider_start_timeout_seconds:g} seconds"
+                ),
+            )
+            if error_handler is not None:
+                error = await error_handler(error)
+            await queue.put(_response_failed_sse(error))
+        except Exception as error:
+            if error_handler is not None:
+                error = await error_handler(error)
+            await queue.put(_response_failed_sse(error))
+        finally:
+            close = getattr(body_iterator, "aclose", None)
+            if callable(close):
+                with anyio.move_on_after(
+                    STREAM_CLOSE_TIMEOUT_SECONDS, shield=True
+                ) as cancel_scope:
+                    with contextlib.suppress(BaseException):
+                        await close()
+                if cancel_scope.cancelled_caught:
+                    verbose_proxy_logger.warning(
+                        "Timed out after %.1fs closing deferred Responses stream",
+                        STREAM_CLOSE_TIMEOUT_SECONDS,
+                    )
+            background = getattr(response, "background", None)
+            if background is not None:
+                with anyio.move_on_after(
+                    STREAM_CLOSE_TIMEOUT_SECONDS, shield=True
+                ) as background_scope:
+                    with contextlib.suppress(Exception):
+                        await background()
+                if background_scope.cancelled_caught:
+                    verbose_proxy_logger.warning(
+                        "Timed out after %.1fs running deferred Responses cleanup",
+                        STREAM_CLOSE_TIMEOUT_SECONDS,
+                    )
+            if not producer_cancelled:
+                await queue.put(stream_finished)
+
+    yield RESPONSES_SSE_KEEPALIVE
+    producer_task = asyncio.create_task(_produce_provider_stream())
+    queue_read_task: Optional[asyncio.Task] = None
+    try:
+        while True:
+            if queue_read_task is None:
+                queue_read_task = asyncio.create_task(queue.get())
+            done, _ = await asyncio.wait(
+                {queue_read_task}, timeout=keepalive_interval_seconds
+            )
+            if not done:
+                if producer_task.done():
+                    await producer_task
+                    break
+                yield RESPONSES_SSE_KEEPALIVE
+                continue
+            item = queue_read_task.result()
+            queue_read_task = None
+            if item is stream_finished:
+                break
+            yield item
+
+            if producer_task.done() and queue.empty():
+                await producer_task
+                break
+    finally:
+        if not producer_task.done():
+            producer_task.cancel()
+            with anyio.move_on_after(
+                STREAM_CLOSE_TIMEOUT_SECONDS, shield=True
+            ) as cancel_scope:
+                with contextlib.suppress(BaseException):
+                    await producer_task
+            if cancel_scope.cancelled_caught:
+                verbose_proxy_logger.warning(
+                    "Timed out after %.1fs cancelling deferred Responses stream",
+                    STREAM_CLOSE_TIMEOUT_SECONDS,
+                )
+        if queue_read_task is not None and not queue_read_task.done():
+            queue_read_task.cancel()
+            with contextlib.suppress(BaseException):
+                await queue_read_task
+
+
 @router.post(
     "/v1/responses",
     dependencies=[Depends(user_api_key_auth)],
@@ -54,7 +293,7 @@ def _apply_codex_responses_lite_request_overrides(
     dependencies=[Depends(user_api_key_auth)],
     tags=["responses"],
 )
-async def responses_api(
+async def responses_api(  # noqa: PLR0915
     request: Request,
     fastapi_response: Response,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
@@ -213,8 +452,12 @@ async def responses_api(
 
     # Normal response flow
     processor = ProxyBaseLLMRequestProcessing(data=data)
-    try:
-        response = await processor.base_process_llm_request(
+    provider_start_timeout_seconds = _get_responses_provider_start_timeout(
+        general_settings
+    )
+
+    async def _process_request(*, skip_pre_call_logic: bool = False) -> Any:
+        return await processor.base_process_llm_request(
             request=request,
             fastapi_response=fastapi_response,
             user_api_key_dict=user_api_key_dict,
@@ -231,7 +474,84 @@ async def responses_api(
             user_max_tokens=user_max_tokens,
             user_api_base=user_api_base,
             version=version,
+            skip_pre_call_logic=skip_pre_call_logic,
         )
+
+    try:
+        if data.get("stream") is True and _is_codex_responses_lite_request(data):
+            processor.data, logging_obj = (
+                await processor.common_processing_pre_call_logic(
+                    request=request,
+                    general_settings=general_settings,
+                    proxy_logging_obj=proxy_logging_obj,
+                    user_api_key_dict=user_api_key_dict,
+                    version=version,
+                    proxy_config=proxy_config,
+                    user_model=user_model,
+                    user_temperature=user_temperature,
+                    user_request_timeout=user_request_timeout,
+                    user_max_tokens=user_max_tokens,
+                    user_api_base=user_api_base,
+                    model=None,
+                    route_type="aresponses",
+                    llm_router=llm_router,
+                )
+            )
+
+            async def _process_deferred_request() -> Any:
+                return await _process_request(skip_pre_call_logic=True)
+
+            async def _map_deferred_error(error: Exception) -> Exception:
+                try:
+                    await processor._handle_llm_api_exception(
+                        e=error,
+                        user_api_key_dict=user_api_key_dict,
+                        proxy_logging_obj=proxy_logging_obj,
+                        version=version,
+                    )
+                except Exception as mapped_error:
+                    return mapped_error
+                return error
+
+            initial_headers = dict(fastapi_response.headers)
+            initial_headers.pop("content-length", None)
+            initial_headers.pop("content-type", None)
+            initial_headers.setdefault("Cache-Control", "no-cache")
+            initial_headers.setdefault("X-Accel-Buffering", "no")
+            initial_headers.update(
+                ProxyBaseLLMRequestProcessing.get_custom_headers(
+                    user_api_key_dict=user_api_key_dict,
+                    call_id=logging_obj.litellm_call_id,
+                    model_id=processor.maybe_get_model_id(logging_obj),
+                    version=version,
+                    model_region=getattr(
+                        user_api_key_dict, "allowed_model_region", ""
+                    ),
+                    request_data=processor.data,
+                    litellm_logging_obj=logging_obj,
+                )
+            )
+            return StreamingResponse(
+                _deferred_responses_stream(
+                    _process_deferred_request,
+                    provider_start_timeout_seconds=provider_start_timeout_seconds,
+                    error_handler=_map_deferred_error,
+                ),
+                media_type="text/event-stream",
+                headers=initial_headers,
+            )
+
+        if data.get("stream") is True:
+            try:
+                response = await _await_with_request_disconnect(
+                    request,
+                    _process_request(),
+                    provider_start_timeout_seconds,
+                )
+            except ClientDisconnect:
+                return Response(status_code=499)
+        else:
+            response = await _process_request()
 
         # Store in managed objects table if background mode is enabled
         if data.get("background") and isinstance(response, ResponsesAPIResponse):
