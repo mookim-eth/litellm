@@ -1234,7 +1234,7 @@ def callback_name(callback):
     tags=["health"],
     dependencies=[Depends(user_api_key_auth)],
 )
-async def health_readiness():
+async def health_readiness(response: Response):
     """
     Unprotected endpoint for checking if worker can receive requests
     """
@@ -1277,6 +1277,8 @@ async def health_readiness():
         # check DB
         if prisma_client is not None:  # if db passed in, check if it's connected
             db_health_status = await _db_health_readiness_check()
+            if db_health_status["status"] != "connected":
+                response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
             return {
                 "status": "healthy",
                 "db": db_health_status["status"],

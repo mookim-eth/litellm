@@ -719,6 +719,51 @@ def test_health_readiness(proxy_client):
     print("="*60 + "\n")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prisma_client", "db_status", "expected_status_code", "expected_db"),
+    [
+        (MagicMock(), "connected", 200, "connected"),
+        (MagicMock(), "disconnected", 503, "disconnected"),
+        (None, None, 200, "Not connected"),
+    ],
+)
+async def test_health_readiness_db_status_controls_http_status(
+    prisma_client, db_status, expected_status_code, expected_db
+):
+    """Keep the readiness body stable while surfacing DB failure as HTTP 503."""
+    from fastapi import Response
+
+    from litellm.proxy.health_endpoints._health_endpoints import health_readiness
+
+    response = Response(status_code=200)
+    db_health_check = AsyncMock(return_value={"status": db_status})
+
+    with patch("litellm.proxy.proxy_server.prisma_client", prisma_client), patch(
+        "litellm.proxy.health_endpoints._health_endpoints._db_health_readiness_check",
+        db_health_check,
+    ), patch("litellm.cache", None):
+        result = await health_readiness(response=response)
+
+    assert response.status_code == expected_status_code
+    assert result["status"] == "healthy"
+    assert result["db"] == expected_db
+    assert set(result) == {
+        "status",
+        "db",
+        "cache",
+        "litellm_version",
+        "success_callbacks",
+        "use_aiohttp_transport",
+        "log_level",
+        "is_detailed_debug",
+    }
+    if prisma_client is None:
+        db_health_check.assert_not_awaited()
+    else:
+        db_health_check.assert_awaited_once_with()
+
+
 def test_get_callback_identifier_string_and_object_with_callback_name():
     """
     Test get_callback_identifier with string callbacks and objects with callback_name attribute.
