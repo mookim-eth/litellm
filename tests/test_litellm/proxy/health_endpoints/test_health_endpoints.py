@@ -521,6 +521,7 @@ def test_reject_os_environ_references_nested():
 
 @pytest.mark.asyncio
 async def test_test_model_connection_authorizes_loaded_deployment_team():
+    from fastapi import HTTPException
     from litellm.types.router import Deployment, LiteLLM_Params, ModelInfo
 
     loaded = Deployment(
@@ -530,7 +531,8 @@ async def test_test_model_connection_authorizes_loaded_deployment_team():
     )
     router = MagicMock()
     router.get_deployment.return_value = loaded
-    auth_check = AsyncMock(side_effect=PermissionError("denied"))
+    auth_error = HTTPException(status_code=403, detail={"error": "denied"})
+    auth_check = AsyncMock(side_effect=auth_error)
 
     with patch("litellm.proxy.proxy_server.prisma_client", MagicMock()), patch(
         "litellm.proxy.proxy_server.llm_router", router
@@ -538,7 +540,7 @@ async def test_test_model_connection_authorizes_loaded_deployment_team():
         "litellm.proxy.management_endpoints.model_management_endpoints.ModelManagementAuthChecks.can_user_make_model_call",
         auth_check,
     ):
-        with pytest.raises(PermissionError):
+        with pytest.raises(HTTPException) as exc_info:
             await health_test_model_connection(
                 request=MagicMock(),
                 mode="chat",
@@ -547,6 +549,7 @@ async def test_test_model_connection_authorizes_loaded_deployment_team():
                 user_api_key_dict=MagicMock(),
             )
 
+    assert exc_info.value is auth_error
     authorized_deployment = auth_check.call_args.kwargs["model_params"]
     assert authorized_deployment.model_info.team_id == "team-b"
 
@@ -598,15 +601,18 @@ def proxy_client(monkeypatch):
     in-process. However, it DOES trigger FastAPI's lifespan events (startup/shutdown)
     when used as a context manager, which initializes the proxy server components.
     
-    Database access:
-    - If DATABASE_URL is set in environment, the proxy will automatically connect
-    - Database connection happens during lifespan startup events
-    - To enable database access, set DATABASE_URL environment variable before running tests
-    
-    Redis cache:
-    - If REDIS_HOST is set in environment, Redis cache will be automatically configured
-    - Cache configuration is included in /health/readiness endpoint response
+    External database and Redis settings are explicitly cleared so these unit
+    tests never depend on services configured in the developer's environment.
     """
+    for environment_variable in (
+        "DATABASE_URL",
+        "DIRECT_URL",
+        "REDIS_HOST",
+        "REDIS_PORT",
+        "REDIS_PASSWORD",
+    ):
+        monkeypatch.delenv(environment_variable, raising=False)
+
     client = create_proxy_test_client(monkeypatch)
     with client:
         yield client
