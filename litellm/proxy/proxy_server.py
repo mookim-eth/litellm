@@ -9143,6 +9143,7 @@ async def run_thread(
                 ),
                 media_type="text/event-stream",
                 headers={},  # Added empty headers dict, original call missed this argument
+                request=request,
             )
 
         ### ALERTING ###
