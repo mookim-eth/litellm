@@ -8,7 +8,7 @@ sys.path.insert(
     0, os.path.abspath("../../..")
 )  # Adds the parent directory to the system path
 
-from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
+from litellm.litellm_core_utils.safe_json_dumps import safe_dumps, strip_null_bytes
 
 
 def test_primitive_types():
@@ -138,6 +138,36 @@ def test_non_standard_dict_keys_complex():
 
         traceback.print_exc()
         raise e
+
+
+def test_strip_null_bytes_helper():
+    assert strip_null_bytes("hello\x00world") == "helloworld"
+    assert strip_null_bytes("\x00\x00abc\x00") == "abc"
+    assert strip_null_bytes("中文 café 😀") == "中文 café 😀"
+
+
+def test_null_bytes_stripped_from_nested_values_and_keys():
+    data = {
+        "messages": [{"content": "bad\x00content — 中文"}],
+        "nested": {"k\x00ey": "v\x00alue 😀"},
+    }
+
+    result_json = safe_dumps(data)
+    assert "\\u0000" not in result_json
+    assert json.loads(result_json) == {
+        "messages": [{"content": "badcontent — 中文"}],
+        "nested": {"key": "value 😀"},
+    }
+
+
+def test_null_bytes_stripped_from_fallback_string_conversion():
+    class WithNullString:
+        def __str__(self):
+            return "obj\x00repr 中文"
+
+    result_json = safe_dumps({"obj": WithNullString()})
+    assert "\\u0000" not in result_json
+    assert json.loads(result_json)["obj"] == "objrepr 中文"
 
 
 def test_pydantic_base_model():

@@ -317,6 +317,49 @@ def test_get_messages_for_spend_logs_realtime_returns_messages(mock_should_store
 @patch(
     "litellm.proxy.spend_tracking.spend_tracking_utils._should_store_prompts_and_responses_in_spend_logs"
 )
+def test_spend_log_content_fields_strip_null_bytes(mock_should_store):
+    mock_should_store.return_value = True
+    payload = cast(
+        StandardLoggingPayload,
+        {
+            "call_type": "_arealtime",
+            "messages": [{"role": "user", "content": "hello\x00世界"}],
+            "response": {"content": "answer\x00😀"},
+        },
+    )
+    litellm_params = {
+        "proxy_server_request": {
+            "body": {"nested": {"k\x00ey": "request\x00内容"}}
+        }
+    }
+
+    serialized_fields = [
+        _get_messages_for_spend_logs_payload(payload),
+        _get_response_for_spend_logs_payload(payload),
+        _get_proxy_server_request_for_spend_logs_payload(
+            metadata={}, litellm_params=litellm_params
+        ),
+    ]
+
+    assert all("\\u0000" not in field for field in serialized_fields)
+    assert json.loads(serialized_fields[0])[0]["content"] == "hello世界"
+    assert json.loads(serialized_fields[1])["content"] == "answer😀"
+    assert json.loads(serialized_fields[2])["nested"] == {"key": "request内容"}
+
+
+@patch(
+    "litellm.proxy.spend_tracking.spend_tracking_utils._should_store_prompts_and_responses_in_spend_logs"
+)
+def test_spend_log_string_response_strips_null_bytes(mock_should_store):
+    mock_should_store.return_value = True
+    payload = cast(StandardLoggingPayload, {"response": "answer\x00中文"})
+
+    assert _get_response_for_spend_logs_payload(payload) == "answer中文"
+
+
+@patch(
+    "litellm.proxy.spend_tracking.spend_tracking_utils._should_store_prompts_and_responses_in_spend_logs"
+)
 def test_get_messages_for_spend_logs_realtime_empty_when_disabled(mock_should_store):
     """
     Test that _get_messages_for_spend_logs_payload returns '{}' for realtime calls
@@ -927,6 +970,31 @@ def test_get_logging_payload_includes_overhead_in_spend_logs_metadata():
     assert (
         metadata.get("litellm_overhead_time_ms") == test_overhead_ms
     ), f"Expected overhead '{test_overhead_ms}', got '{metadata.get('litellm_overhead_time_ms')}'"
+
+
+@patch("litellm.proxy.proxy_server.master_key", None)
+@patch("litellm.proxy.proxy_server.general_settings", {})
+def test_get_logging_payload_strips_null_bytes_from_request_tags():
+    kwargs = {
+        "model": "gpt-3.5-turbo",
+        "litellm_params": {
+            "metadata": {
+                "user_api_key": "sk-test-key",
+                "tags": ["clean-tag", "bad\x00tag", "中文"],
+            }
+        },
+    }
+
+    payload = get_logging_payload(
+        kwargs=kwargs,
+        response_obj={},
+        start_time=datetime.datetime.now(timezone.utc),
+        end_time=datetime.datetime.now(timezone.utc),
+    )
+
+    request_tags = payload["request_tags"]
+    assert "\\u0000" not in request_tags
+    assert json.loads(request_tags) == ["clean-tag", "badtag", "中文"]
 
 
 @patch("litellm.proxy.proxy_server.master_key", None)
