@@ -18,8 +18,10 @@ from litellm.proxy.response_api_endpoints.endpoints import (
     RESPONSES_SSE_KEEPALIVE,
     _await_with_request_disconnect,
     _deferred_responses_stream,
+    _get_responses_keepalive_interval,
     _get_responses_provider_start_timeout,
     _is_codex_responses_lite_request,
+    _should_enable_responses_keepalive,
     responses_api,
 )
 from litellm.proxy.auth.user_api_key_auth import UserAPIKeyAuth
@@ -51,18 +53,49 @@ def test_provider_start_timeout_setting_is_validated():
     assert settings.responses_provider_start_timeout_seconds == 12.5
 
 
+def test_regular_responses_keepalive_requires_explicit_opt_in():
+    data = {"stream": True}
+
+    assert not _should_enable_responses_keepalive(data, {})
+    assert _should_enable_responses_keepalive(
+        data, {"enable_responses_stream_keepalive": True}
+    )
+    assert _get_responses_keepalive_interval({}) == 45
+    assert _get_responses_keepalive_interval(
+        {"responses_stream_keepalive_interval_seconds": "12.5"}
+    ) == 12.5
+
+    settings = ConfigGeneralSettings(
+        enable_responses_stream_keepalive=True,
+        responses_stream_keepalive_interval_seconds=12.5,
+    )
+    assert settings.enable_responses_stream_keepalive is True
+    assert settings.responses_stream_keepalive_interval_seconds == 12.5
+
+
 @pytest.mark.asyncio
-async def test_responses_lite_endpoint_runs_pre_call_before_deferred_provider():
+@pytest.mark.parametrize(
+    ("codex_lite", "general_keepalive"),
+    [(True, False), (False, True)],
+)
+async def test_keepalive_endpoint_runs_pre_call_before_deferred_provider(
+    codex_lite, general_keepalive
+):
     request = MagicMock(spec=Request)
-    request.headers = {CODEX_RESPONSES_LITE_HEADER: "true"}
+    request.headers = (
+        {CODEX_RESPONSES_LITE_HEADER: "true"} if codex_lite else {}
+    )
     fastapi_response = Response()
     user_api_key_dict = UserAPIKeyAuth()
     request_data = {
         "model": "gpt-test",
         "input": "hello",
         "stream": True,
-        "extra_headers": {CODEX_RESPONSES_LITE_HEADER: "true"},
     }
+    if codex_lite:
+        request_data["extra_headers"] = {
+            CODEX_RESPONSES_LITE_HEADER: "true"
+        }
     logging_obj = MagicMock(litellm_call_id="call-test")
     provider_started = asyncio.Event()
 
@@ -82,6 +115,13 @@ async def test_responses_lite_endpoint_runs_pre_call_before_deferred_provider():
         patch(
             "litellm.proxy.response_api_endpoints.endpoints.ProxyBaseLLMRequestProcessing"
         ) as processor_class,
+        patch.dict(
+            "litellm.proxy.proxy_server.general_settings",
+            {
+                "enable_responses_stream_keepalive": general_keepalive,
+                "responses_stream_keepalive_interval_seconds": 0.01,
+            },
+        ),
     ):
         processor = processor_class.return_value
         processor.data = request_data
@@ -101,19 +141,25 @@ async def test_responses_lite_endpoint_runs_pre_call_before_deferred_provider():
         )
 
         assert isinstance(response, StreamingResponse)
-        assert await response.body_iterator.__anext__() == RESPONSES_SSE_KEEPALIVE
         assert processor.common_processing_pre_call_logic.await_count == 1
-        assert processor.base_process_llm_request.await_count == 0
         assert response.headers["x-litellm-call-id"] == "call-test"
+
+        if codex_lite:
+            assert await response.body_iterator.__anext__() == RESPONSES_SSE_KEEPALIVE
+            assert processor.base_process_llm_request.await_count == 0
 
         pending = asyncio.create_task(response.body_iterator.__anext__())
         await asyncio.wait_for(provider_started.wait(), 1)
         assert processor.base_process_llm_request.call_args.kwargs[
             "skip_pre_call_logic"
         ] is True
-        pending.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await pending
+        if codex_lite:
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+        else:
+            assert await asyncio.wait_for(pending, 1) == RESPONSES_SSE_KEEPALIVE
+            await response.body_iterator.aclose()
 
 
 @pytest.mark.asyncio
@@ -133,6 +179,51 @@ async def test_keepalive_is_sent_before_provider_call_starts():
     assert first == RESPONSES_SSE_KEEPALIVE
     assert time.monotonic() - started < 0.05
     assert provider_started is False
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_delayed_keepalive_forwards_fast_event_without_heartbeat():
+    event = b'data: {"type":"response.completed","response":{}}\n\n'
+
+    async def body():
+        yield event
+
+    async def process_request():
+        return StreamingResponse(body(), media_type="text/event-stream")
+
+    chunks = [
+        chunk
+        async for chunk in _deferred_responses_stream(
+            process_request,
+            keepalive_interval_seconds=0.01,
+            send_initial_keepalive=False,
+        )
+    ]
+
+    assert chunks == [event]
+
+
+@pytest.mark.asyncio
+async def test_delayed_keepalive_waits_for_first_silence_window():
+    provider_started = asyncio.Event()
+
+    async def process_request():
+        provider_started.set()
+        await asyncio.Event().wait()
+
+    stream = _deferred_responses_stream(
+        process_request,
+        keepalive_interval_seconds=0.02,
+        send_initial_keepalive=False,
+    )
+    started = time.monotonic()
+
+    first = await asyncio.wait_for(stream.__anext__(), 0.1)
+
+    assert provider_started.is_set()
+    assert first == RESPONSES_SSE_KEEPALIVE
+    assert time.monotonic() - started >= 0.02
     await stream.aclose()
 
 

@@ -31,6 +31,10 @@ CODEX_RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
 RESPONSES_SSE_KEEPALIVE = b": keepalive\n\n"
 DEFAULT_RESPONSES_KEEPALIVE_INTERVAL_SECONDS = 45.0
 DEFAULT_RESPONSES_PROVIDER_START_TIMEOUT_SECONDS = 300.0
+RESPONSES_KEEPALIVE_ENABLED_SETTING = "enable_responses_stream_keepalive"
+RESPONSES_KEEPALIVE_INTERVAL_SETTING = (
+    "responses_stream_keepalive_interval_seconds"
+)
 RESPONSES_PROVIDER_START_TIMEOUT_SETTING = (
     "responses_provider_start_timeout_seconds"
 )
@@ -70,6 +74,28 @@ def _get_responses_provider_start_timeout(general_settings: dict) -> float:
     if timeout <= 0:
         timeout = DEFAULT_RESPONSES_PROVIDER_START_TIMEOUT_SECONDS
     return timeout
+
+
+def _get_responses_keepalive_interval(general_settings: dict) -> float:
+    value = general_settings.get(
+        RESPONSES_KEEPALIVE_INTERVAL_SETTING,
+        DEFAULT_RESPONSES_KEEPALIVE_INTERVAL_SECONDS,
+    )
+    try:
+        interval = float(value)
+    except (TypeError, ValueError):
+        interval = DEFAULT_RESPONSES_KEEPALIVE_INTERVAL_SECONDS
+    if interval <= 0:
+        interval = DEFAULT_RESPONSES_KEEPALIVE_INTERVAL_SECONDS
+    return interval
+
+
+def _should_enable_responses_keepalive(
+    data: Dict[str, Any], general_settings: dict
+) -> bool:
+    return _is_codex_responses_lite_request(data) or (
+        general_settings.get(RESPONSES_KEEPALIVE_ENABLED_SETTING) is True
+    )
 
 
 async def _wait_for_request_disconnect(request: Request) -> None:
@@ -164,6 +190,7 @@ async def _deferred_responses_stream(
     keepalive_interval_seconds: float = (
         DEFAULT_RESPONSES_KEEPALIVE_INTERVAL_SECONDS
     ),
+    send_initial_keepalive: bool = True,
     error_handler: Optional[Callable[[Exception], Awaitable[Exception]]] = None,
 ) -> AsyncIterator[Union[bytes, str]]:
     """Forward one provider stream while emitting protocol-neutral SSE comments."""
@@ -234,7 +261,8 @@ async def _deferred_responses_stream(
             if not producer_cancelled:
                 await queue.put(stream_finished)
 
-    yield RESPONSES_SSE_KEEPALIVE
+    if send_initial_keepalive:
+        yield RESPONSES_SSE_KEEPALIVE
     producer_task = asyncio.create_task(_produce_provider_stream())
     queue_read_task: Optional[asyncio.Task] = None
     try:
@@ -455,6 +483,9 @@ async def responses_api(  # noqa: PLR0915
     provider_start_timeout_seconds = _get_responses_provider_start_timeout(
         general_settings
     )
+    keepalive_interval_seconds = _get_responses_keepalive_interval(
+        general_settings
+    )
 
     async def _process_request(*, skip_pre_call_logic: bool = False) -> Any:
         return await processor.base_process_llm_request(
@@ -478,7 +509,9 @@ async def responses_api(  # noqa: PLR0915
         )
 
     try:
-        if data.get("stream") is True and _is_codex_responses_lite_request(data):
+        if data.get("stream") is True and _should_enable_responses_keepalive(
+            data, general_settings
+        ):
             processor.data, logging_obj = (
                 await processor.common_processing_pre_call_logic(
                     request=request,
@@ -535,6 +568,10 @@ async def responses_api(  # noqa: PLR0915
                 _deferred_responses_stream(
                     _process_deferred_request,
                     provider_start_timeout_seconds=provider_start_timeout_seconds,
+                    keepalive_interval_seconds=keepalive_interval_seconds,
+                    send_initial_keepalive=_is_codex_responses_lite_request(
+                        data
+                    ),
                     error_handler=_map_deferred_error,
                 ),
                 media_type="text/event-stream",

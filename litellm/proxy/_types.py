@@ -2238,6 +2238,19 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
             "HTTP headers and its first real SSE event."
         ),
     )
+    enable_responses_stream_keepalive: Optional[bool] = Field(
+        False,
+        description=(
+            "Emit SSE comments while Responses streaming requests wait for a "
+            "provider. This keeps intermediary connections alive, but commits "
+            "HTTP 200 before provider errors and dynamic headers are known."
+        ),
+    )
+    responses_stream_keepalive_interval_seconds: Optional[float] = Field(
+        45,
+        gt=0,
+        description="Interval between Responses streaming SSE comments.",
+    )
     max_request_size_mb: Optional[int] = Field(
         None,
         description="max request size in MB, if a request is larger than this size it will be rejected",
