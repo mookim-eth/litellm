@@ -14,9 +14,57 @@ sys.path.insert(
 import litellm
 from litellm.llms.base_llm.responses.transformation import BaseResponsesAPIConfig
 from litellm.llms.openai.responses.transformation import OpenAIResponsesAPIConfig
+from litellm.responses.main import _should_fake_responses_stream
 from litellm.responses.utils import ResponseAPILoggingUtils, ResponsesAPIRequestUtils
 from litellm.types.llms.openai import ResponsesAPIOptionalRequestParams
 from litellm.types.utils import Usage
+
+
+class TestResponsesStreamCapabilityOverride:
+    def test_explicit_native_streaming_overrides_provider_fake_stream(self):
+        config = MagicMock(spec=BaseResponsesAPIConfig)
+        config.should_fake_stream.return_value = True
+
+        assert (
+            _should_fake_responses_stream(
+                responses_api_provider_config=config,
+                model="grok-4.5",
+                stream=True,
+                custom_llm_provider="openai",
+                model_info={"supports_native_streaming": True},
+            )
+            is False
+        )
+
+    def test_explicit_non_native_streaming_overrides_provider_native_stream(self):
+        config = MagicMock(spec=BaseResponsesAPIConfig)
+        config.should_fake_stream.return_value = False
+
+        assert (
+            _should_fake_responses_stream(
+                responses_api_provider_config=config,
+                model="non-streaming-model",
+                stream=True,
+                custom_llm_provider="openai",
+                model_info={"supports_native_streaming": False},
+            )
+            is True
+        )
+
+    def test_unspecified_capability_keeps_provider_default(self):
+        config = MagicMock(spec=BaseResponsesAPIConfig)
+        config.should_fake_stream.return_value = True
+
+        assert (
+            _should_fake_responses_stream(
+                responses_api_provider_config=config,
+                model="glm-5.2",
+                stream=True,
+                custom_llm_provider="openai",
+                model_info={"mode": "chat"},
+            )
+            is True
+        )
 
 
 class TestResponsesAPIRequestUtils:
