@@ -636,7 +636,7 @@ class ProxyBaseLLMRequestProcessing:
             verbose_proxy_logger.error(f"Error setting custom headers: {e}")
             return {}
 
-    async def common_processing_pre_call_logic(
+    async def common_processing_pre_call_logic(  # noqa: PLR0915
         self,
         request: Request,
         general_settings: dict,
@@ -742,6 +742,14 @@ class ProxyBaseLLMRequestProcessing:
             version=version,
             proxy_config=proxy_config,
         )
+        if route_type == "aresponses":
+            from litellm.responses.provider_headers_timeout import (
+                apply_provider_headers_timeout_to_request,
+            )
+
+            apply_provider_headers_timeout_to_request(
+                data=self.data, general_settings=general_settings
+            )
 
         # Calculate request queue time after add_litellm_data_to_request
         # which sets arrival_time in proxy_server_request

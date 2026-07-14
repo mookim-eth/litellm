@@ -2238,6 +2238,15 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
         None,
         description="max response size in MB, if a response is larger than this size it will be rejected",
     )
+    responses_provider_headers_timeout_seconds: Optional[float] = Field(
+        None,
+        gt=0,
+        description="Maximum seconds a Responses API request may wait for provider HTTP response headers.",
+    )
+    responses_provider_headers_timeout_ip_allowlist: Optional[List[str]] = Field(
+        None,
+        description="Exact IP addresses or CIDR ranges exempt from the Responses provider headers timeout.",
+    )
     infer_model_from_keys: Optional[bool] = Field(
         None,
         description="for `/models` endpoint, infers available model based on environment keys (e.g. OPENAI_API_KEY)",

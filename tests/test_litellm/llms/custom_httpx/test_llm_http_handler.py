@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 from unittest.mock import AsyncMock, Mock, patch
@@ -7,8 +8,133 @@ import pytest
 sys.path.insert(
     0, os.path.abspath("../../../..")
 )  # Adds the parent directory to the system path
+import litellm
+from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
 from litellm.types.router import GenericLiteLLMParams
+
+
+@pytest.mark.asyncio
+async def test_responses_provider_headers_timeout_cancels_post():
+    handler = BaseLLMHTTPHandler()
+    provider_config = Mock()
+    provider_config.validate_environment.return_value = {}
+    provider_config.get_complete_url.return_value = "https://provider.example/v1/responses"
+    provider_config.transform_responses_api_request.return_value = {
+        "model": "test-model",
+        "input": "hello",
+        "stream": True,
+    }
+    cancelled = asyncio.Event()
+
+    async def wait_for_headers(**kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    client = Mock(spec=AsyncHTTPHandler)
+    client.post = wait_for_headers
+    logging_obj = Mock()
+    logging_obj.model_call_details = {}
+    logging_obj.litellm_call_id = "timeout-test"
+
+    with pytest.raises(litellm.Timeout, match="provider HTTP response headers"):
+        await handler.async_response_api_handler(
+            model="test-model",
+            input="hello",
+            responses_api_provider_config=provider_config,
+            response_api_optional_request_params={"stream": True},
+            custom_llm_provider="openai",
+            litellm_params=GenericLiteLLMParams(
+                api_base="https://provider.example/v1/responses"
+            ),
+            logging_obj=logging_obj,
+            client=client,
+            provider_headers_timeout_seconds=0.01,
+        )
+
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_responses_provider_headers_timeout_stops_after_headers():
+    handler = BaseLLMHTTPHandler()
+    provider_config = Mock()
+    provider_config.validate_environment.return_value = {}
+    provider_config.get_complete_url.return_value = "https://provider.example/v1/responses"
+    provider_config.transform_responses_api_request.return_value = {
+        "model": "test-model",
+        "input": "hello",
+        "stream": True,
+    }
+    response = Mock()
+    response.headers = {}
+    client = Mock(spec=AsyncHTTPHandler)
+    client.post = AsyncMock(return_value=response)
+    logging_obj = Mock()
+    logging_obj.model_call_details = {}
+
+    iterator = await handler.async_response_api_handler(
+        model="test-model",
+        input="hello",
+        responses_api_provider_config=provider_config,
+        response_api_optional_request_params={"stream": True},
+        custom_llm_provider="openai",
+        litellm_params=GenericLiteLLMParams(
+            api_base="https://provider.example/v1/responses"
+        ),
+        logging_obj=logging_obj,
+        client=client,
+        provider_headers_timeout_seconds=0.01,
+    )
+
+    assert iterator.response is response
+
+
+@pytest.mark.asyncio
+async def test_nonstreaming_responses_timeout_only_waits_for_headers():
+    handler = BaseLLMHTTPHandler()
+    provider_config = Mock()
+    provider_config.validate_environment.return_value = {}
+    provider_config.get_complete_url.return_value = "https://provider.example/v1/responses"
+    provider_config.transform_responses_api_request.return_value = {
+        "model": "test-model",
+        "input": "hello",
+    }
+    expected_result = Mock()
+    provider_config.transform_response_api_response.return_value = expected_result
+    body_read = asyncio.Event()
+
+    response = Mock()
+
+    async def slow_body_read():
+        await asyncio.sleep(0.02)
+        body_read.set()
+
+    response.aread = slow_body_read
+    client = Mock(spec=AsyncHTTPHandler)
+    client.post = AsyncMock(return_value=response)
+    logging_obj = Mock()
+    logging_obj.model_call_details = {}
+
+    result = await handler.async_response_api_handler(
+        model="test-model",
+        input="hello",
+        responses_api_provider_config=provider_config,
+        response_api_optional_request_params={"stream": False},
+        custom_llm_provider="openai",
+        litellm_params=GenericLiteLLMParams(
+            api_base="https://provider.example/v1/responses"
+        ),
+        logging_obj=logging_obj,
+        client=client,
+        provider_headers_timeout_seconds=0.01,
+    )
+
+    assert result is expected_result
+    assert body_read.is_set()
+    assert client.post.await_args.kwargs["stream"] is True
 
 
 def test_prepare_fake_stream_request():

@@ -754,6 +754,13 @@ def responses(
         litellm_logging_obj: LiteLLMLoggingObj = kwargs.get("litellm_logging_obj")  # type: ignore
         litellm_call_id: Optional[str] = kwargs.get("litellm_call_id", None)
         _is_async = kwargs.pop("aresponses", False) is True
+        from litellm.responses.provider_headers_timeout import (
+            RESPONSES_PROVIDER_HEADERS_TIMEOUT_KWARG,
+        )
+
+        provider_headers_timeout_seconds = kwargs.pop(
+            RESPONSES_PROVIDER_HEADERS_TIMEOUT_KWARG, None
+        )
 
         # Convert text_format to text parameter if provided
         text = ResponsesAPIRequestUtils.convert_text_format_to_text_param(
@@ -983,6 +990,7 @@ def responses(
             ),
             litellm_metadata=kwargs.get("litellm_metadata", {}),
             shared_session=kwargs.get("shared_session"),
+            provider_headers_timeout_seconds=provider_headers_timeout_seconds,
         )
 
         # Update the responses_api_response_id with the model_id

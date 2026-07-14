@@ -1,3 +1,4 @@
+import asyncio
 import json
 import ssl
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -22,7 +23,7 @@ import litellm
 import litellm.litellm_core_utils
 import litellm.types
 import litellm.types.utils
-from litellm._logging import verbose_logger
+from litellm._logging import verbose_logger, verbose_proxy_logger
 from litellm.anthropic_beta_headers_manager import update_headers_with_filtered_beta
 from litellm.constants import REALTIME_WEBSOCKET_MAX_MESSAGE_SIZE_BYTES
 from litellm.litellm_core_utils.realtime_streaming import RealTimeStreaming
@@ -2062,6 +2063,7 @@ class BaseLLMHTTPHandler:
         fake_stream: bool = False,
         litellm_metadata: Optional[Dict[str, Any]] = None,
         shared_session: Optional["ClientSession"] = None,
+        provider_headers_timeout_seconds: Optional[float] = None,
     ) -> Union[
         ResponsesAPIResponse,
         BaseResponsesAPIStreamingIterator,
@@ -2095,6 +2097,7 @@ class BaseLLMHTTPHandler:
                 fake_stream=fake_stream,
                 litellm_metadata=litellm_metadata,
                 shared_session=shared_session,
+                provider_headers_timeout_seconds=provider_headers_timeout_seconds,
             )
 
         if client is None or not isinstance(client, HTTPHandler):
@@ -2241,6 +2244,7 @@ class BaseLLMHTTPHandler:
         fake_stream: bool = False,
         litellm_metadata: Optional[Dict[str, Any]] = None,
         shared_session: Optional["ClientSession"] = None,
+        provider_headers_timeout_seconds: Optional[float] = None,
     ) -> Union[ResponsesAPIResponse, BaseResponsesAPIStreamingIterator]:
         """
         Async version of the responses API handler.
@@ -2315,6 +2319,39 @@ class BaseLLMHTTPHandler:
             },
         )
 
+        async def _post_and_wait_for_headers(*, request_stream: bool):
+            post_coroutine = async_httpx_client.post(
+                url=api_base,
+                headers=headers,
+                json=data,
+                timeout=timeout
+                or float(response_api_optional_request_params.get("timeout", 0)),
+                stream=request_stream,
+                logging_obj=logging_obj,
+            )
+            if provider_headers_timeout_seconds is None:
+                return await post_coroutine
+            try:
+                return await asyncio.wait_for(
+                    post_coroutine, timeout=provider_headers_timeout_seconds
+                )
+            except asyncio.TimeoutError as timeout_error:
+                verbose_proxy_logger.warning(
+                    "Responses provider headers timeout model=%s provider=%s timeout_seconds=%s call_id=%s",
+                    model,
+                    custom_llm_provider,
+                    provider_headers_timeout_seconds,
+                    getattr(logging_obj, "litellm_call_id", None),
+                )
+                raise litellm.Timeout(
+                    message=(
+                        "Timed out waiting for provider HTTP response headers after "
+                        f"{provider_headers_timeout_seconds:g} seconds"
+                    ),
+                    model=model,
+                    llm_provider=custom_llm_provider,
+                ) from timeout_error
+
         try:
             if stream:
                 # For streaming, we need to use stream=True in the request
@@ -2326,15 +2363,7 @@ class BaseLLMHTTPHandler:
                     )
 
                 mark_stream_ttft_trace(request_context, "provider_request_start")
-                response = await async_httpx_client.post(
-                    url=api_base,
-                    headers=headers,
-                    json=data,
-                    timeout=timeout
-                    or float(response_api_optional_request_params.get("timeout", 0)),
-                    stream=stream,
-                    logging_obj=logging_obj,
-                )
+                response = await _post_and_wait_for_headers(request_stream=stream)
                 mark_stream_ttft_trace(request_context, "provider_headers_received")
 
                 if fake_stream is True:
@@ -2361,15 +2390,17 @@ class BaseLLMHTTPHandler:
                     call_type=CallTypes.responses.value,
                 )
             else:
-                # For non-streaming, proceed as before
-                response = await async_httpx_client.post(
-                    url=api_base,
-                    headers=headers,
-                    json=data,
-                    timeout=timeout
-                    or float(response_api_optional_request_params.get("timeout", 0)),
+                # With a provider-headers timeout, ask httpx to return as soon as
+                # headers arrive. Read the body afterwards so a slow non-streaming
+                # generation is not accidentally bounded by the headers timeout.
+                response = await _post_and_wait_for_headers(
+                    request_stream=provider_headers_timeout_seconds is not None
                 )
+                if provider_headers_timeout_seconds is not None:
+                    await response.aread()
 
+        except litellm.Timeout:
+            raise
         except Exception as e:
             raise self._handle_error(
                 e=e,
