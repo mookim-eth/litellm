@@ -349,8 +349,8 @@ async def test_aaauser_personal_budgets(key_ownership):
     """
     Set a personal budget on a user
 
-    - have it only apply when key belongs to user -> raises BudgetExceededError
-    - if key belongs to team, have key respect team budget -> allows call to go through
+    User budget is enforced regardless of key ownership (personal or team).
+    Both cases should raise BudgetExceededError when the user is over budget.
     """
     import asyncio
     import time
@@ -359,7 +359,12 @@ async def test_aaauser_personal_budgets(key_ownership):
     from starlette.datastructures import URL
     import litellm
 
-    from litellm.proxy._types import LiteLLM_UserTable, UserAPIKeyAuth
+    from litellm.proxy._types import (
+        LiteLLM_UserTable,
+        ProxyErrorTypes,
+        ProxyException,
+        UserAPIKeyAuth,
+    )
     from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
     from litellm.proxy.proxy_server import hash_token, user_api_key_cache
 
@@ -400,14 +405,9 @@ async def test_aaauser_personal_budgets(key_ownership):
 
     assert test_user_cache.get_cache(key=hash_token(user_key)) == valid_token
 
-    try:
+    with pytest.raises(ProxyException) as exc_info:
         await user_api_key_auth(request=request, api_key="Bearer " + user_key)
-
-        if key_ownership == "user_key":
-            pytest.fail("Expected this call to fail. User is over limit.")
-    except Exception:
-        if key_ownership == "team_key":
-            pytest.fail("Expected this call to work. Key is below team budget.")
+    assert exc_info.value.type == ProxyErrorTypes.budget_exceeded
 
 
 @pytest.mark.asyncio

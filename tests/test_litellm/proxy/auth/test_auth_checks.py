@@ -1732,6 +1732,44 @@ async def test_virtual_key_budget_check_reads_from_spend_counter():
 
 
 @pytest.mark.asyncio
+async def test_user_budget_is_enforced_on_team_key():
+    from fastapi import Request
+    from litellm.proxy.auth.auth_checks import common_checks
+
+    user = LiteLLM_UserTable(user_id="u1", spend=0.0, max_budget=100.0)
+    team = LiteLLM_TeamTable(team_id="t1", max_budget=2100.0)
+    token = UserAPIKeyAuth(token="k1", user_id="u1", team_id="t1")
+
+    async def spend_by_counter(counter_key, fallback_spend, **kwargs):
+        return 999.0 if counter_key == "spend:user:u1" else 0.0
+
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client", None),
+        patch("litellm.proxy.proxy_server.get_current_spend", spend_by_counter),
+        patch(
+            "litellm.proxy.auth.auth_checks.get_team_membership",
+            AsyncMock(return_value=None),
+        ),
+        pytest.raises(litellm.BudgetExceededError) as exc,
+    ):
+        await common_checks(
+            request_body={"messages": [{"role": "user", "content": "hi"}]},
+            team_object=team,
+            user_object=user,
+            end_user_object=None,
+            global_proxy_spend=None,
+            general_settings={},
+            route="/chat/completions",
+            llm_router=None,
+            proxy_logging_obj=MagicMock(),
+            valid_token=token,
+            request=MagicMock(spec=Request),
+        )
+
+    assert "User=u1" in str(exc.value)
+
+
+@pytest.mark.asyncio
 async def test_virtual_key_budget_check_fallback_no_counter():
     """When counter doesn't exist, budget check should fall back
     to cached object's spend via fallback_spend."""

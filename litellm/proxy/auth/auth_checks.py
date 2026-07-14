@@ -605,10 +605,9 @@ async def common_checks(  # noqa: PLR0915
             )
 
         # 4. If user is in budget
-        ## 4.1 check personal budget, if personal key
+        ## 4.1 check personal budget for both personal and team keys
         if (
-            (team_object is None or team_object.team_id is None)
-            and user_object is not None
+            user_object is not None
             and user_object.max_budget is not None
         ):
             user_budget = user_object.max_budget
@@ -621,9 +620,9 @@ async def common_checks(  # noqa: PLR0915
             )
             if math.isfinite(user_budget) and user_spend >= user_budget:
                 raise litellm.BudgetExceededError(
-                    current_cost=user_object.spend,
+                    current_cost=user_spend,
                     max_budget=user_budget,
-                    message=f"ExceededBudget: User={user_object.user_id} over budget. Spend={user_object.spend}, Budget={user_budget}",
+                    message=f"ExceededBudget: User={user_object.user_id} over budget. Spend={user_spend}, Budget={user_budget}",
                 )
 
         ## 4.2 check team member budget, if team key
