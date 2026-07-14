@@ -2179,6 +2179,7 @@ class BaseLLMHTTPHandler:
                     timeout=timeout
                     or float(response_api_optional_request_params.get("timeout", 0)),
                     stream=stream,
+                    logging_obj=logging_obj,
                 )
                 mark_stream_ttft_trace(request_context, "provider_headers_received")
                 if fake_stream is True:
@@ -2332,6 +2333,7 @@ class BaseLLMHTTPHandler:
                     timeout=timeout
                     or float(response_api_optional_request_params.get("timeout", 0)),
                     stream=stream,
+                    logging_obj=logging_obj,
                 )
                 mark_stream_ttft_trace(request_context, "provider_headers_received")
 
