@@ -48,6 +48,25 @@ def _request_ctx(trace_config_ctx: Any) -> Dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _finalize_request_body_timings(trace_config_ctx: Any) -> None:
+    """Split request upload time from provider wait-for-headers time."""
+    data = _ctx_data(trace_config_ctx)
+    first_chunk_sent_at = data.get("request_body_first_chunk_sent_at")
+    last_chunk_sent_at = data.get("request_body_last_chunk_sent_at")
+    if not isinstance(first_chunk_sent_at, (int, float)) or not isinstance(
+        last_chunk_sent_at, (int, float)
+    ):
+        return
+    now = time.monotonic()
+    durations = data.setdefault("durations_ms", {})
+    durations["request_body_upload"] = round(
+        max(0.0, last_chunk_sent_at - first_chunk_sent_at) * 1000, 2
+    )
+    durations["body_sent_to_headers"] = round(
+        max(0.0, now - last_chunk_sent_at) * 1000, 2
+    )
+
+
 def _safe_url_fields(params: Any) -> Dict[str, Optional[str]]:
     url = getattr(params, "url", None)
     if url is None:
@@ -89,7 +108,7 @@ def _log_trace(trace_config_ctx: Any, params: Any, *, error: Optional[str] = Non
     )
 
 
-def create_outbound_trace_configs() -> Optional[List[TraceConfig]]:
+def create_outbound_trace_configs() -> Optional[List[TraceConfig]]:  # noqa: PLR0915
     if not _outbound_trace_enabled():
         return None
 
@@ -145,16 +164,21 @@ def create_outbound_trace_configs() -> Optional[List[TraceConfig]]:
         session: Any, trace_config_ctx: Any, params: Any
     ) -> None:
         data = _ctx_data(trace_config_ctx)
+        now = time.monotonic()
         if not data.get("first_request_chunk_sent"):
             data["first_request_chunk_sent"] = True
             _mark_end(trace_config_ctx, "request_body_first_chunk")
+            data["request_body_first_chunk_sent_at"] = now
+        data["request_body_last_chunk_sent_at"] = now
 
     async def on_request_end(session: Any, trace_config_ctx: Any, params: Any) -> None:
+        _finalize_request_body_timings(trace_config_ctx)
         _log_trace(trace_config_ctx, params)
 
     async def on_request_exception(
         session: Any, trace_config_ctx: Any, params: Any
     ) -> None:
+        _finalize_request_body_timings(trace_config_ctx)
         exception = getattr(params, "exception", None)
         error = type(exception).__name__ if exception is not None else "unknown"
         _log_trace(trace_config_ctx, params, error=error)
