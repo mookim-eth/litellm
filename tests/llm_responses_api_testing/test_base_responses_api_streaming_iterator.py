@@ -211,7 +211,9 @@ class TestBaseResponsesAPIStreamingIterator:
             request_data=request_data,
         )
 
-        with patch("litellm.responses.streaming_iterator.verbose_logger") as logger:
+        with patch(
+            "litellm.responses.streaming_iterator.verbose_proxy_logger"
+        ) as logger:
             await iterator.__anext__()
             iterator.record_proxy_first_yield()
             await iterator.aclose()
@@ -222,8 +224,8 @@ class TestBaseResponsesAPIStreamingIterator:
         assert "provider_first_sse_event" in trace
         assert "iterator_first_yield" in trace
         assert "proxy_first_yield" in trace
-        logger.info.assert_called_once()
-        assert "headers_to_first_byte_ms" in logger.info.call_args.args[0]
+        logger.warning.assert_called_once()
+        assert "headers_to_first_byte_ms" in logger.warning.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_async_iterator_still_coalesces_output_text_deltas(self):

@@ -13,6 +13,7 @@ import httpx
 from openai._streaming import SSEDecoder
 
 import litellm
+from litellm._logging import verbose_proxy_logger
 from litellm.constants import (
     LITELLM_MAX_STREAMING_DURATION_SECONDS,
     STREAM_SSE_DONE_STRING,
@@ -196,7 +197,7 @@ class BaseResponsesAPIStreamingIterator:
         if threshold_value is None or threshold_value < _stream_ttft_trace_min_duration_ms():
             return
         trace["logged"] = True
-        verbose_logger.info(
+        verbose_proxy_logger.warning(
             "litellm_stream_ttft call_id=%s model=%s provider=%s "
             "model_call_ttft_ms=%s handler_ttft_ms=%s "
             "handler_to_provider_ms=%s provider_headers_ms=%s "
