@@ -27,6 +27,21 @@ from .success_handler import PassThroughEndpointLogging
 
 class PassThroughStreamingHandler:
     @staticmethod
+    def _stamp_first_chunk_if_needed(
+        litellm_logging_obj: LiteLLMLoggingObj,
+    ) -> None:
+        update_completion_start_time = getattr(
+            litellm_logging_obj, "_update_completion_start_time", None
+        )
+        if (
+            getattr(litellm_logging_obj, "completion_start_time", None) is None
+            and callable(update_completion_start_time)
+        ):
+            update_completion_start_time(
+                completion_start_time=datetime.now()
+            )
+
+    @staticmethod
     async def chunk_processor(
         response: httpx.Response,
         request_body: Optional[dict],
@@ -53,6 +68,9 @@ class PassThroughStreamingHandler:
 
             async for chunk in response.aiter_bytes():
                 raw_bytes.append(chunk)
+                PassThroughStreamingHandler._stamp_first_chunk_if_needed(
+                    litellm_logging_obj
+                )
                 if (
                     getattr(litellm, "include_cost_in_streaming_usage", False)
                     and model_name

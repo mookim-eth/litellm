@@ -70,6 +70,8 @@ from litellm.responses.streaming_iterator import (
     ResponsesAPIStreamingIterator,
     ResponsesWebSocketStreaming,
     SyncResponsesAPIStreamingIterator,
+    initialize_stream_ttft_trace,
+    mark_stream_ttft_trace,
 )
 from litellm.types.containers.main import (
     ContainerFileListResponse,
@@ -2141,6 +2143,12 @@ class BaseLLMHTTPHandler:
         # Needed by streaming callbacks/metadata helpers to reconstruct api_base/model_id
         # but never included in the outbound provider payload.
         request_context["litellm_params"] = dict(litellm_params)
+        initialize_stream_ttft_trace(
+            request_context,
+            logging_obj=logging_obj,
+            model=model,
+            custom_llm_provider=custom_llm_provider,
+        )
 
         ## LOGGING
         logging_obj.pre_call(
@@ -2163,6 +2171,7 @@ class BaseLLMHTTPHandler:
                         fake_stream=fake_stream,
                     )
 
+                mark_stream_ttft_trace(request_context, "provider_request_start")
                 response = sync_httpx_client.post(
                     url=api_base,
                     headers=headers,
@@ -2171,6 +2180,7 @@ class BaseLLMHTTPHandler:
                     or float(response_api_optional_request_params.get("timeout", 0)),
                     stream=stream,
                 )
+                mark_stream_ttft_trace(request_context, "provider_headers_received")
                 if fake_stream is True:
                     return MockResponsesAPIStreamingIterator(
                         response=response,
@@ -2286,6 +2296,12 @@ class BaseLLMHTTPHandler:
         # Needed by streaming callbacks/metadata helpers to reconstruct api_base/model_id
         # but never included in the outbound provider payload.
         request_context["litellm_params"] = dict(litellm_params)
+        initialize_stream_ttft_trace(
+            request_context,
+            logging_obj=logging_obj,
+            model=model,
+            custom_llm_provider=custom_llm_provider,
+        )
 
         ## LOGGING
         logging_obj.pre_call(
@@ -2308,6 +2324,7 @@ class BaseLLMHTTPHandler:
                         fake_stream=fake_stream,
                     )
 
+                mark_stream_ttft_trace(request_context, "provider_request_start")
                 response = await async_httpx_client.post(
                     url=api_base,
                     headers=headers,
@@ -2316,6 +2333,7 @@ class BaseLLMHTTPHandler:
                     or float(response_api_optional_request_params.get("timeout", 0)),
                     stream=stream,
                 )
+                mark_stream_ttft_trace(request_context, "provider_headers_received")
 
                 if fake_stream is True:
                     return MockResponsesAPIStreamingIterator(

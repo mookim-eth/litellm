@@ -6046,6 +6046,7 @@ async def async_data_generator(  # noqa: PLR0915
             request_data=request_data
         )
         model_mismatch_logged = False
+        first_proxy_yield_recorded = False
         # Use a running string instead of list + join to avoid O(n^2) overhead.
         # Previously "".join(str_so_far_parts) was called every chunk, re-joining
         # the entire accumulated response. String += is O(n) amortized total.
@@ -6088,6 +6089,13 @@ async def async_data_generator(  # noqa: PLR0915
                 break
 
             try:
+                if not first_proxy_yield_recorded:
+                    record_proxy_first_yield = getattr(
+                        response, "record_proxy_first_yield", None
+                    )
+                    if callable(record_proxy_first_yield):
+                        record_proxy_first_yield()
+                    first_proxy_yield_recorded = True
                 yield f"data: {chunk}\n\n"
             except Exception as e:
                 yield f"data: {str(e)}\n\n"

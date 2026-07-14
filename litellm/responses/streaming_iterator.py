@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import inspect
 import json
+import os
 import time
 import traceback
 from datetime import datetime
@@ -42,6 +43,67 @@ from litellm.constants import STREAM_TEXT_COALESCE_SECONDS
 
 RESPONSES_TEXT_COALESCE_MAX_CHARS = 1024
 _RESPONSES_OUTBOUND_SEQUENCE_KEY = "_litellm_responses_outbound_sequence_number"
+_STREAM_TTFT_TRACE_KEY = "_litellm_stream_ttft_trace"
+
+
+def _stream_ttft_trace_enabled() -> bool:
+    return os.getenv("LITELLM_STREAM_TTFT_TRACE_ENABLED", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _stream_ttft_trace_min_duration_ms() -> float:
+    try:
+        return max(
+            0.0,
+            float(os.getenv("LITELLM_STREAM_TTFT_TRACE_MIN_DURATION_MS", "10000")),
+        )
+    except ValueError:
+        return 10000.0
+
+
+def initialize_stream_ttft_trace(
+    request_data: Dict[str, Any],
+    *,
+    logging_obj: LiteLLMLoggingObj,
+    model: str,
+    custom_llm_provider: Optional[str],
+) -> None:
+    """Attach monotonic timestamps used to explain slow Responses TTFT."""
+    if not _stream_ttft_trace_enabled():
+        return
+    model_call_details = getattr(logging_obj, "model_call_details", {})
+    if not isinstance(model_call_details, dict):
+        model_call_details = {}
+    request_data[_STREAM_TTFT_TRACE_KEY] = {
+        "handler_start": time.monotonic(),
+        "call_id": getattr(logging_obj, "litellm_call_id", None)
+        or model_call_details.get("litellm_call_id"),
+        "model": model,
+        "provider": custom_llm_provider,
+        "event_loop_lag_max_ms": 0.0,
+    }
+
+
+def mark_stream_ttft_trace(request_data: Dict[str, Any], stage: str) -> None:
+    trace = request_data.get(_STREAM_TTFT_TRACE_KEY)
+    if isinstance(trace, dict) and stage not in trace:
+        trace[stage] = time.monotonic()
+
+
+def _duration_between_ms(
+    trace: Dict[str, Any], start: str, end: str
+) -> Optional[float]:
+    start_value = trace.get(start)
+    end_value = trace.get(end)
+    if not isinstance(start_value, (int, float)) or not isinstance(
+        end_value, (int, float)
+    ):
+        return None
+    return round(max(0.0, end_value - start_value) * 1000, 2)
 
 
 class BaseResponsesAPIStreamingIterator:
@@ -100,6 +162,70 @@ class BaseResponsesAPIStreamingIterator:
         self._hidden_params["additional_headers"] = process_response_headers(
             self.response.headers or {}
         )  # GUARANTEE OPENAI HEADERS IN RESPONSE
+
+    def _mark_ttft_stage(self, stage: str) -> None:
+        mark_stream_ttft_trace(self.request_data, stage)
+
+    def _model_call_ttft_ms(self) -> Optional[float]:
+        start_time = getattr(self.logging_obj, "start_time", None)
+        if not isinstance(start_time, datetime):
+            return None
+        try:
+            return round(max(0.0, (datetime.now() - start_time).total_seconds()) * 1000, 2)
+        except (TypeError, ValueError):
+            return None
+
+    def record_proxy_first_yield(self) -> None:
+        """Record the first serialized SSE yield and emit one slow-TTFT summary."""
+        trace = self.request_data.get(_STREAM_TTFT_TRACE_KEY)
+        if not isinstance(trace, dict) or trace.get("logged") is True:
+            return
+        self._mark_ttft_stage("proxy_first_yield")
+        stop_lag_probe = getattr(self, "_stop_event_loop_lag_probe", None)
+        if callable(stop_lag_probe):
+            stop_lag_probe()
+        model_call_ttft_ms = self._model_call_ttft_ms()
+        handler_ttft_ms = _duration_between_ms(
+            trace, "handler_start", "proxy_first_yield"
+        )
+        threshold_value = (
+            model_call_ttft_ms
+            if model_call_ttft_ms is not None
+            else handler_ttft_ms
+        )
+        if threshold_value is None or threshold_value < _stream_ttft_trace_min_duration_ms():
+            return
+        trace["logged"] = True
+        verbose_logger.info(
+            "litellm_stream_ttft call_id=%s model=%s provider=%s "
+            "model_call_ttft_ms=%s handler_ttft_ms=%s "
+            "handler_to_provider_ms=%s provider_headers_ms=%s "
+            "headers_to_first_byte_ms=%s first_byte_to_sse_ms=%s "
+            "sse_to_iterator_yield_ms=%s iterator_to_proxy_yield_ms=%s "
+            "event_loop_lag_max_ms=%s",
+            trace.get("call_id"),
+            trace.get("model"),
+            trace.get("provider"),
+            model_call_ttft_ms,
+            handler_ttft_ms,
+            _duration_between_ms(trace, "handler_start", "provider_request_start"),
+            _duration_between_ms(
+                trace, "provider_request_start", "provider_headers_received"
+            ),
+            _duration_between_ms(
+                trace, "provider_headers_received", "provider_first_raw_byte"
+            ),
+            _duration_between_ms(
+                trace, "provider_first_raw_byte", "provider_first_sse_event"
+            ),
+            _duration_between_ms(
+                trace, "provider_first_sse_event", "iterator_first_yield"
+            ),
+            _duration_between_ms(
+                trace, "iterator_first_yield", "proxy_first_yield"
+            ),
+            round(float(trace.get("event_loop_lag_max_ms", 0.0)), 2),
+        )
 
     async def aclose(self) -> None:
         """Close the underlying HTTP response and drop the reference.
@@ -163,6 +289,17 @@ class BaseResponsesAPIStreamingIterator:
         if chunk == STREAM_SSE_DONE_STRING:
             self.finished = True
             return None
+
+        update_completion_start_time = getattr(
+            self.logging_obj, "_update_completion_start_time", None
+        )
+        if (
+            getattr(self.logging_obj, "completion_start_time", None) is None
+            and callable(update_completion_start_time)
+        ):
+            update_completion_start_time(
+                completion_start_time=datetime.now()
+            )
 
         try:
             # Parse the JSON chunk
@@ -570,9 +707,41 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             request_data,
             call_type,
         )
-        self.stream_iterator = SSEDecoder().aiter_bytes(response.aiter_bytes())
+        self.stream_iterator = SSEDecoder().aiter_bytes(self._iter_response_bytes())
         self._pending_stream_event: Optional[Any] = None
         self._pending_stream_event_task: Optional[asyncio.Task] = None
+        self._event_loop_lag_task: Optional[asyncio.Task] = None
+        if isinstance(self.request_data.get(_STREAM_TTFT_TRACE_KEY), dict):
+            self._event_loop_lag_task = asyncio.create_task(
+                self._sample_event_loop_lag_until_first_yield()
+            )
+
+    async def _iter_response_bytes(self):
+        async for chunk in self.response.aiter_bytes():
+            self._mark_ttft_stage("provider_first_raw_byte")
+            yield chunk
+
+    async def _sample_event_loop_lag_until_first_yield(self) -> None:
+        loop = asyncio.get_running_loop()
+        interval_seconds = 0.5
+        trace = self.request_data.get(_STREAM_TTFT_TRACE_KEY)
+        if not isinstance(trace, dict):
+            return
+        try:
+            while "proxy_first_yield" not in trace:
+                expected = loop.time() + interval_seconds
+                await asyncio.sleep(interval_seconds)
+                lag_ms = max(0.0, loop.time() - expected) * 1000
+                trace["event_loop_lag_max_ms"] = max(
+                    float(trace.get("event_loop_lag_max_ms", 0.0)), lag_ms
+                )
+        except asyncio.CancelledError:
+            raise
+
+    def _stop_event_loop_lag_probe(self) -> None:
+        task = self._event_loop_lag_task
+        if task is not None and not task.done():
+            task.cancel()
 
     @staticmethod
     def _coalescible_output_text_delta(chunk: str) -> Optional[Dict[str, Any]]:
@@ -660,6 +829,13 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
         return json.dumps(event, separators=(",", ":"))
 
     async def aclose(self) -> None:
+        lag_task = self._event_loop_lag_task
+        self._event_loop_lag_task = None
+        if lag_task is not None:
+            if not lag_task.done():
+                lag_task.cancel()
+            with contextlib.suppress(BaseException):
+                await lag_task
         task = self._pending_stream_event_task
         self._pending_stream_event_task = None
         if task is not None and not task.done():
@@ -682,6 +858,7 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                     self.finished = True
                     raise StopAsyncIteration
 
+                self._mark_ttft_stage("provider_first_sse_event")
                 self._check_max_streaming_duration()
                 chunk = await self._coalesce_output_text_delta(sse.data)
                 result = self._process_chunk(chunk)
@@ -708,6 +885,7 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                     result = await self._call_post_streaming_deployment_hook(
                         chunk=result,
                     )
+                    self._mark_ttft_stage("iterator_first_yield")
                     return result
                 # If result is None, continue the loop to get the next chunk
 
@@ -811,7 +989,12 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             request_data,
             call_type,
         )
-        self.stream_iterator = SSEDecoder().iter_bytes(response.iter_bytes())
+        self.stream_iterator = SSEDecoder().iter_bytes(self._iter_response_bytes())
+
+    def _iter_response_bytes(self):
+        for chunk in self.response.iter_bytes():
+            self._mark_ttft_stage("provider_first_raw_byte")
+            yield chunk
 
     def __iter__(self):
         return self
@@ -827,6 +1010,7 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                     self.finished = True
                     raise StopIteration
 
+                self._mark_ttft_stage("provider_first_sse_event")
                 self._check_max_streaming_duration()
                 result = self._process_chunk(sse.data)
 
@@ -838,6 +1022,7 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                         async_function=self._call_post_streaming_deployment_hook,
                         chunk=result,
                     )
+                    self._mark_ttft_stage("iterator_first_yield")
                     return result
                 # If result is None, continue the loop to get the next chunk
 

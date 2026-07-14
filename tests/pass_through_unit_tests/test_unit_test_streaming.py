@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import sys
@@ -93,6 +94,52 @@ async def test_chunk_processor_yields_raw_bytes(endpoint_type, url_route):
     assert b"".join(received_chunks) == b"".join(
         raw_chunks
     ), "Collected chunks do not match raw chunks"
+
+
+@pytest.mark.asyncio
+async def test_chunk_processor_stamps_completion_start_time_once():
+    response = AsyncMock(spec=httpx.Response)
+
+    async def mock_aiter_bytes():
+        yield b"chunk-1"
+        yield b"chunk-2"
+
+    response.aiter_bytes = mock_aiter_bytes
+    litellm_logging_obj = MagicMock(spec=LiteLLMLoggingObj)
+    litellm_logging_obj.completion_start_time = None
+
+    def update_completion_start_time(*, completion_start_time):
+        litellm_logging_obj.completion_start_time = completion_start_time
+
+    litellm_logging_obj._update_completion_start_time.side_effect = (
+        update_completion_start_time
+    )
+
+    with patch.object(
+        PassThroughStreamingHandler,
+        "_route_streaming_logging_to_handler",
+        new=AsyncMock(),
+    ):
+        chunks = [
+            chunk
+            async for chunk in PassThroughStreamingHandler.chunk_processor(
+                response=response,
+                request_body={"model": "claude-test"},
+                litellm_logging_obj=litellm_logging_obj,
+                endpoint_type=EndpointType.ANTHROPIC,
+                start_time=datetime.now(),
+                passthrough_success_handler_obj=MagicMock(),
+                url_route="/v1/messages",
+            )
+        ]
+        await asyncio.sleep(0)
+
+    assert chunks == [b"chunk-1", b"chunk-2"]
+    litellm_logging_obj._update_completion_start_time.assert_called_once()
+    stamped = litellm_logging_obj._update_completion_start_time.call_args.kwargs[
+        "completion_start_time"
+    ]
+    assert isinstance(stamped, datetime)
 
 
 def test_convert_raw_bytes_to_str_lines():

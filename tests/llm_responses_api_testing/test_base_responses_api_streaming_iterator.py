@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import asyncio
+from datetime import datetime
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -39,6 +40,70 @@ from litellm.types.llms.openai import (
 
 class TestBaseResponsesAPIStreamingIterator:
     """Test cases for BaseResponsesAPIStreamingIterator"""
+
+    def test_process_chunk_stamps_completion_start_time_once(self):
+        from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
+
+        mock_response = Mock()
+        mock_response.headers = {}
+        mock_response.aiter_bytes = Mock()
+        mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
+        mock_logging_obj.model_call_details = {"litellm_params": {}}
+        mock_logging_obj.completion_start_time = None
+
+        def update_completion_start_time(*, completion_start_time):
+            mock_logging_obj.completion_start_time = completion_start_time
+            mock_logging_obj.model_call_details[
+                "completion_start_time"
+            ] = completion_start_time
+
+        mock_logging_obj._update_completion_start_time.side_effect = (
+            update_completion_start_time
+        )
+        mock_config = Mock(spec=BaseResponsesAPIConfig)
+        mock_config.transform_streaming_response.side_effect = [Mock(), Mock()]
+
+        iterator = ResponsesAPIStreamingIterator(
+            response=mock_response,
+            model="gpt-4",
+            responses_api_provider_config=mock_config,
+            logging_obj=mock_logging_obj,
+            custom_llm_provider="openai",
+        )
+
+        iterator._process_chunk(json.dumps({"type": "response.created"}))
+        iterator._process_chunk(
+            json.dumps({"type": "response.output_text.delta", "delta": "hello"})
+        )
+
+        mock_logging_obj._update_completion_start_time.assert_called_once()
+        stamped = mock_logging_obj._update_completion_start_time.call_args.kwargs[
+            "completion_start_time"
+        ]
+        assert isinstance(stamped, datetime)
+        assert mock_logging_obj.model_call_details["completion_start_time"] == stamped
+
+    def test_done_marker_does_not_stamp_completion_start_time(self):
+        from litellm.responses.streaming_iterator import ResponsesAPIStreamingIterator
+
+        mock_response = Mock()
+        mock_response.headers = {}
+        mock_response.aiter_bytes = Mock()
+        mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
+        mock_logging_obj.model_call_details = {"litellm_params": {}}
+        mock_logging_obj.completion_start_time = None
+        mock_config = Mock(spec=BaseResponsesAPIConfig)
+
+        iterator = ResponsesAPIStreamingIterator(
+            response=mock_response,
+            model="gpt-4",
+            responses_api_provider_config=mock_config,
+            logging_obj=mock_logging_obj,
+            custom_llm_provider="openai",
+        )
+
+        assert iterator._process_chunk(STREAM_SSE_DONE_STRING) is None
+        mock_logging_obj._update_completion_start_time.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_async_iterator_preserves_u2028_in_sse_json(self):
@@ -92,6 +157,73 @@ class TestBaseResponsesAPIStreamingIterator:
         assert parsed_chunk["response"]["instructions"] == "eligible\u2028promo"
         mock_response.aiter_bytes.assert_called_once_with()
         mock_response.aiter_lines.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_slow_ttft_trace_records_streaming_stages(self, monkeypatch):
+        from litellm.responses.streaming_iterator import (
+            ResponsesAPIStreamingIterator,
+            initialize_stream_ttft_trace,
+            mark_stream_ttft_trace,
+        )
+
+        monkeypatch.setenv("LITELLM_STREAM_TTFT_TRACE_ENABLED", "true")
+        monkeypatch.setenv("LITELLM_STREAM_TTFT_TRACE_MIN_DURATION_MS", "0")
+
+        async def mock_aiter_bytes():
+            yield b'data: {"type": "response.created"}\n\n'
+
+        mock_response = Mock()
+        mock_response.headers = {}
+        mock_response.aiter_bytes = mock_aiter_bytes
+        mock_response.aclose = AsyncMock()
+        mock_logging_obj = Mock()
+        mock_logging_obj.start_time = datetime.now()
+        mock_logging_obj.litellm_call_id = "trace-call-id"
+        mock_logging_obj.model_call_details = {"litellm_params": {}}
+        mock_logging_obj.completion_start_time = None
+
+        def update_completion_start_time(*, completion_start_time):
+            mock_logging_obj.completion_start_time = completion_start_time
+
+        mock_logging_obj._update_completion_start_time.side_effect = (
+            update_completion_start_time
+        )
+        mock_config = Mock(spec=BaseResponsesAPIConfig)
+        mock_config.transform_streaming_response.return_value = Mock(
+            type="response.created"
+        )
+        request_data = {}
+        initialize_stream_ttft_trace(
+            request_data,
+            logging_obj=mock_logging_obj,
+            model="gpt-test",
+            custom_llm_provider="openai",
+        )
+        mark_stream_ttft_trace(request_data, "provider_request_start")
+        mark_stream_ttft_trace(request_data, "provider_headers_received")
+
+        iterator = ResponsesAPIStreamingIterator(
+            response=mock_response,
+            model="gpt-test",
+            responses_api_provider_config=mock_config,
+            logging_obj=mock_logging_obj,
+            custom_llm_provider="openai",
+            request_data=request_data,
+        )
+
+        with patch("litellm.responses.streaming_iterator.verbose_logger") as logger:
+            await iterator.__anext__()
+            iterator.record_proxy_first_yield()
+            await iterator.aclose()
+
+        trace = request_data["_litellm_stream_ttft_trace"]
+        assert trace["call_id"] == "trace-call-id"
+        assert "provider_first_raw_byte" in trace
+        assert "provider_first_sse_event" in trace
+        assert "iterator_first_yield" in trace
+        assert "proxy_first_yield" in trace
+        logger.info.assert_called_once()
+        assert "headers_to_first_byte_ms" in logger.info.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_async_iterator_still_coalesces_output_text_deltas(self):
