@@ -155,6 +155,7 @@ class TestChatGPTResponsesAPITransformation:
         )
 
         assert request["parallel_tool_calls"] is False
+        assert "instructions" not in request
 
     def test_chatgpt_responses_extracts_system_and_developer_input_to_instructions(self):
         config = ChatGPTResponsesAPIConfig()
@@ -191,7 +192,7 @@ class TestChatGPTResponsesAPITransformation:
         ]
         assert request["instructions"] == "Be terse.\n\nPrefer patches."
 
-    def test_chatgpt_responses_preserves_codex_responses_lite_additional_tools(self):
+    def test_chatgpt_responses_preserves_codex_responses_lite_input_items(self):
         config = ChatGPTResponsesAPIConfig()
         additional_tools = {
             "type": "additional_tools",
@@ -229,11 +230,16 @@ class TestChatGPTResponsesAPITransformation:
             additional_tools,
             {
                 "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": "Use tools."}],
+            },
+            {
+                "type": "message",
                 "role": "user",
                 "content": [{"type": "input_text", "text": "List files"}],
             },
         ]
-        assert request["instructions"] == "Use tools."
+        assert "instructions" not in request
 
     def test_chatgpt_responses_extracted_instructions_replace_existing_instructions(self):
         config = ChatGPTResponsesAPIConfig()

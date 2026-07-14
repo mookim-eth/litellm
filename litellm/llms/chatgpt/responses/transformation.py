@@ -524,8 +524,11 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         headers: dict,
     ) -> dict:
         response_api_optional_request_params.pop("metadata", None)
+        is_codex_responses_lite = bool(headers.get(CODEX_RESPONSES_LITE_HEADER))
         input = self._coerce_input_to_chatgpt_list(input)
-        input, extracted_instructions = self._extract_instructions_from_input(input)
+        extracted_instructions: Optional[str] = None
+        if not is_codex_responses_lite:
+            input, extracted_instructions = self._extract_instructions_from_input(input)
         request = super().transform_responses_api_request(
             model,
             input,
@@ -533,7 +536,9 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             litellm_params,
             headers,
         )
-        if extracted_instructions:
+        if is_codex_responses_lite:
+            request.pop("instructions", None)
+        elif extracted_instructions:
             request["instructions"] = extracted_instructions
         else:
             request.setdefault("instructions", "")
@@ -541,7 +546,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         request["stream"] = True
         if request.get("service_tier") == "fast":
             request["service_tier"] = "priority"
-        if headers.get(CODEX_RESPONSES_LITE_HEADER):
+        if is_codex_responses_lite:
             request["parallel_tool_calls"] = False
         include = list(request.get("include") or [])
         if "reasoning.encrypted_content" not in include:
