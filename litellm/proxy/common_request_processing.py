@@ -486,6 +486,23 @@ def _has_attribute_error_in_chain(exc: Exception) -> bool:
     return False
 
 
+def _is_expected_max_parallel_requests_limit(e: Exception) -> bool:
+    if not isinstance(e, HTTPException):
+        return False
+    if getattr(e, "status_code", None) != status.HTTP_429_TOO_MANY_REQUESTS:
+        return False
+    headers = getattr(e, "headers", None) or {}
+    rate_limit_type = headers.get("rate_limit_type")
+    if rate_limit_type == "max_parallel_requests":
+        return True
+    detail = getattr(e, "detail", "")
+    return (
+        isinstance(detail, str)
+        and "Rate limit exceeded" in detail
+        and "Limit type: max_parallel_requests" in detail
+    )
+
+
 class ProxyBaseLLMRequestProcessing:
     def __init__(self, data: dict):
         self.data = data
@@ -1572,9 +1589,16 @@ class ProxyBaseLLMRequestProcessing:
         version: Optional[str] = None,
     ):
         """Raises ProxyException (OpenAI API compatible) if an exception is raised"""
-        verbose_proxy_logger.exception(
-            f"litellm.proxy.proxy_server._handle_llm_api_exception(): Exception occured - {str(e)}"
-        )
+        if _is_expected_max_parallel_requests_limit(e):
+            verbose_proxy_logger.warning(
+                "litellm.proxy.proxy_server._handle_llm_api_exception(): "
+                "expected max_parallel_requests rate limit - %s",
+                str(e),
+            )
+        else:
+            verbose_proxy_logger.exception(
+                f"litellm.proxy.proxy_server._handle_llm_api_exception(): Exception occured - {str(e)}"
+            )
         # Allow callbacks to transform the error response
         transformed_exception = await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict,

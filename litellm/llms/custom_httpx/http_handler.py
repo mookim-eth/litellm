@@ -33,6 +33,7 @@ from litellm.constants import (
     DEFAULT_SSL_CIPHERS,
 )
 from litellm.litellm_core_utils.logging_utils import track_llm_api_timing
+from litellm.llms.custom_httpx.outbound_trace import create_outbound_trace_configs
 from litellm.types.llms.custom_http import *
 
 if TYPE_CHECKING:
@@ -465,6 +466,16 @@ class AsyncHTTPHandler:
                 files=files,
                 content=request_content,
             )
+            trace_ctx: Dict[str, Any] = {"stream": stream}
+            if logging_obj is not None:
+                call_id = getattr(logging_obj, "litellm_call_id", None)
+                if call_id is not None:
+                    trace_ctx["call_id"] = call_id
+            if isinstance(json, dict):
+                model = json.get("model")
+                if isinstance(model, str):
+                    trace_ctx["model"] = model
+            req.extensions["litellm_trace_request_ctx"] = trace_ctx
             response = await self.client.send(req, stream=stream)
             response.raise_for_status()
             return response
@@ -894,6 +905,7 @@ class AsyncHTTPHandler:
             client=lambda: ClientSession(
                 connector=TCPConnector(**transport_connector_kwargs),
                 trust_env=trust_env,
+                trace_configs=create_outbound_trace_configs(),
             ),
             ssl_verify=ssl_for_transport,
         )

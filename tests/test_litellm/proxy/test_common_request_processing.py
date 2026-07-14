@@ -17,6 +17,7 @@ from litellm.proxy.common_request_processing import (
     _extract_error_from_sse_chunk,
     _get_cost_breakdown_from_logging_obj,
     _has_attribute_error_in_chain,
+    _is_expected_max_parallel_requests_limit,
     _is_azure_model_router_request,
     _override_openai_response_model,
     _parse_event_data_for_error,
@@ -2302,3 +2303,22 @@ class TestHandleLLMApiExceptionDictDetail:
         proxy_exc = await self._invoke(exc)
         assert proxy_exc.message == "Content blocked by guardrail"
         assert proxy_exc.provider_specific_fields is None
+
+
+class TestExpectedRateLimitLogging:
+    def test_max_parallel_requests_429_is_expected_rate_limit(self):
+        exc = HTTPException(
+            status_code=429,
+            detail=(
+                "Rate limit exceeded for api_key: sk-test. "
+                "Limit type: max_parallel_requests. Current limit: 6, Remaining: 0."
+            ),
+            headers={"rate_limit_type": "max_parallel_requests"},
+        )
+
+        assert _is_expected_max_parallel_requests_limit(exc) is True
+
+    def test_non_rate_limit_429_is_not_expected_rate_limit(self):
+        exc = HTTPException(status_code=429, detail="provider quota exceeded")
+
+        assert _is_expected_max_parallel_requests_limit(exc) is False

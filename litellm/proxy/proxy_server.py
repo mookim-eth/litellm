@@ -788,6 +788,10 @@ async def _initialize_shared_aiohttp_session():
     try:
         from aiohttp import ClientSession, TCPConnector
 
+        from litellm.llms.custom_httpx.outbound_trace import (
+            create_outbound_trace_configs,
+        )
+
         connector_kwargs: Dict[str, Any] = {
             "keepalive_timeout": AIOHTTP_KEEPALIVE_TIMEOUT,
             "ttl_dns_cache": AIOHTTP_TTL_DNS_CACHE,
@@ -800,7 +804,10 @@ async def _initialize_shared_aiohttp_session():
             connector_kwargs["limit_per_host"] = AIOHTTP_CONNECTOR_LIMIT_PER_HOST
 
         connector = TCPConnector(**connector_kwargs)
-        session = ClientSession(connector=connector)
+        session = ClientSession(
+            connector=connector,
+            trace_configs=create_outbound_trace_configs(),
+        )
 
         verbose_proxy_logger.info(
             f"SESSION REUSE: Created shared aiohttp session for connection pooling (ID: {id(session)}, "

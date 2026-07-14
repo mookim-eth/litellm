@@ -279,6 +279,9 @@ class LiteLLMAiohttpTransport(AiohttpTransport):
             "proxy": proxy,
             "server_hostname": sni_hostname,
         }
+        trace_request_ctx = request.extensions.get("litellm_trace_request_ctx")
+        if trace_request_ctx is not None:
+            request_kwargs["trace_request_ctx"] = trace_request_ctx
         if ssl_verify is not None:
             request_kwargs["ssl"] = ssl_verify
 
