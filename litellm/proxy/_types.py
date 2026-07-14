@@ -2247,6 +2247,11 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
         None,
         description="Exact IP addresses or CIDR ranges exempt from the Responses provider headers timeout.",
     )
+    responses_provider_sse_event_timeout_seconds: Optional[float] = Field(
+        None,
+        gt=0,
+        description="Maximum seconds a Responses API stream may wait for the next complete provider SSE event.",
+    )
     infer_model_from_keys: Optional[bool] = Field(
         None,
         description="for `/models` endpoint, infers available model based on environment keys (e.g. OPENAI_API_KEY)",

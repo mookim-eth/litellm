@@ -756,10 +756,14 @@ def responses(
         _is_async = kwargs.pop("aresponses", False) is True
         from litellm.responses.provider_headers_timeout import (
             RESPONSES_PROVIDER_HEADERS_TIMEOUT_KWARG,
+            RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG,
         )
 
         provider_headers_timeout_seconds = kwargs.pop(
             RESPONSES_PROVIDER_HEADERS_TIMEOUT_KWARG, None
+        )
+        provider_sse_event_timeout_seconds = kwargs.pop(
+            RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG, None
         )
 
         # Convert text_format to text parameter if provided
@@ -991,6 +995,7 @@ def responses(
             litellm_metadata=kwargs.get("litellm_metadata", {}),
             shared_session=kwargs.get("shared_session"),
             provider_headers_timeout_seconds=provider_headers_timeout_seconds,
+            provider_sse_event_timeout_seconds=provider_sse_event_timeout_seconds,
         )
 
         # Update the responses_api_response_id with the model_id

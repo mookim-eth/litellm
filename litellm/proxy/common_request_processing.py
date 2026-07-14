@@ -742,6 +742,14 @@ class ProxyBaseLLMRequestProcessing:
             version=version,
             proxy_config=proxy_config,
         )
+        if route_type in ("aresponses", "acompletion"):
+            from litellm.responses.provider_headers_timeout import (
+                apply_provider_sse_event_timeout_to_request,
+            )
+
+            apply_provider_sse_event_timeout_to_request(
+                data=self.data, general_settings=general_settings
+            )
         if route_type == "aresponses":
             from litellm.responses.provider_headers_timeout import (
                 apply_provider_headers_timeout_to_request,

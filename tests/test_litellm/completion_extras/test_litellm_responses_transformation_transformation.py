@@ -160,6 +160,26 @@ def test_transform_request_includes_extra_headers():
     assert result.get("extra_headers") == headers
 
 
+def test_transform_request_preserves_server_sse_event_timeout():
+    """Chat-to-Responses bridge must retain the proxy-controlled idle timeout."""
+    handler = LiteLLMResponsesTransformationHandler()
+    timeout_key = "_responses_provider_sse_event_timeout_seconds"
+
+    class MockLoggingObj:
+        pass
+
+    result = handler.transform_request(
+        model="gpt-5-pro",
+        messages=[{"role": "user", "content": "Hello"}],
+        optional_params={},
+        litellm_params={timeout_key: 300.0},
+        headers={},
+        litellm_logging_obj=MockLoggingObj(),
+    )
+
+    assert result[timeout_key] == 300.0
+
+
 def test_responses_to_completion_extracts_codex_lite_additional_tools():
     """Test Codex Responses Lite tools embedded in input are not dropped."""
     input_items = [

@@ -4,6 +4,7 @@ import sys
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+import httpx
 
 sys.path.insert(
     0, os.path.abspath("../../../..")
@@ -12,6 +13,34 @@ import litellm
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 from litellm.llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
 from litellm.types.router import GenericLiteLLMParams
+
+
+class _OneSSEEventThenStallStream(httpx.AsyncByteStream):
+    def __init__(self):
+        self.closed = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def __aiter__(self):
+        yield b'data: {"type":"response.created"}\n\n'
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.cancelled.set()
+
+    async def aclose(self):
+        self.closed.set()
+
+
+class _CompleteSSEStream(httpx.AsyncByteStream):
+    def __init__(self):
+        self.closed = asyncio.Event()
+
+    async def __aiter__(self):
+        yield b'data: {"type":"response.created"}\n\n'
+        yield b'data: {"type":"response.completed"}\n\n'
+
+    async def aclose(self):
+        self.closed.set()
 
 
 @pytest.mark.asyncio
@@ -87,9 +116,11 @@ async def test_responses_provider_headers_timeout_stops_after_headers():
         logging_obj=logging_obj,
         client=client,
         provider_headers_timeout_seconds=0.01,
+        provider_sse_event_timeout_seconds=300,
     )
 
     assert iterator.response is response
+    assert iterator.provider_sse_event_timeout_seconds == 300
 
 
 @pytest.mark.asyncio
@@ -135,6 +166,82 @@ async def test_nonstreaming_responses_timeout_only_waits_for_headers():
     assert result is expected_result
     assert body_read.is_set()
     assert client.post.await_args.kwargs["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_nonstreaming_provider_native_sse_event_timeout_closes_response():
+    handler = BaseLLMHTTPHandler()
+    provider_config = Mock()
+    provider_config.validate_environment.return_value = {}
+    provider_config.get_complete_url.return_value = (
+        "https://provider.example/v1/responses"
+    )
+    provider_config.transform_responses_api_request.return_value = {
+        "model": "test-model",
+        "input": "hello",
+        "stream": True,
+    }
+    stream = _OneSSEEventThenStallStream()
+    response = httpx.Response(
+        status_code=200,
+        headers={"content-type": "text/event-stream"},
+        stream=stream,
+        request=httpx.Request("POST", "https://provider.example/v1/responses"),
+    )
+    client = Mock(spec=AsyncHTTPHandler)
+    client.post = AsyncMock(return_value=response)
+    logging_obj = Mock()
+    logging_obj.model_call_details = {}
+    logging_obj.litellm_call_id = "nonstream-sse-timeout-test"
+
+    with pytest.raises(litellm.Timeout, match="next provider Responses SSE event"):
+        await handler.async_response_api_handler(
+            model="test-model",
+            input="hello",
+            responses_api_provider_config=provider_config,
+            response_api_optional_request_params={"stream": False},
+            custom_llm_provider="openai",
+            litellm_params=GenericLiteLLMParams(
+                api_base="https://provider.example/v1/responses"
+            ),
+            logging_obj=logging_obj,
+            client=client,
+            provider_sse_event_timeout_seconds=0.02,
+        )
+
+    assert client.post.await_args.kwargs["stream"] is True
+    assert stream.closed.is_set()
+    assert stream.cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_nonstreaming_provider_native_sse_buffer_preserves_complete_body():
+    stream = _CompleteSSEStream()
+    response = httpx.Response(
+        status_code=200,
+        headers={"content-type": "text/event-stream"},
+        stream=stream,
+        request=httpx.Request("POST", "https://provider.example/v1/responses"),
+    )
+    logging_obj = Mock()
+    logging_obj.litellm_call_id = "nonstream-sse-complete-test"
+
+    buffered_response = (
+        await BaseLLMHTTPHandler._read_provider_sse_body_with_event_timeout(
+            response=response,
+            timeout_seconds=0.1,
+            model="test-model",
+            custom_llm_provider="openai",
+            logging_obj=logging_obj,
+        )
+    )
+
+    assert buffered_response.status_code == 200
+    assert buffered_response.text == (
+        'data: {"type":"response.created"}\n\n'
+        'data: {"type":"response.completed"}\n\n'
+    )
+    assert stream.closed.is_set()
 
 
 def test_prepare_fake_stream_request():

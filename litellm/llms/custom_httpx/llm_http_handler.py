@@ -17,6 +17,7 @@ from typing import (
 )
 
 import httpx  # type: ignore
+from openai._streaming import SSEDecoder
 from openai.types.file_deleted import FileDeleted
 
 import litellm
@@ -2064,6 +2065,7 @@ class BaseLLMHTTPHandler:
         litellm_metadata: Optional[Dict[str, Any]] = None,
         shared_session: Optional["ClientSession"] = None,
         provider_headers_timeout_seconds: Optional[float] = None,
+        provider_sse_event_timeout_seconds: Optional[float] = None,
     ) -> Union[
         ResponsesAPIResponse,
         BaseResponsesAPIStreamingIterator,
@@ -2098,6 +2100,7 @@ class BaseLLMHTTPHandler:
                 litellm_metadata=litellm_metadata,
                 shared_session=shared_session,
                 provider_headers_timeout_seconds=provider_headers_timeout_seconds,
+                provider_sse_event_timeout_seconds=provider_sse_event_timeout_seconds,
             )
 
         if client is None or not isinstance(client, HTTPHandler):
@@ -2228,6 +2231,81 @@ class BaseLLMHTTPHandler:
             logging_obj=logging_obj,
         )
 
+    @staticmethod
+    async def _read_provider_sse_body_with_event_timeout(
+        *,
+        response: httpx.Response,
+        timeout_seconds: float,
+        model: str,
+        custom_llm_provider: str,
+        logging_obj: LiteLLMLoggingObj,
+    ) -> httpx.Response:
+        """Buffer provider SSE while bounding the wait for each complete event."""
+        body = bytearray()
+
+        async def recording_bytes():
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                yield chunk
+
+        event_iterator = SSEDecoder().aiter_bytes(recording_bytes())
+        events_received = 0
+        last_event_type: Optional[str] = None
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        event_iterator.__anext__(), timeout=timeout_seconds
+                    )
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError as timeout_error:
+                    verbose_proxy_logger.warning(
+                        "Responses provider SSE event timeout model=%s provider=%s timeout_seconds=%s events_received=%s last_event_type=%s call_id=%s",
+                        model,
+                        custom_llm_provider,
+                        timeout_seconds,
+                        events_received,
+                        last_event_type,
+                        getattr(logging_obj, "litellm_call_id", None),
+                    )
+                    raise litellm.Timeout(
+                        message=(
+                            "Timed out waiting for the next provider Responses SSE event "
+                            f"after {timeout_seconds:g} seconds"
+                        ),
+                        model=model,
+                        llm_provider=custom_llm_provider,
+                    ) from timeout_error
+
+                events_received += 1
+                last_event_type = getattr(event, "event", None)
+                if not last_event_type:
+                    try:
+                        event_data = json.loads(event.data)
+                    except (TypeError, json.JSONDecodeError):
+                        event_data = None
+                    if isinstance(event_data, dict) and isinstance(
+                        event_data.get("type"), str
+                    ):
+                        last_event_type = event_data["type"]
+        finally:
+            await response.aclose()
+
+        response_headers = dict(response.headers)
+        response_headers.pop("content-encoding", None)
+        response_headers.pop("content-length", None)
+        response_kwargs: Dict[str, Any] = {
+            "status_code": response.status_code,
+            "headers": response_headers,
+            "content": bytes(body),
+            "extensions": response.extensions,
+        }
+        request = getattr(response, "_request", None)
+        if request is not None:
+            response_kwargs["request"] = request
+        return httpx.Response(**response_kwargs)
+
     async def async_response_api_handler(
         self,
         model: str,
@@ -2245,6 +2323,7 @@ class BaseLLMHTTPHandler:
         litellm_metadata: Optional[Dict[str, Any]] = None,
         shared_session: Optional["ClientSession"] = None,
         provider_headers_timeout_seconds: Optional[float] = None,
+        provider_sse_event_timeout_seconds: Optional[float] = None,
     ) -> Union[ResponsesAPIResponse, BaseResponsesAPIStreamingIterator]:
         """
         Async version of the responses API handler.
@@ -2388,15 +2467,31 @@ class BaseLLMHTTPHandler:
                     custom_llm_provider=custom_llm_provider,
                     request_data=request_context,
                     call_type=CallTypes.responses.value,
+                    provider_sse_event_timeout_seconds=provider_sse_event_timeout_seconds,
                 )
             else:
                 # With a provider-headers timeout, ask httpx to return as soon as
                 # headers arrive. Read the body afterwards so a slow non-streaming
                 # generation is not accidentally bounded by the headers timeout.
+                provider_native_stream = data.get("stream") is True
                 response = await _post_and_wait_for_headers(
-                    request_stream=provider_headers_timeout_seconds is not None
+                    request_stream=(
+                        provider_headers_timeout_seconds is not None
+                        or (
+                            provider_native_stream
+                            and provider_sse_event_timeout_seconds is not None
+                        )
+                    )
                 )
-                if provider_headers_timeout_seconds is not None:
+                if provider_native_stream and provider_sse_event_timeout_seconds is not None:
+                    response = await self._read_provider_sse_body_with_event_timeout(
+                        response=response,
+                        timeout_seconds=provider_sse_event_timeout_seconds,
+                        model=model,
+                        custom_llm_provider=custom_llm_provider,
+                        logging_obj=logging_obj,
+                    )
+                elif provider_headers_timeout_seconds is not None:
                     await response.aread()
 
         except litellm.Timeout:

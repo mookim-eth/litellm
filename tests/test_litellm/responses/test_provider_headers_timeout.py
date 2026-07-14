@@ -4,7 +4,9 @@ import pytest
 
 from litellm.responses.provider_headers_timeout import (
     RESPONSES_PROVIDER_HEADERS_TIMEOUT_KWARG,
+    RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG,
     apply_provider_headers_timeout_to_request,
+    apply_provider_sse_event_timeout_to_request,
 )
 
 
@@ -88,3 +90,32 @@ def test_provider_headers_timeout_cannot_be_set_by_request():
     )
 
     assert RESPONSES_PROVIDER_HEADERS_TIMEOUT_KWARG not in data
+
+
+def test_provider_sse_event_timeout_applies_from_server_settings():
+    data = {RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG: 1}
+
+    apply_provider_sse_event_timeout_to_request(
+        data=data,
+        general_settings={"responses_provider_sse_event_timeout_seconds": 300},
+    )
+
+    assert data[RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG] == 300.0
+
+
+@pytest.mark.parametrize(
+    "configured_timeout", [None, False, True, 0, -1, math.nan, "300"]
+)
+def test_provider_sse_event_timeout_ignores_missing_or_invalid_values(
+    configured_timeout,
+):
+    data = {RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG: 1}
+
+    apply_provider_sse_event_timeout_to_request(
+        data=data,
+        general_settings={
+            "responses_provider_sse_event_timeout_seconds": configured_timeout,
+        },
+    )
+
+    assert RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG not in data

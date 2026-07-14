@@ -124,6 +124,7 @@ class BaseResponsesAPIStreamingIterator:
         custom_llm_provider: Optional[str] = None,
         request_data: Optional[Dict[str, Any]] = None,
         call_type: Optional[str] = None,
+        provider_sse_event_timeout_seconds: Optional[float] = None,
     ):
         self.response = response
         self.model = model
@@ -143,6 +144,7 @@ class BaseResponsesAPIStreamingIterator:
             request_data if request_data is not None else {}
         )
         self.call_type: Optional[str] = call_type
+        self.provider_sse_event_timeout_seconds = provider_sse_event_timeout_seconds
 
         # set hidden params for response headers (e.g., x-litellm-model-id)
         # This matches the stream wrapper in litellm/litellm_core_utils/streaming_handler.py
@@ -697,6 +699,7 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
         custom_llm_provider: Optional[str] = None,
         request_data: Optional[Dict[str, Any]] = None,
         call_type: Optional[str] = None,
+        provider_sse_event_timeout_seconds: Optional[float] = None,
     ):
         super().__init__(
             response,
@@ -707,10 +710,14 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             custom_llm_provider,
             request_data,
             call_type,
+            provider_sse_event_timeout_seconds,
         )
         self.stream_iterator = SSEDecoder().aiter_bytes(self._iter_response_bytes())
         self._pending_stream_event: Optional[Any] = None
         self._pending_stream_event_task: Optional[asyncio.Task] = None
+        self._pending_stream_event_task_started_at: Optional[float] = None
+        self._provider_sse_events_received = 0
+        self._last_provider_sse_event_type: Optional[str] = None
         self._event_loop_lag_task: Optional[asyncio.Task] = None
         if isinstance(self.request_data.get(_STREAM_TTFT_TRACE_KEY), dict):
             self._event_loop_lag_task = asyncio.create_task(
@@ -793,8 +800,42 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
         if self._pending_stream_event_task is not None:
             task = self._pending_stream_event_task
             self._pending_stream_event_task = None
-            return await task
-        return await self.stream_iterator.__anext__()
+            started_at = self._pending_stream_event_task_started_at
+            self._pending_stream_event_task_started_at = None
+            return await self._wait_for_stream_event(task, started_at=started_at)
+        return await self._wait_for_stream_event(self.stream_iterator.__anext__())
+
+    async def _wait_for_stream_event(
+        self, awaitable: Any, *, started_at: Optional[float] = None
+    ) -> Any:
+        timeout_seconds = self.provider_sse_event_timeout_seconds
+        if timeout_seconds is None:
+            return await awaitable
+
+        loop = asyncio.get_running_loop()
+        remaining = timeout_seconds
+        if started_at is not None:
+            remaining -= max(0.0, loop.time() - started_at)
+        try:
+            return await asyncio.wait_for(awaitable, timeout=max(0.0, remaining))
+        except asyncio.TimeoutError as timeout_error:
+            verbose_proxy_logger.warning(
+                "Responses provider SSE event timeout model=%s provider=%s timeout_seconds=%s events_received=%s last_event_type=%s call_id=%s",
+                self.model,
+                self.custom_llm_provider,
+                timeout_seconds,
+                self._provider_sse_events_received,
+                self._last_provider_sse_event_type,
+                getattr(self.logging_obj, "litellm_call_id", None),
+            )
+            raise litellm.Timeout(
+                message=(
+                    "Timed out waiting for the next provider Responses SSE event "
+                    f"after {timeout_seconds:g} seconds"
+                ),
+                model=self.model or "",
+                llm_provider=self.custom_llm_provider or "",
+            ) from timeout_error
 
     async def _coalesce_output_text_delta(self, chunk: str) -> str:
         event = self._coalescible_output_text_delta(chunk)
@@ -809,6 +850,9 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             self._pending_stream_event_task = asyncio.create_task(
                 self.stream_iterator.__anext__()
             )
+            self._pending_stream_event_task_started_at = (
+                asyncio.get_running_loop().time()
+            )
             done, _ = await asyncio.wait(
                 {self._pending_stream_event_task}, timeout=remaining
             )
@@ -818,8 +862,10 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                 following_event = self._pending_stream_event_task.result()
             except StopAsyncIteration:
                 self._pending_stream_event_task = None
+                self._pending_stream_event_task_started_at = None
                 break
             self._pending_stream_event_task = None
+            self._pending_stream_event_task_started_at = None
             following_data = following_event.data
             following = self._coalescible_output_text_delta(following_data)
             if following is None or not self._same_output_text_target(event, following):
@@ -839,6 +885,7 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                 await lag_task
         task = self._pending_stream_event_task
         self._pending_stream_event_task = None
+        self._pending_stream_event_task_started_at = None
         if task is not None and not task.done():
             task.cancel()
             with contextlib.suppress(BaseException):
@@ -860,6 +907,17 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                     raise StopAsyncIteration
 
                 self._mark_ttft_stage("provider_first_sse_event")
+                self._provider_sse_events_received += 1
+                self._last_provider_sse_event_type = getattr(sse, "event", None)
+                if not self._last_provider_sse_event_type:
+                    try:
+                        event_data = json.loads(sse.data)
+                    except (TypeError, json.JSONDecodeError):
+                        event_data = None
+                    if isinstance(event_data, dict):
+                        event_type = event_data.get("type")
+                        if isinstance(event_type, str):
+                            self._last_provider_sse_event_type = event_type
                 self._check_max_streaming_duration()
                 chunk = await self._coalesce_output_text_delta(sse.data)
                 result = self._process_chunk(chunk)

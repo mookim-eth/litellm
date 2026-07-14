@@ -8,6 +8,9 @@ from litellm._logging import verbose_proxy_logger
 RESPONSES_PROVIDER_HEADERS_TIMEOUT_KWARG = (
     "_responses_provider_headers_timeout_seconds"
 )
+RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG = (
+    "_responses_provider_sse_event_timeout_seconds"
+)
 
 IPAddressNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 
@@ -72,3 +75,26 @@ def apply_provider_headers_timeout_to_request(
         return
 
     data[RESPONSES_PROVIDER_HEADERS_TIMEOUT_KWARG] = timeout_seconds
+
+
+def apply_provider_sse_event_timeout_to_request(
+    *, data: Dict[str, Any], general_settings: Dict[str, Any]
+) -> None:
+    """Add the server-controlled idle timeout to a Responses stream request."""
+    data.pop(RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG, None)
+    configured_timeout = general_settings.get(
+        "responses_provider_sse_event_timeout_seconds"
+    )
+    if isinstance(configured_timeout, bool) or not isinstance(
+        configured_timeout, (int, float)
+    ):
+        return
+    timeout_seconds = float(configured_timeout)
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        verbose_proxy_logger.warning(
+            "Ignoring invalid responses_provider_sse_event_timeout_seconds=%r; expected a positive finite number",
+            configured_timeout,
+        )
+        return
+
+    data[RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG] = timeout_seconds

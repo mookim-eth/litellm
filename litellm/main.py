@@ -1644,10 +1644,22 @@ def completion(  # type: ignore # noqa: PLR0915
 
         if responses_api_model_info.get("mode") == "responses":
             from litellm.completion_extras import responses_api_bridge
+            from litellm.responses.provider_headers_timeout import (
+                RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG,
+            )
 
             if isinstance(reasoning_effort, dict) and "summary" in reasoning_effort:
                 optional_params = dict(optional_params)
                 optional_params["reasoning_effort"] = reasoning_effort
+
+            provider_sse_event_timeout = kwargs.get(
+                RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG
+            )
+            if provider_sse_event_timeout is not None:
+                litellm_params = dict(litellm_params)
+                litellm_params[RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG] = (
+                    provider_sse_event_timeout
+                )
 
             return responses_api_bridge.completion(
                 model=model,
