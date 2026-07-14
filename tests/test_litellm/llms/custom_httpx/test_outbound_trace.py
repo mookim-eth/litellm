@@ -47,11 +47,13 @@ async def test_outbound_trace_splits_body_upload_from_header_wait(monkeypatch):
     await trace_config.on_request_start[0](None, trace_config_ctx, params)
     await trace_config.on_request_chunk_sent[0](None, trace_config_ctx, params)
     await trace_config.on_request_chunk_sent[0](None, trace_config_ctx, params)
-    with patch("litellm.llms.custom_httpx.outbound_trace.verbose_logger") as logger:
+    with patch(
+        "litellm.llms.custom_httpx.outbound_trace.verbose_proxy_logger"
+    ) as logger:
         await trace_config.on_request_end[0](None, trace_config_ctx, params)
 
     durations = trace_config_ctx.litellm_outbound_trace["durations_ms"]
     assert durations["request_body_upload"] >= 0
     assert durations["body_sent_to_headers"] >= 0
-    logger.info.assert_called_once()
-    assert logger.info.call_args.args[10] == "trace-call-id"
+    logger.warning.assert_called_once()
+    assert logger.warning.call_args.args[10] == "trace-call-id"

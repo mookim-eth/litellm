@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from aiohttp import TraceConfig
 
-from litellm._logging import verbose_logger
+from litellm._logging import verbose_proxy_logger
 
 
 def _str_to_bool(value: str) -> bool:
@@ -89,7 +89,7 @@ def _log_trace(trace_config_ctx: Any, params: Any, *, error: Optional[str] = Non
     response = getattr(params, "response", None)
     status_code = getattr(response, "status", None)
 
-    verbose_logger.info(
+    verbose_proxy_logger.warning(
         "litellm_outbound_trace method=%s scheme=%s host=%s path=%s "
         "status=%s stream=%s total_ms=%s durations_ms=%s "
         "connection_reused=%s call_id=%s model=%s error=%s",
