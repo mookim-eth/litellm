@@ -68,6 +68,10 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         )
         self.custom_llm_provider: Optional[str] = custom_llm_provider
         self.litellm_metadata: Optional[dict] = litellm_metadata or {}
+        # This iterator intentionally does not call ResponsesAPIStreamingIterator.__init__
+        # because it wraps a CustomStreamWrapper rather than an httpx Responses stream.
+        # Keep the request context expected by inherited proxy TTFT helpers available.
+        self.request_data: Dict[str, Any] = {}
         # Store lightweight dict snapshots for stream_chunk_builder to reduce
         # repeated Pydantic attribute access in end-of-stream assembly.
         self.collected_chat_completion_chunks: List[Dict[str, Any]] = []
@@ -108,6 +112,10 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         self._reasoning_item_id: Optional[str] = None
         self._accumulated_reasoning_content_parts: List[str] = []
         self._accumulated_provider_specific_fields: Dict[str, Any] = {}
+
+    async def aclose(self) -> None:
+        """Close the wrapped Chat Completions stream without using HTTP iterator state."""
+        await self.litellm_custom_stream_wrapper.aclose()
 
     def _get_or_assign_tool_output_index(self, call_id: str) -> int:
         existing = self._tool_output_index_by_call_id.get(call_id)

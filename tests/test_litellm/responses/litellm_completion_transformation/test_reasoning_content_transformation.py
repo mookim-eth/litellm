@@ -23,6 +23,21 @@ from litellm.types.utils import (
 class TestReasoningContentStreaming:
     """Test reasoning content preservation during streaming"""
 
+    async def test_proxy_first_yield_and_close_use_completion_stream_state(self):
+        mock_stream = AsyncMock()
+        iterator = LiteLLMCompletionStreamingIterator(
+            model="test-model",
+            litellm_custom_stream_wrapper=mock_stream,
+            request_input="Test input",
+            responses_api_request={},
+        )
+
+        iterator.record_proxy_first_yield()
+        await iterator.aclose()
+
+        assert iterator.request_data == {}
+        mock_stream.aclose.assert_awaited_once()
+
     def test_reasoning_content_in_delta(self):
         """Test that reasoning content is preserved in streaming deltas"""
         # Setup
