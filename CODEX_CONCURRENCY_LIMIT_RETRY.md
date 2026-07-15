@@ -35,7 +35,9 @@ exceeded retry limit, last status: 429 Too Many Requests
 - 并发限制在 LiteLLM 内部仍是 request failed / HTTP 429。
 - 日志、SpendLogs、数据库、callback、指标和 UI 仍按现有 429 失败语义记录。
 - 不修改数据库 schema，不新增数据库字段，不修改 UI。
-- 只在确认是目标 Codex Responses 客户端后，于下行响应输出边界把该并发限制响应适配为
+- 仅当请求 `User-Agent` 大小写不敏感地包含 `codex` 时，将其识别为目标 Codex
+  Responses 客户端；不依赖特定模型或 Responses Lite header。
+- 对目标 Codex 客户端，于下行响应输出边界把该并发限制响应适配为
   `HTTP 200 + text/event-stream + response.failed`。
 - 不得把内部异常或供日志、计费、callback 使用的状态码改成 200；200 只属于发给
   Codex 客户端的传输层兼容响应。
@@ -334,12 +336,14 @@ data: {"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded
 curl -N -i "$BASE/v1/responses" \
   -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
+  -H "User-Agent: codex_cli_rs/e2e" \
   -d '{ ... }'
 ```
 
 检查点：
 
 - [ ] status = 200
+- [ ] 请求 `User-Agent` 包含 `codex`（大小写不敏感）
 - [ ] body 含 `response.failed`
 - [ ] `error.code` = `rate_limit_exceeded`
 - [ ] `error.message` 含 `try again in 30s` 或 `try again in 30 seconds`

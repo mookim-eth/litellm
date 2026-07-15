@@ -47,10 +47,9 @@ def _apply_codex_responses_lite_request_overrides(
 def _should_return_codex_concurrency_retry(
     *, request: Request, data: Dict[str, Any], error: Exception
 ) -> bool:
-    header_value = request.headers.get(CODEX_RESPONSES_LITE_HEADER)
+    user_agent = request.headers.get("user-agent", "")
     return (
-        header_value is not None
-        and header_value.strip().lower() in {"1", "true"}
+        "codex" in user_agent.lower()
         and data.get("stream") is True
         and _is_expected_max_parallel_requests_limit(error)
     )

@@ -58,13 +58,13 @@ def test_forward_codex_responses_lite_header_ignores_missing_header():
     assert "parallel_tool_calls" not in data
 
 
-def _request_with_codex_header(value: str = "true") -> Request:
+def _codex_request(user_agent: str = "codex_cli_rs/0.144.4") -> Request:
     return Request(
         scope={
             "type": "http",
             "method": "POST",
             "path": "/v1/responses",
-            "headers": [(CODEX_RESPONSES_LITE_HEADER.encode(), value.encode())],
+            "headers": [(b"user-agent", user_agent.encode())],
         }
     )
 
@@ -83,7 +83,7 @@ def _max_parallel_error() -> HTTPException:
 def test_codex_streaming_max_parallel_error_is_selected_for_retry_response():
     assert (
         _should_return_codex_concurrency_retry(
-            request=_request_with_codex_header(),
+            request=_codex_request("Codex Desktop/1.0"),
             data={"stream": True},
             error=_max_parallel_error(),
         )
@@ -91,16 +91,37 @@ def test_codex_streaming_max_parallel_error_is_selected_for_retry_response():
     )
 
 
+def test_responses_lite_header_without_codex_user_agent_is_not_selected():
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/responses",
+            "headers": [
+                (b"user-agent", b"openai-python/2.30.0"),
+                (CODEX_RESPONSES_LITE_HEADER.encode(), b"true"),
+            ],
+        }
+    )
+
+    assert (
+        _should_return_codex_concurrency_retry(
+            request=request, data={"stream": True}, error=_max_parallel_error()
+        )
+        is False
+    )
+
+
 @pytest.mark.parametrize(
-    ("header_value", "stream", "rate_limit_type"),
+    ("user_agent", "stream", "rate_limit_type"),
     [
-        ("false", True, "max_parallel_requests"),
-        ("true", False, "max_parallel_requests"),
-        ("true", True, "requests_per_minute"),
+        ("openai-python/2.30.0", True, "max_parallel_requests"),
+        ("codex_cli_rs/0.144.4", False, "max_parallel_requests"),
+        ("codex_vscode/1.0", True, "requests_per_minute"),
     ],
 )
 def test_codex_retry_response_does_not_change_other_requests(
-    header_value, stream, rate_limit_type
+    user_agent, stream, rate_limit_type
 ):
     error = HTTPException(
         status_code=429,
@@ -110,7 +131,7 @@ def test_codex_retry_response_does_not_change_other_requests(
 
     assert (
         _should_return_codex_concurrency_retry(
-            request=_request_with_codex_header(header_value),
+            request=_codex_request(user_agent),
             data={"stream": stream},
             error=error,
         )
@@ -154,7 +175,7 @@ async def test_responses_endpoint_returns_retryable_sse_after_recording_429():
         ) as handle_error,
     ):
         response = await responses_api(
-            request=_request_with_codex_header(),
+            request=_codex_request(),
             fastapi_response=Response(),
             user_api_key_dict=MagicMock(spec=UserAPIKeyAuth),
         )
