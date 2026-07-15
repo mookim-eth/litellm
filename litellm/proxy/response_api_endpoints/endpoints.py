@@ -5,6 +5,7 @@ from typing import Any, AsyncIterator, Dict, Optional, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from starlette.responses import StreamingResponse
 from starlette.websockets import WebSocket
 
 from litellm._logging import verbose_proxy_logger
@@ -15,13 +16,17 @@ from litellm.proxy.auth.user_api_key_auth import (
     user_api_key_auth,
     user_api_key_auth_websocket,
 )
-from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
+from litellm.proxy.common_request_processing import (
+    ProxyBaseLLMRequestProcessing,
+    _is_expected_max_parallel_requests_limit,
+)
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
 from litellm.types.responses.main import DeleteResponseResult
 
 router = APIRouter()
 
 CODEX_RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
+CODEX_CONCURRENCY_RETRY_DELAY_SECONDS = 30
 
 
 def _apply_codex_responses_lite_request_overrides(
@@ -37,6 +42,84 @@ def _apply_codex_responses_lite_request_overrides(
         data["extra_headers"] = extra_headers
     extra_headers[CODEX_RESPONSES_LITE_HEADER] = header_value
     data["parallel_tool_calls"] = False
+
+
+def _should_return_codex_concurrency_retry(
+    *, request: Request, data: Dict[str, Any], error: Exception
+) -> bool:
+    header_value = request.headers.get(CODEX_RESPONSES_LITE_HEADER)
+    return (
+        header_value is not None
+        and header_value.strip().lower() in {"1", "true"}
+        and data.get("stream") is True
+        and _is_expected_max_parallel_requests_limit(error)
+    )
+
+
+def _codex_concurrency_retry_response(
+    *, mapped_error: Optional[Exception] = None
+) -> StreamingResponse:
+    error_event = {
+        "type": "response.failed",
+        "response": {
+            "error": {
+                "code": "rate_limit_exceeded",
+                "message": (
+                    "Concurrency limit reached. Please try again in "
+                    f"{CODEX_CONCURRENCY_RETRY_DELAY_SECONDS}s."
+                ),
+            }
+        },
+    }
+    body = (
+        "event: response.failed\n"
+        f"data: {json.dumps(error_event, separators=(',', ':'))}\n\n"
+    ).encode("utf-8")
+
+    async def _body():
+        yield body
+
+    headers = dict(getattr(mapped_error, "headers", None) or {})
+    headers.pop("content-length", None)
+    headers.pop("content-type", None)
+    headers["Cache-Control"] = "no-cache"
+    headers["X-Accel-Buffering"] = "no"
+    return StreamingResponse(
+        _body(),
+        status_code=200,
+        media_type="text/event-stream",
+        headers=headers,
+    )
+
+
+async def _handle_responses_api_exception(
+    *,
+    error: Exception,
+    request: Request,
+    data: Dict[str, Any],
+    processor: ProxyBaseLLMRequestProcessing,
+    user_api_key_dict: UserAPIKeyAuth,
+    proxy_logging_obj: Any,
+    version: Optional[str],
+):
+    return_codex_retry = _should_return_codex_concurrency_retry(
+        request=request, data=data, error=error
+    )
+    try:
+        mapped_error = await processor._handle_llm_api_exception(
+            e=error,
+            user_api_key_dict=user_api_key_dict,
+            proxy_logging_obj=proxy_logging_obj,
+            version=version,
+        )
+    except Exception as mapped_error:
+        if return_codex_retry:
+            return _codex_concurrency_retry_response(mapped_error=mapped_error)
+        raise
+
+    if return_codex_retry:
+        return _codex_concurrency_retry_response(mapped_error=mapped_error)
+    raise mapped_error
 
 
 @router.post(
@@ -298,8 +381,11 @@ async def responses_api(
         )
         return response_obj
     except Exception as e:
-        raise await processor._handle_llm_api_exception(
-            e=e,
+        return await _handle_responses_api_exception(
+            error=e,
+            request=request,
+            data=data,
+            processor=processor,
             user_api_key_dict=user_api_key_dict,
             proxy_logging_obj=proxy_logging_obj,
             version=version,
