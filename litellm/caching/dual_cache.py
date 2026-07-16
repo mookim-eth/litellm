@@ -92,6 +92,11 @@ class DualCache(BaseCache):
         if default_redis_ttl is not None:
             self.default_redis_ttl = default_redis_ttl
 
+    def _backfill_kwargs(self, kwargs: "dict[str, object]") -> "dict[str, object]":
+        if "ttl" not in kwargs and self.default_in_memory_ttl is not None:
+            return {**kwargs, "ttl": self.default_in_memory_ttl}
+        return kwargs
+
     def set_cache(self, key, value, local_only: bool = False, **kwargs):
         # Update both Redis and in-memory cache
         try:
@@ -153,7 +158,9 @@ class DualCache(BaseCache):
 
                 if redis_result is not None:
                     # Update in-memory cache with the value from Redis
-                    self.in_memory_cache.set_cache(key, redis_result, **kwargs)
+                    self.in_memory_cache.set_cache(
+                        key, redis_result, **self._backfill_kwargs(kwargs)
+                    )
 
                 result = redis_result
 
@@ -228,7 +235,7 @@ class DualCache(BaseCache):
                 if redis_result is not None:
                     # Update in-memory cache with the value from Redis
                     await self.in_memory_cache.async_set_cache(
-                        key, redis_result, **kwargs
+                        key, redis_result, **self._backfill_kwargs(kwargs)
                     )
 
                 result = redis_result
@@ -335,7 +342,7 @@ class DualCache(BaseCache):
 
                         if value is not None and self.in_memory_cache is not None:
                             await self.in_memory_cache.async_set_cache(
-                                key, value, **kwargs
+                                key, value, **self._backfill_kwargs(kwargs)
                             )
 
             return result

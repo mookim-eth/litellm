@@ -3524,6 +3524,45 @@ async def test_tag_cache_update_multiple_tags():
 
 
 @pytest.mark.asyncio
+async def test_spend_update_does_not_republish_key_auth_object():
+    from litellm.caching.caching import DualCache
+    from litellm.proxy._types import UserAPIKeyAuth
+
+    original_cache = litellm.proxy.proxy_server.user_api_key_cache
+    cache = DualCache()
+    setattr(litellm.proxy.proxy_server, "user_api_key_cache", cache)
+    token = "stale-auth-token"
+    try:
+        with (
+            patch.object(
+                cache,
+                "async_get_cache",
+                new=AsyncMock(return_value=UserAPIKeyAuth(token=token, spend=1.0)),
+            ),
+            patch.object(
+                cache, "async_set_cache_pipeline", new=AsyncMock()
+            ) as pipeline,
+        ):
+            await litellm.proxy.proxy_server.update_cache(
+                token=token,
+                user_id=None,
+                end_user_id=None,
+                team_id=None,
+                response_cost=5.0,
+                parent_otel_span=None,
+            )
+            await asyncio.sleep(0)
+
+        assert all(
+            key != token
+            for call in pipeline.await_args_list
+            for key, _ in call.kwargs["cache_list"]
+        )
+    finally:
+        setattr(litellm.proxy.proxy_server, "user_api_key_cache", original_cache)
+
+
+@pytest.mark.asyncio
 async def test_init_sso_settings_in_db():
     """
     Test that _init_sso_settings_in_db properly loads SSO settings from database,
