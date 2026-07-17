@@ -1641,11 +1641,10 @@ async def test_get_fuzzy_user_object_case_insensitive_email():
 @pytest.mark.asyncio
 async def test_custom_auth_common_checks_opt_in():
     """
-    Test that _run_post_custom_auth_checks only runs common_checks when
-    custom_auth_run_common_checks is explicitly set to True in general_settings.
+    Test that _run_post_custom_auth_checks never runs common_checks itself.
 
-    By default (False), common_checks is skipped for backwards compatibility
-    with custom auth flows that existed before PR #22164.
+    The wrapper-level centralized gate owns common_checks for every auth path;
+    the opt-in controls that gate, avoiding duplicate budget/rate-limit checks.
     """
     from litellm.proxy.auth.user_api_key_auth import _run_post_custom_auth_checks
 
@@ -1670,7 +1669,7 @@ async def test_custom_auth_common_checks_opt_in():
         )
         mock_common.assert_not_called()
 
-    # With flag=True — common_checks SHOULD be called
+    # With flag=True the wrapper calls common_checks after this helper returns.
     with patch(
         "litellm.proxy.auth.user_api_key_auth.common_checks",
         new_callable=AsyncMock,
@@ -1686,7 +1685,7 @@ async def test_custom_auth_common_checks_opt_in():
             route="/chat/completions",
             parent_otel_span=None,
         )
-        mock_common.assert_called_once()
+        mock_common.assert_not_called()
 
 
 # =====================================================================
