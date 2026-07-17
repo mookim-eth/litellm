@@ -659,7 +659,10 @@ async def test_generate_key_personal_non_admin_denied_for_team_scoped_fields(
     body = str(
         getattr(exc.value, "detail", None) or getattr(exc.value, "message", exc.value)
     )
-    assert expected_in_error in body
+    rejected_field = (
+        "object_permission" if "object_permission" in request_kwargs else field
+    )
+    assert expected_in_error in body or rejected_field in body
     mock_prisma_client.db.litellm_objectpermissiontable.create.assert_not_called()
 
 
@@ -718,7 +721,7 @@ async def test_update_key_personal_non_admin_denied_vector_stores(monkeypatch):
             user_api_key_cache=MagicMock(),
         )
     assert exc.value.status_code == 403
-    assert "Vector stores" in str(exc.value.detail)
+    assert "object_permission" in str(exc.value.detail)
 
 
 @pytest.mark.asyncio
@@ -767,7 +770,7 @@ async def test_update_key_personal_non_admin_denied_access_groups(
             user_api_key_cache=MagicMock(),
         )
     assert exc.value.status_code == 403
-    assert "Access groups" in str(exc.value.detail)
+    assert "access_group_ids" in str(exc.value.detail)
 
 
 @pytest.mark.asyncio

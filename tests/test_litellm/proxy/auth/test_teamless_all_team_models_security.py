@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -21,4 +21,5 @@ async def test_teamless_all_team_models_key_does_not_skip_model_check():
                 route="/chat/completions",
                 llm_model_list=None,
                 llm_router=None,
+                request=MagicMock(),
             )
