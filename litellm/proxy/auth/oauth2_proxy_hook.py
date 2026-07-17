@@ -4,6 +4,7 @@ from fastapi import Request
 
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy.auth.trusted_proxy_utils import require_trusted_proxy_request
 
 
 ALLOWED_OAUTH2_PROXY_FIELDS: FrozenSet[str] = frozenset(
@@ -25,6 +26,11 @@ async def handle_oauth2_proxy_request(request: Request) -> UserAPIKeyAuth:
     from litellm.proxy.proxy_server import general_settings
 
     verbose_proxy_logger.debug("Handling oauth2 proxy request")
+    require_trusted_proxy_request(
+        request=request,
+        general_settings=general_settings,
+        feature_name="OAuth2 proxy auth",
+    )
     # Define the OAuth2 config mappings
     oauth2_config_mappings: Dict[str, str] = (
         general_settings.get("oauth2_config_mappings") or {}

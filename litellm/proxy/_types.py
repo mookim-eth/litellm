@@ -2345,6 +2345,10 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
         None,
         description="CIDR ranges of trusted reverse proxies. When set, X-Forwarded-For headers are only trusted from these IPs.",
     )
+    trusted_proxy_ranges: Optional[List[str]] = Field(
+        None,
+        description="CIDR ranges of reverse proxies allowed to assert header-based identities.",
+    )
     mcp_xff_num_trusted_hops: Optional[int] = Field(
         None,
         ge=1,

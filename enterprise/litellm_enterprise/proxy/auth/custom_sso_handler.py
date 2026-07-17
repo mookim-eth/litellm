@@ -60,14 +60,24 @@ class EnterpriseCustomSSOHandler:
         from litellm.integrations.custom_sso_handler import CustomSSOLoginHandler
         from litellm.proxy.proxy_server import (
             CommonProxyErrors,
+            general_settings,
             premium_user,
             user_custom_ui_sso_sign_in_handler,
+        )
+        from litellm.proxy.auth.trusted_proxy_utils import (
+            require_trusted_proxy_request,
         )
         if premium_user is not True:
             raise ValueError(CommonProxyErrors.not_premium_user.value)
         
         if user_custom_ui_sso_sign_in_handler is None:
             raise ValueError("custom_ui_sso_sign_in_handler is not configured. Please set it in general_settings.")
+
+        require_trusted_proxy_request(
+            request=request,
+            general_settings=general_settings,
+            feature_name="Custom UI SSO",
+        )
         
         custom_sso_login_handler = cast(CustomSSOLoginHandler, user_custom_ui_sso_sign_in_handler)
         openid_response: OpenID = await custom_sso_login_handler.handle_custom_ui_sso_sign_in(
@@ -83,4 +93,4 @@ class EnterpriseCustomSSOHandler:
             received_response=None,
             generic_client_id=None,
             ui_access_mode=None,
-        ) 
+        )
