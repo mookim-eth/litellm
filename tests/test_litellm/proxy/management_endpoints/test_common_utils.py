@@ -486,3 +486,22 @@ class TestSetObjectMetadataField:
         ):
             _set_object_metadata_field(team, "model_rpm_limit", {"x": 1})
         assert team.metadata == {"model_rpm_limit": {"x": 1}}
+
+
+def test_non_admin_analytics_scope_requires_user_id():
+    from fastapi import HTTPException
+
+    from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints.common_utils import (
+        require_caller_user_id_for_non_admin,
+    )
+
+    service_account = UserAPIKeyAuth(
+        user_id=None,
+        user_role=LitellmUserRoles.INTERNAL_USER,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        require_caller_user_id_for_non_admin(service_account)
+
+    assert exc_info.value.status_code == 403

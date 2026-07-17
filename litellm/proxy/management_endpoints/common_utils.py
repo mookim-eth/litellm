@@ -1,5 +1,8 @@
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
+from fastapi import HTTPException, status
+from pydantic import BaseModel
+
 from litellm._logging import verbose_proxy_logger
 from litellm.caching import DualCache
 from litellm.proxy._types import (
@@ -27,6 +30,58 @@ def _user_has_admin_view(user_api_key_dict: UserAPIKeyAuth) -> bool:
         user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN
         or user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY
     )
+
+
+def require_caller_user_id_for_non_admin(
+    user_api_key_dict: UserAPIKeyAuth,
+) -> str:
+    """Fail closed when a non-admin analytics caller has no user scope."""
+    if user_api_key_dict.user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": (
+                    "Service-account keys cannot query user analytics. "
+                    "Use a user-bound key, or call as a proxy admin."
+                )
+            },
+        )
+    return user_api_key_dict.user_id
+
+
+def _check_passthrough_routes_caller_permission(
+    data: BaseModel,
+    user_api_key_dict: UserAPIKeyAuth,
+    *,
+    entity: str,
+) -> None:
+    """Reserve passthrough route grants for proxy administrators."""
+    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+
+    fields_set = getattr(data, "model_fields_set", set())
+    if "allowed_passthrough_routes" in fields_set:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": (
+                    "Only proxy admins can set `allowed_passthrough_routes` "
+                    f"on a {entity}."
+                )
+            },
+        )
+
+    metadata = getattr(data, "metadata", None)
+    if isinstance(metadata, dict) and "allowed_passthrough_routes" in metadata:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": (
+                    "Only proxy admins can set "
+                    f"`metadata.allowed_passthrough_routes` on a {entity}."
+                )
+            },
+        )
 
 
 def _is_user_team_admin(
