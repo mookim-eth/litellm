@@ -352,6 +352,28 @@ if MCP_AVAILABLE:
         allowed_routes = getattr(user_api_key_dict, "allowed_routes", None)
         return isinstance(allowed_routes, list) and len(allowed_routes) > 0
 
+    def _sanitize_mcp_server_for_non_admin(
+        mcp_server: LiteLLM_MCPServerTable,
+    ) -> LiteLLM_MCPServerTable:
+        """Remove credential-bearing connection details from non-admin views."""
+        sanitized = _redact_mcp_credentials(mcp_server)
+        sanitized.url = None
+        sanitized.spec_path = None
+        sanitized.static_headers = None
+        sanitized.extra_headers = []
+        sanitized.env = {}
+        sanitized.command = None
+        sanitized.args = []
+        sanitized.authorization_url = None
+        sanitized.token_url = None
+        sanitized.registration_url = None
+        return sanitized
+
+    def _sanitize_mcp_server_list_for_non_admin(
+        mcp_servers: Iterable[LiteLLM_MCPServerTable],
+    ) -> List[LiteLLM_MCPServerTable]:
+        return [_sanitize_mcp_server_for_non_admin(server) for server in mcp_servers]
+
     def _sanitize_mcp_server_for_virtual_key(
         mcp_server: LiteLLM_MCPServerTable,
     ) -> LiteLLM_MCPServerTable:
@@ -812,6 +834,9 @@ if MCP_AVAILABLE:
         if is_restricted_virtual_key:
             return _sanitize_mcp_server_list_for_virtual_key(redacted_mcp_servers)
 
+        if not _user_has_admin_view(user_api_key_dict):
+            return _sanitize_mcp_server_list_for_non_admin(redacted_mcp_servers)
+
         return redacted_mcp_servers
 
     @router.get(
@@ -1179,6 +1204,8 @@ if MCP_AVAILABLE:
         redacted = _redact_mcp_credentials(mcp_server)
         if is_restricted_virtual_key:
             return _sanitize_mcp_server_for_virtual_key(redacted)
+        if not is_admin_view:
+            return _sanitize_mcp_server_for_non_admin(redacted)
         return redacted
 
     @router.post(
