@@ -28,6 +28,7 @@ from ..common_utils import (
     DEFAULT_MAX_POLLING_TIME,
     DEFAULT_POLLING_INTERVAL,
     BlackForestLabsError,
+    assert_bfl_polling_url,
 )
 from .transformation import BlackForestLabsImageEditConfig
 
@@ -330,6 +331,7 @@ class BlackForestLabsImageEdit:
                 status_code=500,
                 message="No polling_url in BFL response",
             )
+        assert_bfl_polling_url(polling_url)
 
         # Get just the auth header for polling
         polling_headers = {"x-key": headers.get("x-key", "")}
@@ -415,6 +417,7 @@ class BlackForestLabsImageEdit:
                 status_code=500,
                 message="No polling_url in BFL response",
             )
+        assert_bfl_polling_url(polling_url)
 
         # Get just the auth header for polling
         polling_headers = {"x-key": headers.get("x-key", "")}

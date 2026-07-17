@@ -16,6 +16,7 @@ import litellm
 from litellm.constants import AZURE_OPERATION_POLLING_TIMEOUT, DEFAULT_MAX_RETRIES
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.logging_utils import track_llm_api_timing
+from litellm.litellm_core_utils.url_utils import SSRFError, assert_same_origin
 from litellm.llms.custom_httpx.http_handler import (
     AsyncHTTPHandler,
     HTTPHandler,
@@ -898,6 +899,13 @@ class AzureChatCompletion(BaseAzureLLM, BaseLLM):
                 operation_location_url = response.headers["operation-location"]
             else:
                 raise AzureOpenAIError(status_code=500, message=response.text)
+            try:
+                assert_same_origin(operation_location_url, api_base)
+            except SSRFError as exc:
+                raise AzureOpenAIError(
+                    status_code=502,
+                    message=f"Rejected polling URL: {exc}",
+                )
             response = await async_handler.get(
                 url=operation_location_url,
                 headers=headers,
@@ -908,8 +916,9 @@ class AzureChatCompletion(BaseAzureLLM, BaseLLM):
             timeout_secs: int = AZURE_OPERATION_POLLING_TIMEOUT
             start_time = time.time()
             if "status" not in response.json():
-                raise Exception(
-                    "Expected 'status' in response. Got={}".format(response.json())
+                raise AzureOpenAIError(
+                    status_code=502,
+                    message="Polling response missing 'status' field",
                 )
             while response.json()["status"] not in ["succeeded", "failed"]:
                 if time.time() - start_time > timeout_secs:
@@ -1009,6 +1018,13 @@ class AzureChatCompletion(BaseAzureLLM, BaseLLM):
                 operation_location_url = response.headers["operation-location"]
             else:
                 raise AzureOpenAIError(status_code=500, message=response.text)
+            try:
+                assert_same_origin(operation_location_url, api_base)
+            except SSRFError as exc:
+                raise AzureOpenAIError(
+                    status_code=502,
+                    message=f"Rejected polling URL: {exc}",
+                )
             response = sync_handler.get(
                 url=operation_location_url,
                 headers=headers,
@@ -1019,8 +1035,9 @@ class AzureChatCompletion(BaseAzureLLM, BaseLLM):
             timeout_secs: int = AZURE_OPERATION_POLLING_TIMEOUT
             start_time = time.time()
             if "status" not in response.json():
-                raise Exception(
-                    "Expected 'status' in response. Got={}".format(response.json())
+                raise AzureOpenAIError(
+                    status_code=502,
+                    message="Polling response missing 'status' field",
                 )
             while response.json()["status"] not in ["succeeded", "failed"]:
                 if time.time() - start_time > timeout_secs:

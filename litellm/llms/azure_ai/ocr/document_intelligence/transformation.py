@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from litellm._logging import verbose_logger
+from litellm.litellm_core_utils.url_utils import SSRFError, assert_same_origin
 from litellm.constants import (
     AZURE_DOCUMENT_INTELLIGENCE_API_VERSION,
     AZURE_DOCUMENT_INTELLIGENCE_DEFAULT_DPI,
@@ -507,6 +508,12 @@ class AzureDocumentIntelligenceOCRConfig(BaseOCRConfig):
                     raise ValueError(
                         "Azure Document Intelligence returned 202 but no Operation-Location header found"
                     )
+                try:
+                    assert_same_origin(operation_url, str(raw_response.request.url))
+                except SSRFError as exc:
+                    raise ValueError(
+                        f"Azure Document Intelligence: rejected polling URL ({exc})"
+                    )
 
                 # Get headers for polling (need auth)
                 poll_headers = {
@@ -618,6 +625,12 @@ class AzureDocumentIntelligenceOCRConfig(BaseOCRConfig):
                 if not operation_url:
                     raise ValueError(
                         "Azure Document Intelligence returned 202 but no Operation-Location header found"
+                    )
+                try:
+                    assert_same_origin(operation_url, str(raw_response.request.url))
+                except SSRFError as exc:
+                    raise ValueError(
+                        f"Azure Document Intelligence: rejected polling URL ({exc})"
                     )
 
                 # Get headers for polling (need auth)
