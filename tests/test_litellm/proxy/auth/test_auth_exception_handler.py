@@ -31,6 +31,29 @@ from litellm.proxy.auth.auth_exception_handler import UserAPIKeyAuthExceptionHan
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "prisma_error", [HTTPClientClosedError(), ClientNotConnectedError()]
+)
+async def test_db_transport_error_uses_restricted_fallback(prisma_error):
+    with patch(
+        "litellm.proxy.proxy_server.general_settings",
+        {"allow_requests_on_db_unavailable": True},
+    ):
+        result = await UserAPIKeyAuthExceptionHandler._handle_authentication_error(
+            prisma_error,
+            MagicMock(),
+            {},
+            "/test",
+            None,
+            "test-key",
+        )
+
+    assert result.key_name == "failed-to-connect-to-db"
+    assert result.user_id == "__db_unavailable_fallback__"
+    assert result.user_role == "internal_user"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "prisma_error",
     [
         PrismaError(),
@@ -51,11 +74,9 @@ from litellm.proxy.auth.auth_exception_handler import UserAPIKeyAuthExceptionHan
         RecordNotFoundError(
             data={"user_facing_error": {"meta": {"table": "test_table"}}}
         ),
-        HTTPClientClosedError(),
-        ClientNotConnectedError(),
     ],
 )
-async def test_handle_authentication_error_db_unavailable(prisma_error):
+async def test_db_data_errors_do_not_use_fallback(prisma_error):
     handler = UserAPIKeyAuthExceptionHandler()
 
     # Mock request and other dependencies
@@ -70,16 +91,15 @@ async def test_handle_authentication_error_db_unavailable(prisma_error):
         "litellm.proxy.proxy_server.general_settings",
         {"allow_requests_on_db_unavailable": True},
     ):
-        result = await handler._handle_authentication_error(
-            prisma_error,
-            mock_request,
-            mock_request_data,
-            mock_route,
-            mock_span,
-            mock_api_key,
-        )
-        assert result.key_name == "failed-to-connect-to-db"
-        assert result.token == "failed-to-connect-to-db"
+        with pytest.raises(ProxyException):
+            await handler._handle_authentication_error(
+                prisma_error,
+                mock_request,
+                mock_request_data,
+                mock_route,
+                mock_span,
+                mock_api_key,
+            )
 
 
 @pytest.mark.asyncio

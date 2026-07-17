@@ -30,6 +30,7 @@ from litellm.proxy.auth.auth_checks import (
     _cache_key_object,
     _delete_cache_key_object,
     _get_user_role,
+    _is_model_cost_zero,
     _is_user_proxy_admin,
     _virtual_key_max_budget_alert_check,
     _virtual_key_max_budget_check,
@@ -803,7 +804,6 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                     user_id = result["user_id"]
                     user_object = result["user_object"]
                     end_user_id = result["end_user_id"]
-                    end_user_object = result["end_user_object"]
                     org_id = result["org_id"]
                     token = result["token"]
                     team_membership: Optional[LiteLLM_TeamMembership] = result.get(
@@ -914,23 +914,6 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                         if _jwt_project_obj is not None:
                             valid_token.project_metadata = _jwt_project_obj.metadata
                             valid_token.project_alias = _jwt_project_obj.project_alias
-
-                    # run through common checks
-                    _ = await common_checks(
-                        request=request,
-                        request_body=request_data,
-                        team_object=team_object,
-                        user_object=user_object,
-                        end_user_object=end_user_object,
-                        general_settings=general_settings,
-                        global_proxy_spend=global_proxy_spend,
-                        route=route,
-                        llm_router=llm_router,
-                        proxy_logging_obj=proxy_logging_obj,
-                        valid_token=valid_token,
-                        skip_budget_checks=skip_budget_checks,
-                        project_object=_jwt_project_obj,
-                    )
 
                     # return UserAPIKeyAuth object
                     return cast(UserAPIKeyAuth, valid_token)
@@ -1516,22 +1499,6 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                             user_info=call_info,
                         )
                     )
-            with tracer.trace("litellm.proxy.auth.common_checks"):
-                _ = await common_checks(
-                    request=request,
-                    request_body=request_data,
-                    team_object=_team_obj,
-                    user_object=user_obj,
-                    end_user_object=_end_user_object,
-                    general_settings=general_settings,
-                    global_proxy_spend=global_proxy_spend,
-                    route=route,
-                    llm_router=llm_router,
-                    proxy_logging_obj=proxy_logging_obj,
-                    valid_token=valid_token,
-                    skip_budget_checks=skip_budget_checks,
-                    project_object=_project_obj,
-                )
             # Token passed all checks
             if valid_token is None:
                 raise HTTPException(401, detail="Invalid API key")
@@ -1585,6 +1552,184 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
         )
 
 
+async def _auth_context_fetch(label: str, awaitable: Any) -> Any:
+    try:
+        return await awaitable
+    except (HTTPException, ProxyException):
+        raise
+    except Exception as exc:
+        verbose_proxy_logger.debug(
+            "centralized auth context fetch %s failed: %s",
+            label,
+            type(exc).__name__,
+        )
+        return None
+
+
+async def _none_auth_context() -> None:
+    return None
+
+
+def _team_obj_from_auth_token(
+    token: UserAPIKeyAuth,
+) -> LiteLLM_TeamTableCachedObj:
+    return LiteLLM_TeamTableCachedObj(
+        team_id=token.team_id,
+        max_budget=token.team_max_budget,
+        soft_budget=token.team_soft_budget,
+        spend=token.team_spend,
+        tpm_limit=token.team_tpm_limit,
+        rpm_limit=token.team_rpm_limit,
+        blocked=token.team_blocked,
+        models=token.team_models,
+        metadata=token.team_metadata,
+        object_permission_id=token.team_object_permission_id,
+    )
+
+
+@tracer.wrap()
+async def _run_centralized_common_checks(
+    user_api_key_auth_obj: UserAPIKeyAuth,
+    request: Request,
+    request_data: dict,
+    route: str,
+) -> None:
+    """Run the authorization invariant once after every authentication path."""
+    from litellm.proxy.proxy_server import (
+        general_settings,
+        litellm_proxy_admin_name,
+        llm_router,
+        master_key,
+        prisma_client,
+        proxy_logging_obj,
+        user_api_key_cache,
+        user_custom_auth,
+    )
+
+    if master_key is None:
+        return
+    if user_custom_auth is not None and not general_settings.get(
+        "custom_auth_run_common_checks", False
+    ):
+        return
+
+    parent_span = user_api_key_auth_obj.parent_otel_span
+    end_user_id = get_end_user_id_from_request_body(
+        request_data, _safe_get_request_headers(request)
+    )
+
+    team_fetch = (
+        get_team_object(
+            team_id=user_api_key_auth_obj.team_id,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            parent_otel_span=parent_span,
+            proxy_logging_obj=proxy_logging_obj,
+        )
+        if user_api_key_auth_obj.team_id is not None
+        else _none_auth_context()
+    )
+    user_fetch = (
+        get_user_object(
+            user_id=user_api_key_auth_obj.user_id,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            user_id_upsert=False,
+            parent_otel_span=parent_span,
+            proxy_logging_obj=proxy_logging_obj,
+        )
+        if user_api_key_auth_obj.user_id is not None
+        else _none_auth_context()
+    )
+    project_fetch = (
+        get_project_object(
+            project_id=user_api_key_auth_obj.project_id,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            proxy_logging_obj=proxy_logging_obj,
+        )
+        if user_api_key_auth_obj.project_id is not None
+        else _none_auth_context()
+    )
+    end_user_fetch = (
+        get_end_user_object(
+            end_user_id=end_user_id,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            parent_otel_span=parent_span,
+            proxy_logging_obj=proxy_logging_obj,
+            route=route,
+        )
+        if end_user_id
+        else _none_auth_context()
+    )
+
+    try:
+        (
+            team_object,
+            user_object,
+            project_object,
+            end_user_object,
+            global_proxy_spend,
+        ) = await asyncio.gather(
+            _auth_context_fetch("team", team_fetch),
+            _auth_context_fetch("user", user_fetch),
+            _auth_context_fetch("project", project_fetch),
+            _auth_context_fetch("end_user", end_user_fetch),
+            _auth_context_fetch(
+                "global_spend",
+                get_global_proxy_spend(
+                    litellm_proxy_admin_name=litellm_proxy_admin_name,
+                    user_api_key_cache=user_api_key_cache,
+                    prisma_client=prisma_client,
+                    token=user_api_key_auth_obj.token or "",
+                    proxy_logging_obj=proxy_logging_obj,
+                ),
+            ),
+        )
+    except HTTPException:
+        team_object = _team_obj_from_auth_token(user_api_key_auth_obj)
+        user_object = None
+        project_object = None
+        end_user_object = None
+        global_proxy_spend = None
+
+    if (
+        user_object is None
+        and user_api_key_auth_obj.user_role == LitellmUserRoles.PROXY_ADMIN
+    ):
+        user_object = LiteLLM_UserTable(
+            user_id=user_api_key_auth_obj.user_id or litellm_proxy_admin_name,
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            spend=0.0,
+        )
+
+    if project_object is not None:
+        user_api_key_auth_obj.project_metadata = project_object.metadata
+        user_api_key_auth_obj.project_alias = project_object.project_alias
+
+    skip_budget_checks = False
+    model = get_model_from_request(request_data, route)
+    if model is not None and llm_router is not None:
+        skip_budget_checks = _is_model_cost_zero(model=model, llm_router=llm_router)
+
+    await common_checks(
+        request=request,
+        request_body=request_data,
+        team_object=team_object,
+        user_object=user_object,
+        end_user_object=end_user_object,
+        general_settings=general_settings,
+        global_proxy_spend=global_proxy_spend,
+        route=route,
+        llm_router=llm_router,
+        proxy_logging_obj=proxy_logging_obj,
+        valid_token=user_api_key_auth_obj,
+        skip_budget_checks=skip_budget_checks,
+        project_object=project_object,
+    )
+
+
 @tracer.wrap()
 async def user_api_key_auth(
     request: Request,
@@ -1625,6 +1770,23 @@ async def user_api_key_auth(
 
     ## ENSURE DISABLE ROUTE WORKS ACROSS ALL USER AUTH FLOWS ##
     RouteChecks.should_call_route(route=route, valid_token=user_api_key_auth_obj)
+
+    try:
+        await _run_centralized_common_checks(
+            user_api_key_auth_obj=user_api_key_auth_obj,
+            request=request,
+            request_data=request_data,
+            route=route,
+        )
+    except Exception as exc:
+        return await UserAPIKeyAuthExceptionHandler._handle_authentication_error(
+            e=exc,
+            request=request,
+            request_data=request_data,
+            route=route,
+            parent_otel_span=user_api_key_auth_obj.parent_otel_span,
+            api_key=api_key,
+        )
 
     end_user_id = get_end_user_id_from_request_body(
         request_data, _safe_get_request_headers(request)
@@ -2007,83 +2169,6 @@ async def _run_post_custom_auth_checks(
             end_user_id=valid_token.end_user_id,
             end_user_model_max_budget=end_user_mmb,
             model=current_model,
-        )
-
-    # 5. Look up user object if user_id is set
-    user_object = None
-    if valid_token.user_id is not None:
-        try:
-            user_object = await get_user_object(
-                user_id=valid_token.user_id,
-                prisma_client=prisma_client,
-                user_api_key_cache=user_api_key_cache,
-                user_id_upsert=False,
-                parent_otel_span=parent_otel_span,
-                proxy_logging_obj=proxy_logging_obj,
-            )
-        except Exception:
-            # If user_role is PROXY_ADMIN on the token, create a synthetic user object
-            # so that admin route checks pass for custom auth
-            if valid_token.user_role == LitellmUserRoles.PROXY_ADMIN:
-                user_object = LiteLLM_UserTable(
-                    user_id=valid_token.user_id,
-                    user_role=LitellmUserRoles.PROXY_ADMIN,
-                    spend=0.0,
-                )
-
-    # 6. Run common checks
-    if valid_token.team_id is not None:
-        try:
-            _team_obj = await get_team_object(
-                team_id=valid_token.team_id,
-                prisma_client=prisma_client,
-                user_api_key_cache=user_api_key_cache,
-                parent_otel_span=parent_otel_span,
-                proxy_logging_obj=proxy_logging_obj,
-            )
-        except HTTPException:
-            _team_obj = LiteLLM_TeamTableCachedObj(
-                team_id=valid_token.team_id,
-                max_budget=valid_token.team_max_budget,
-                soft_budget=valid_token.team_soft_budget,
-                spend=valid_token.team_spend,
-                tpm_limit=valid_token.team_tpm_limit,
-                rpm_limit=valid_token.team_rpm_limit,
-                blocked=valid_token.team_blocked,
-                models=valid_token.team_models,
-                metadata=valid_token.team_metadata,
-                object_permission_id=valid_token.team_object_permission_id,
-            )
-    else:
-        _team_obj = None
-
-    _project_obj = None
-    if valid_token.project_id is not None:
-        _project_obj = await get_project_object(
-            project_id=valid_token.project_id,
-            prisma_client=prisma_client,
-            user_api_key_cache=user_api_key_cache,
-            proxy_logging_obj=proxy_logging_obj,
-        )
-        if _project_obj is not None:
-            valid_token.project_metadata = _project_obj.metadata
-            valid_token.project_alias = _project_obj.project_alias
-
-    if general_settings.get("custom_auth_run_common_checks", False):
-        _ = await common_checks(
-            request=request,
-            request_body=request_data,
-            team_object=_team_obj,
-            user_object=user_object,
-            end_user_object=end_user_object,
-            general_settings=general_settings,
-            global_proxy_spend=None,
-            route=route,
-            llm_router=llm_router,
-            proxy_logging_obj=proxy_logging_obj,
-            valid_token=valid_token,
-            skip_budget_checks=False,
-            project_object=_project_obj,
         )
 
     return valid_token

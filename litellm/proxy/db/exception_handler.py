@@ -82,20 +82,8 @@ class PrismaDBExceptionHandler:
 
     @staticmethod
     def is_database_connection_error(e: Exception) -> bool:
-        """
-        Returns True if the exception is from a database outage / connection error.
-        Any PrismaError qualifies — the DB failed to serve the request.
-        Used by allow_requests_on_db_unavailable logic and endpoint 503 responses.
-        """
-        import prisma
-
-        if isinstance(e, DB_CONNECTION_ERROR_TYPES):
-            return True
-        if PrismaDBExceptionHandler.is_prisma_client_not_connected_error(e):
-            return True
-        if PrismaDBExceptionHandler.is_prisma_http_client_closed_error(e):
-            return True
-        if isinstance(e, prisma.errors.PrismaError):
+        """Match connectivity failures, never ordinary Prisma data errors."""
+        if PrismaDBExceptionHandler.is_database_transport_error(e):
             return True
         if isinstance(e, ProxyException) and e.type == ProxyErrorTypes.no_db_connection:
             return True

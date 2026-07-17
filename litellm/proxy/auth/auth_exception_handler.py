@@ -9,11 +9,18 @@ from fastapi import HTTPException, Request, status
 
 import litellm
 from litellm._logging import verbose_proxy_logger
-from litellm.proxy._types import ProxyErrorTypes, ProxyException, UserAPIKeyAuth
+from litellm.proxy._types import (
+    LitellmUserRoles,
+    ProxyErrorTypes,
+    ProxyException,
+    UserAPIKeyAuth,
+)
 from litellm.proxy.auth.auth_utils import _get_request_ip_address
 from litellm.proxy.common_utils.http_parsing_utils import _safe_get_request_headers
 from litellm.proxy.db.exception_handler import PrismaDBExceptionHandler
 from litellm.types.services import ServiceTypes
+
+DB_UNAVAILABLE_FALLBACK_USER_ID = "__db_unavailable_fallback__"
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
@@ -191,7 +198,6 @@ class UserAPIKeyAuthExceptionHandler:
         """
         from litellm.proxy.proxy_server import (
             general_settings,
-            litellm_proxy_admin_name,
             proxy_logging_obj,
         )
 
@@ -210,7 +216,8 @@ class UserAPIKeyAuthExceptionHandler:
             return UserAPIKeyAuth(
                 key_name="failed-to-connect-to-db",
                 token="failed-to-connect-to-db",
-                user_id=litellm_proxy_admin_name,
+                user_id=DB_UNAVAILABLE_FALLBACK_USER_ID,
+                user_role=LitellmUserRoles.INTERNAL_USER,
                 request_route=route,
             )
         else:
