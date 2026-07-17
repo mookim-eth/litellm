@@ -3557,12 +3557,18 @@ def _model_custom_llm_provider_matches_wildcard_pattern(
     - `allowed_model_pattern=anthropic/*`
     """
     try:
-        model, custom_llm_provider, _, _ = get_llm_provider(model=model)
+        stripped_model, custom_llm_provider, _, _ = get_llm_provider(model=model)
     except Exception:
         return False
 
+    # If provider inference left a slash-containing namespace untouched, it
+    # was inferred from a fragment of an unrecognized full name. Do not let
+    # that name inherit a provider wildcard such as `bedrock/*`.
+    if stripped_model == model and "/" in model:
+        return False
+
     return is_model_allowed_by_pattern(
-        model=f"{custom_llm_provider}/{model}",
+        model=f"{custom_llm_provider}/{stripped_model}",
         allowed_model_pattern=allowed_model_pattern,
     )
 
