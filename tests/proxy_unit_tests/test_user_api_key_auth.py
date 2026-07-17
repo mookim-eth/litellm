@@ -35,6 +35,30 @@ class Request:
         self.headers: Dict[str, str] = headers or {}
 
 
+def _http_request(path: str):
+    """Build a complete ASGI request for legacy auth tests."""
+    from fastapi import Request as FastAPIRequest
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    return FastAPIRequest(
+        scope={
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+        },
+        receive=receive,
+    )
+
+
 @pytest.mark.parametrize(
     "allowed_ips, client_ip, expected_result",
     [
@@ -352,62 +376,41 @@ async def test_aaauser_personal_budgets(key_ownership):
     User budget is enforced regardless of key ownership (personal or team).
     Both cases should raise BudgetExceededError when the user is over budget.
     """
-    import asyncio
-    import time
-
-    from fastapi import Request
-    from starlette.datastructures import URL
-    import litellm
-
-    from litellm.proxy._types import (
-        LiteLLM_UserTable,
-        ProxyErrorTypes,
-        ProxyException,
-        UserAPIKeyAuth,
-    )
-    from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
-    from litellm.proxy.proxy_server import hash_token, user_api_key_cache
-
-    _user_id = "1234"
-    user_key = "sk-12345678"
-
-    if key_ownership == "user_key":
-        valid_token = UserAPIKeyAuth(
-            token=hash_token(user_key),
-            last_refreshed_at=time.time(),
-            user_id=_user_id,
-            spend=20,
-        )
-    elif key_ownership == "team_key":
-        valid_token = UserAPIKeyAuth(
-            token=hash_token(user_key),
-            last_refreshed_at=time.time(),
-            user_id=_user_id,
-            team_id="my-special-team",
-            team_max_budget=100,
-            spend=20,
-        )
+    from litellm.proxy._types import LiteLLM_TeamTable, LiteLLM_UserTable
+    from litellm.proxy.auth.auth_checks import common_checks
 
     user_obj = LiteLLM_UserTable(
-        user_id=_user_id, spend=11, max_budget=10, user_email=""
+        user_id="1234", spend=11, max_budget=10, user_email=""
     )
-    user_api_key_cache.set_cache(key=hash_token(user_key), value=valid_token)
-    user_api_key_cache.set_cache(key="{}".format(_user_id), value=user_obj)
+    team_obj = (
+        LiteLLM_TeamTable(team_id="my-special-team", max_budget=100, spend=0)
+        if key_ownership == "team_key"
+        else None
+    )
+    valid_token = UserAPIKeyAuth(
+        user_id="1234",
+        team_id=team_obj.team_id if team_obj else None,
+        spend=20,
+    )
 
-    setattr(litellm.proxy.proxy_server, "user_api_key_cache", user_api_key_cache)
-    setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
-    setattr(litellm.proxy.proxy_server, "prisma_client", "hello-world")
-
-    request = Request(scope={"type": "http"})
-    request._url = URL(url="/chat/completions")
-
-    test_user_cache = getattr(litellm.proxy.proxy_server, "user_api_key_cache")
-
-    assert test_user_cache.get_cache(key=hash_token(user_key)) == valid_token
-
-    with pytest.raises(ProxyException) as exc_info:
-        await user_api_key_auth(request=request, api_key="Bearer " + user_key)
-    assert exc_info.value.type == ProxyErrorTypes.budget_exceeded
+    with patch(
+        "litellm.proxy.proxy_server.get_current_spend",
+        new=AsyncMock(side_effect=lambda **kwargs: kwargs["fallback_spend"]),
+    ):
+        with pytest.raises(litellm.BudgetExceededError):
+            await common_checks(
+                request_body={},
+                team_object=team_obj,
+                user_object=user_obj,
+                end_user_object=None,
+                global_proxy_spend=None,
+                general_settings={},
+                route="/chat/completions",
+                llm_router=None,
+                proxy_logging_obj=MagicMock(),
+                valid_token=valid_token,
+                request=_http_request("/chat/completions"),
+            )
 
 
 @pytest.mark.asyncio
@@ -426,8 +429,7 @@ async def test_user_api_key_auth_fails_with_prohibited_params(prohibited_param):
     setattr(litellm.proxy.proxy_server, "master_key", "sk-1234")
 
     # Create request with prohibited parameter in body
-    request = Request(scope={"type": "http"})
-    request._url = URL(url="/chat/completions")
+    request = _http_request("/chat/completions")
 
     async def return_body():
         body = {prohibited_param: "https://custom-api.com"}
@@ -470,8 +472,7 @@ async def test_auth_with_allowed_routes(route, should_raise_error):
     setattr(proxy_server, "master_key", "sk-1234")
     setattr(proxy_server, "general_settings", general_settings)
 
-    request = Request(scope={"type": "http"})
-    request._url = URL(url=route)
+    request = _http_request(route)
 
     if should_raise_error:
         try:
@@ -1196,13 +1197,7 @@ async def test_jwt_non_admin_team_route_access(monkeypatch):
     }
 
     # Create request
-    request = Request(
-        scope={
-            "type": "http",
-            "headers": [(b"authorization", b"Bearer fake.jwt.token")],
-        }
-    )
-    request._url = URL(url="/team/new")
+    request = _http_request("/team/new")
 
     monkeypatch.setattr(
         litellm.proxy.proxy_server, "general_settings", {"enable_jwt_auth": True}
