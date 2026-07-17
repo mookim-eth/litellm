@@ -986,12 +986,13 @@ async def update_user(
         existing_user = await _check_user_exists(user_id)
         previous_active = _scim_active_value(existing_user.metadata)
 
-        # Extract data from SCIM user
         user_data = _extract_scim_user_data(user)
-
-        # Build metadata with SCIM data
+        client_set_active = "active" in user.model_fields_set
+        active_for_metadata = (
+            user_data["active"] if client_set_active else previous_active
+        )
         metadata = _build_scim_metadata(
-            user_data["given_name"], user_data["family_name"], user_data["active"]
+            user_data["given_name"], user_data["family_name"], active_for_metadata
         )
 
         # Handle team membership changes
@@ -1021,11 +1022,12 @@ async def update_user(
             data=update_data,
         )
 
-        new_active = _scim_active_value(metadata)
-        if new_active is not None and new_active != (
-            True if previous_active is None else previous_active
-        ):
-            await _set_user_keys_blocked(user_id=user_id, blocked=not new_active)
+        if client_set_active:
+            new_active = _scim_active_value(metadata)
+            if new_active is not None and new_active != (
+                True if previous_active is None else previous_active
+            ):
+                await _set_user_keys_blocked(user_id=user_id, blocked=not new_active)
 
         # Convert back to SCIM format
         scim_user = await ScimTransformations.transform_litellm_user_to_scim_user(

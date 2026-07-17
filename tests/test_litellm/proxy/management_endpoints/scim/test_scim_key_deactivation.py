@@ -7,10 +7,12 @@ from litellm.proxy.management_endpoints.scim.scim_v2 import (
     _set_user_keys_blocked,
     delete_user,
     patch_user,
+    update_user,
 )
 from litellm.types.proxy.management_endpoints.scim_v2 import (
     SCIMPatchOp,
     SCIMPatchOperation,
+    SCIMUser,
 )
 
 
@@ -126,3 +128,41 @@ async def test_scim_patch_inactive_blocks_existing_keys():
         await patch_user(user_id="user-1", patch_ops=patch_ops)
 
     set_blocked.assert_awaited_once_with(user_id="user-1", blocked=True)
+
+
+@pytest.mark.asyncio
+async def test_scim_put_without_active_preserves_inactive_state():
+    existing = LiteLLM_UserTable(
+        user_id="user-1", teams=[], metadata={"scim_active": False}
+    )
+    updated = LiteLLM_UserTable(
+        user_id="user-1", teams=[], metadata={"scim_active": False}
+    )
+    prisma = MagicMock()
+    prisma.db.litellm_usertable.find_unique = AsyncMock(return_value=existing)
+    prisma.db.litellm_usertable.update = AsyncMock(return_value=updated)
+    user = SCIMUser(
+        schemas=["urn:ietf:params:scim:schemas:core:2.0:User"],
+        userName="user-1",
+    )
+    assert "active" not in user.model_fields_set
+
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client", prisma),
+        patch(
+            "litellm.proxy.management_endpoints.scim.scim_v2._set_user_keys_blocked",
+            new_callable=AsyncMock,
+        ) as set_blocked,
+        patch(
+            "litellm.proxy.management_endpoints.scim.scim_v2.ScimTransformations.transform_litellm_user_to_scim_user",
+            new_callable=AsyncMock,
+            return_value=MagicMock(active=False),
+        ),
+    ):
+        await update_user(user_id="user-1", user=user)
+
+    metadata_json = prisma.db.litellm_usertable.update.await_args.kwargs["data"][
+        "metadata"
+    ]
+    assert '"scim_active": false' in metadata_json
+    set_blocked.assert_not_awaited()
