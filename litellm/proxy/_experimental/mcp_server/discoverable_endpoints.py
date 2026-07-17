@@ -302,6 +302,25 @@ async def _store_per_user_token_server_side(
     )
 
 
+def _raise_if_not_oauth2(mcp_server: MCPServer) -> None:
+    if mcp_server.auth_type == MCPAuth.oauth2:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail={"error": "server_not_oauth2", "message": "MCP server is not OAuth2"},
+    )
+
+
+def _raise_unless_oauth2_discovery_server(
+    mcp_server: Optional[MCPServer], mcp_server_name: Optional[str]
+) -> None:
+    if mcp_server_name is None:
+        return
+    if mcp_server is not None and mcp_server.auth_type == MCPAuth.oauth2:
+        return
+    raise HTTPException(status_code=404, detail="MCP OAuth server not found")
+
+
 async def authorize_with_server(
     request: Request,
     mcp_server: MCPServer,
@@ -313,8 +332,7 @@ async def authorize_with_server(
     response_type: Optional[str] = None,
     scope: Optional[str] = None,
 ):
-    if mcp_server.auth_type != "oauth2":
-        raise HTTPException(status_code=400, detail="MCP server is not OAuth2")
+    _raise_if_not_oauth2(mcp_server)
     if mcp_server.authorization_url is None:
         raise HTTPException(
             status_code=400, detail="MCP server authorization url is not set"
@@ -366,6 +384,7 @@ async def exchange_token_with_server(
     refresh_token: Optional[str] = None,
     scope: Optional[str] = None,
 ):
+    _raise_if_not_oauth2(mcp_server)
     if grant_type not in ("authorization_code", "refresh_token"):
         raise HTTPException(status_code=400, detail="Unsupported grant_type")
 
@@ -482,6 +501,7 @@ async def register_client_with_server(
     token_endpoint_auth_method: Optional[str],
     fallback_client_id: Optional[str] = None,
 ):
+    _raise_if_not_oauth2(mcp_server)
     request_base_url = get_request_base_url(request)
     dummy_return = {
         "client_id": fallback_client_id or mcp_server.server_name,
@@ -713,6 +733,7 @@ def _build_oauth_protected_resource_response(
         mcp_server = global_mcp_server_manager.get_mcp_server_by_name(
             mcp_server_name, client_ip=client_ip
         )
+    _raise_unless_oauth2_discovery_server(mcp_server, mcp_server_name)
 
     # Build resource URL based on the pattern
     if mcp_server_name:
@@ -840,6 +861,7 @@ def _build_oauth_authorization_server_response(
         mcp_server = global_mcp_server_manager.get_mcp_server_by_name(
             mcp_server_name, client_ip=client_ip
         )
+    _raise_unless_oauth2_discovery_server(mcp_server, mcp_server_name)
 
     return {
         "issuer": request_base_url,  # point to your proxy

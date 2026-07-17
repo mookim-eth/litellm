@@ -23,6 +23,87 @@ def mock_mcp_client_ip():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation", ["authorize", "token", "register"]
+)
+async def test_oauth_operations_reject_non_oauth_server(operation):
+    from litellm.proxy._types import MCPTransport
+    from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
+        authorize_with_server,
+        exchange_token_with_server,
+        register_client_with_server,
+    )
+    from litellm.types.mcp import MCPAuth
+    from litellm.types.mcp_server.mcp_server_manager import MCPServer
+
+    server = MCPServer(
+        server_id="non-oauth",
+        name="non-oauth",
+        server_name="non-oauth",
+        alias="non-oauth",
+        transport=MCPTransport.http,
+        auth_type=MCPAuth.none,
+        url="https://example.com/mcp",
+    )
+    request = MagicMock()
+    request.base_url = "https://proxy.example/"
+    request.headers = {}
+
+    calls = {
+        "authorize": lambda: authorize_with_server(
+            request=request,
+            mcp_server=server,
+            client_id="client",
+            redirect_uri="https://client.example/callback",
+        ),
+        "token": lambda: exchange_token_with_server(
+            request=request,
+            mcp_server=server,
+            grant_type="authorization_code",
+            code="code",
+            redirect_uri="https://client.example/callback",
+            client_id="client",
+            client_secret=None,
+            code_verifier=None,
+        ),
+        "register": lambda: register_client_with_server(
+            request=request,
+            mcp_server=server,
+            client_name="client",
+            grant_types=None,
+            response_types=None,
+            token_endpoint_auth_method=None,
+        ),
+    }
+    with pytest.raises(HTTPException) as exc:
+        await calls[operation]()
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"] == "server_not_oauth2"
+
+
+def test_named_oauth_discovery_hides_non_oauth_server():
+    from litellm.proxy._types import MCPTransport
+    from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
+        _raise_unless_oauth2_discovery_server,
+    )
+    from litellm.types.mcp import MCPAuth
+    from litellm.types.mcp_server.mcp_server_manager import MCPServer
+
+    server = MCPServer(
+        server_id="non-oauth",
+        name="non-oauth",
+        server_name="non-oauth",
+        alias="non-oauth",
+        transport=MCPTransport.http,
+        auth_type=MCPAuth.none,
+        url="https://example.com/mcp",
+    )
+    with pytest.raises(HTTPException) as exc:
+        _raise_unless_oauth2_discovery_server(server, "non-oauth")
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_authorize_endpoint_includes_response_type():
     """Test that authorize endpoint includes response_type=code parameter (fixes #15684)"""
     try:
