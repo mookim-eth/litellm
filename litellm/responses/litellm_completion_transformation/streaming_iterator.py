@@ -3,6 +3,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Union, cast
 
 import litellm
+from openai.types.responses import ResponseCustomToolCallInputDoneEvent
 from litellm.main import stream_chunk_builder
 from litellm.responses.litellm_completion_transformation.transformation import (
     LiteLLMCompletionResponsesConfig,
@@ -95,10 +96,9 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         self._tool_output_index_by_call_id: dict[str, int] = {}
         self._tool_args_by_call_id: dict[str, str] = {}
         self._tool_call_id_by_index: dict[int, str] = {}
+        self._tool_name_by_call_id: dict[str, str] = {}
         self._ambiguous_tool_call_indexes: set[int] = set()
-        self._next_tool_output_index: int = (
-            1  # output_index=0 reserved for the message item
-        )
+        self._next_tool_output_index: int = 0
         self._final_tool_events_queued: bool = False
         self._sequence_number: int = 0
         self._cached_reasoning_item_id: Optional[str] = None
@@ -112,6 +112,41 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         self._reasoning_item_id: Optional[str] = None
         self._accumulated_reasoning_content_parts: List[str] = []
         self._accumulated_provider_specific_fields: Dict[str, Any] = {}
+
+    def _is_custom_tool_name(self, name: str) -> bool:
+        return name in LiteLLMCompletionResponsesConfig._get_custom_tool_names(
+            self.responses_api_request.get("tools")
+        )
+
+    def _get_tool_function_fields(
+        self, tool_call: object, call_id: str
+    ) -> tuple[str, str, bool]:
+        function = (
+            tool_call.get("function")
+            if isinstance(tool_call, dict)
+            else getattr(tool_call, "function", None)
+        )
+        name = str(
+            (
+                function.get("name")
+                if isinstance(function, dict)
+                else getattr(function, "name", "")
+            )
+            or ""
+        )
+        arguments = str(
+            (
+                function.get("arguments")
+                if isinstance(function, dict)
+                else getattr(function, "arguments", "")
+            )
+            or ""
+        )
+        if name:
+            self._tool_name_by_call_id[call_id] = name
+        else:
+            name = self._tool_name_by_call_id.get(call_id, "")
+        return name, arguments, self._is_custom_tool_name(name)
 
     async def aclose(self) -> None:
         """Close the wrapped Chat Completions stream without using HTTP iterator state."""
@@ -195,19 +230,9 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             if not call_id:
                 continue
 
-            fn = (
-                tc.get("function")
-                if isinstance(tc, dict)
-                else getattr(tc, "function", None)
+            fn_name, fn_args_delta, is_custom_tool = self._get_tool_function_fields(
+                tc, call_id
             )
-            fn_name = ""
-            fn_args_delta = ""
-            if isinstance(fn, dict):
-                fn_name = str(fn.get("name") or "")
-                fn_args_delta = str(fn.get("arguments") or "")
-            else:
-                fn_name = str(getattr(fn, "name", "") or "")
-                fn_args_delta = str(getattr(fn, "arguments", "") or "")
 
             output_index = self._get_or_assign_tool_output_index(call_id)
 
@@ -219,11 +244,15 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                     output_index=output_index,
                     item=BaseLiteLLMOpenAIResponseObject(
                         **{
-                            "type": "function_call",
+                            "type": (
+                                "custom_tool_call"
+                                if is_custom_tool
+                                else "function_call"
+                            ),
                             "id": call_id,
                             "call_id": call_id,
                             "name": fn_name,
-                            "arguments": "",
+                            **({"input": ""} if is_custom_tool else {"arguments": ""}),
                             "status": "in_progress",
                         }
                     ),
@@ -233,6 +262,11 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
 
             if fn_args_delta:
                 self._tool_args_by_call_id[call_id] += fn_args_delta
+
+                # The upstream function arguments wrap custom-tool input in
+                # JSON, so emit custom input only after the wrapper is complete.
+                if is_custom_tool:
+                    continue
 
                 # Split large argument deltas into smaller chunks to match OpenAI's streaming behavior
                 # This is especially important for providers like Bedrock that send complete arguments at once
@@ -280,19 +314,9 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             call_id = str(call_id_raw)
             output_index = self._get_or_assign_tool_output_index(call_id)
 
-            fn = (
-                tc.get("function")
-                if isinstance(tc, dict)
-                else getattr(tc, "function", None)
+            fn_name, fn_args, is_custom_tool = self._get_tool_function_fields(
+                tc, call_id
             )
-            fn_name = ""
-            fn_args = ""
-            if isinstance(fn, dict):
-                fn_name = str(fn.get("name") or "")
-                fn_args = str(fn.get("arguments") or "")
-            else:
-                fn_name = str(getattr(fn, "name", "") or "")
-                fn_args = str(getattr(fn, "arguments", "") or "")
 
             # Track if this is a new tool call that wasn't streamed
             is_new_tool_call = call_id not in self._tool_args_by_call_id
@@ -306,11 +330,15 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                     output_index=output_index,
                     item=BaseLiteLLMOpenAIResponseObject(
                         **{
-                            "type": "function_call",
+                            "type": (
+                                "custom_tool_call"
+                                if is_custom_tool
+                                else "function_call"
+                            ),
                             "id": call_id,
                             "call_id": call_id,
                             "name": fn_name,
-                            "arguments": "",
+                            **({"input": ""} if is_custom_tool else {"arguments": ""}),
                             "status": "in_progress",
                         }
                     ),
@@ -325,7 +353,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             already_streamed = self._tool_args_by_call_id.get(call_id, "")
             remaining_args = final_args[len(already_streamed) :] if final_args else ""
 
-            if remaining_args:
+            if remaining_args and not is_custom_tool:
                 # Split into smaller chunks to match OpenAI's streaming behavior
                 chunk_size = 10  # Match typical OpenAI delta size
                 for i in range(0, len(remaining_args), chunk_size):
@@ -341,12 +369,27 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                     self._pending_tool_events.append(delta_event)
 
             self._sequence_number += 1
-            done_event = FunctionCallArgumentsDoneEvent(
-                type=ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE,
-                item_id=call_id,
-                output_index=output_index,
-                arguments=final_args,
-            )
+            if is_custom_tool:
+                custom_input = LiteLLMCompletionResponsesConfig._function_arguments_to_custom_tool_input(
+                    final_args
+                )
+                done_event: BaseLiteLLMOpenAIResponseObject = (
+                    ResponseCustomToolCallInputDoneEvent(
+                        type="response.custom_tool_call_input.done",
+                        item_id=call_id,
+                        output_index=output_index,
+                        sequence_number=self._sequence_number,
+                        input=custom_input,
+                    )
+                )
+            else:
+                custom_input = ""
+                done_event = FunctionCallArgumentsDoneEvent(
+                    type=ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE,
+                    item_id=call_id,
+                    output_index=output_index,
+                    arguments=final_args,
+                )
             done_event.__dict__["sequence_number"] = self._sequence_number
             self._pending_tool_events.append(done_event)
 
@@ -357,11 +400,17 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                 sequence_number=self._sequence_number,
                 item=BaseLiteLLMOpenAIResponseObject(
                     **{
-                        "type": "function_call",
+                        "type": (
+                            "custom_tool_call" if is_custom_tool else "function_call"
+                        ),
                         "id": call_id,
                         "call_id": call_id,
                         "name": fn_name,
-                        "arguments": final_args,
+                        **(
+                            {"input": custom_input}
+                            if is_custom_tool
+                            else {"arguments": final_args}
+                        ),
                         "status": "completed",
                     }
                 ),
@@ -732,6 +781,12 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
     def return_default_done_events(
         self, litellm_complete_object: ModelResponse
     ) -> Optional[BaseLiteLLMOpenAIResponseObject]:
+        message = litellm_complete_object.choices[0].message  # type: ignore
+        if getattr(message, "tool_calls", None):
+            self.sent_output_text_done_event = True
+            self.sent_output_content_part_done_event = True
+            self.sent_output_item_done_event = True
+            return None
         if self.sent_output_text_done_event is False:
             self.sent_output_text_done_event = True
             return self.create_output_text_done_event(litellm_complete_object)

@@ -5,7 +5,7 @@ Handles transforming from Responses API -> LiteLLM completion  (Chat Completion 
 from collections.abc import Sequence
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union, cast
 
-from openai.types.responses import ResponseFunctionToolCall
+from openai.types.responses import ResponseCustomToolCall, ResponseFunctionToolCall
 from openai.types.responses.response_create_params import ResponseInputParam
 from openai.types.responses.tool_param import FunctionToolParam
 from typing_extensions import TypedDict
@@ -79,6 +79,50 @@ class ChatCompletionSession(TypedDict, total=False):
 
 class LiteLLMCompletionResponsesConfig:
     @staticmethod
+    def _get_custom_tool_names(tools: Optional[List[Any]]) -> Set[str]:
+        """Return the names of Responses free-form custom tools."""
+        if not tools:
+            return set()
+        return {
+            str(tool.get("name"))
+            for tool in tools
+            if isinstance(tool, dict)
+            and tool.get("type") == "custom"
+            and tool.get("name")
+        }
+
+    @staticmethod
+    def _custom_tool_input_to_function_arguments(input_value: Any) -> str:
+        """Wrap free-form custom tool input for Chat Completions function calling."""
+        import json
+
+        if input_value is None:
+            input_value = ""
+        elif not isinstance(input_value, str):
+            input_value = str(input_value)
+        return json.dumps({"input": input_value}, separators=(",", ":"))
+
+    @staticmethod
+    def _function_arguments_to_custom_tool_input(arguments: Any) -> str:
+        """Restore free-form input from the Chat Completions wrapper schema."""
+        import json
+
+        if not isinstance(arguments, str):
+            return "" if arguments is None else str(arguments)
+        try:
+            decoded = json.loads(arguments)
+        except (TypeError, ValueError):
+            return ""
+        if not isinstance(decoded, dict) or "input" not in decoded:
+            return ""
+        input_value = decoded["input"]
+        if isinstance(input_value, str):
+            return input_value
+        if input_value is None:
+            return ""
+        return json.dumps(input_value, separators=(",", ":"))
+
+    @staticmethod
     def _extract_additional_tools_from_input(
         input: Union[str, ResponseInputParam],
     ) -> List[Any]:
@@ -148,6 +192,12 @@ class LiteLLMCompletionResponsesConfig:
 
         if isinstance(tool_choice, dict):
             tool_choice_type = tool_choice.get("type")
+
+            if tool_choice_type == "custom" and tool_choice.get("name"):
+                return {
+                    "type": "function",
+                    "function": {"name": tool_choice["name"]},
+                }
 
             # If it has a function with name, it's standard OpenAI format - pass through
             if tool_choice.get("function") and tool_choice.get("function", {}).get(
@@ -1017,6 +1067,7 @@ class LiteLLMCompletionResponsesConfig:
         """
         return input_item.get("type") in [
             "function_call_output",
+            "custom_tool_call_output",
             "web_search_call",
             "computer_call_output",
             "tool_result",  # Anthropic/MCP format
@@ -1027,7 +1078,7 @@ class LiteLLMCompletionResponsesConfig:
         """
         Check if the input item is a function call
         """
-        return input_item.get("type") == "function_call"
+        return input_item.get("type") in ["function_call", "custom_tool_call"]
 
     @staticmethod
     def _transform_responses_api_tool_call_output_to_chat_completion_message(
@@ -1209,7 +1260,13 @@ class LiteLLMCompletionResponsesConfig:
             type="function",
             function=ChatCompletionToolCallFunctionChunk(
                 name=function_call.get("name") or "",
-                arguments=str(function_call.get("arguments") or ""),
+                arguments=(
+                    LiteLLMCompletionResponsesConfig._custom_tool_input_to_function_arguments(
+                        function_call.get("input")
+                    )
+                    if function_call.get("type") == "custom_tool_call"
+                    else str(function_call.get("arguments") or "")
+                ),
             ),
             index=0,
         )
@@ -1421,6 +1478,30 @@ class LiteLLMCompletionResponsesConfig:
                 chat_completion_tools.append(
                     cast(ChatCompletionToolParam, chat_completion_tool)
                 )
+            elif tool.get("type") == "custom":
+                chat_completion_tools.append(
+                    cast(
+                        ChatCompletionToolParam,
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": tool.get("name") or "",
+                                "description": tool.get("description") or "",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "input": {
+                                            "type": "string",
+                                            "description": "Raw custom tool input.",
+                                        }
+                                    },
+                                    "required": ["input"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                    )
+                )
             else:
                 chat_completion_tools.append(
                     cast(Union[ChatCompletionToolParam, OpenAIMcpServerTool], tool)
@@ -1474,7 +1555,8 @@ class LiteLLMCompletionResponsesConfig:
     @staticmethod
     def transform_chat_completion_tools_to_responses_tools(
         chat_completion_response: ModelResponse,
-    ) -> List[ResponseFunctionToolCall]:
+        custom_tool_names: Optional[Set[str]] = None,
+    ) -> List[Union[ResponseFunctionToolCall, ResponseCustomToolCall]]:
         """
         Transform a Chat Completion tools into a Responses API tools
         """
@@ -1489,7 +1571,10 @@ class LiteLLMCompletionResponsesConfig:
                             value=tool_call,
                         )
 
-        responses_tools: List[ResponseFunctionToolCall] = []
+        custom_tool_names = custom_tool_names or set()
+        responses_tools: List[
+            Union[ResponseFunctionToolCall, ResponseCustomToolCall]
+        ] = []
         for tool in all_chat_completion_tools:
             if tool.type == "function":
                 function_definition = tool.function
@@ -1517,14 +1602,28 @@ class LiteLLMCompletionResponsesConfig:
                             else {}
                         )
 
-                output_tool_call: ResponseFunctionToolCall = ResponseFunctionToolCall(
-                    name=function_definition.name or "",
-                    arguments=function_definition.get("arguments") or "",
-                    call_id=tool.id or "",
-                    id=tool.id or "",
-                    type="function_call",  # critical this is "function_call" to work with tools like openai codex
-                    status=function_definition.get("status") or "completed",
-                )
+                function_name = function_definition.name or ""
+                if function_name in custom_tool_names:
+                    output_tool_call: Union[
+                        ResponseFunctionToolCall, ResponseCustomToolCall
+                    ] = ResponseCustomToolCall(
+                        name=function_name,
+                        input=LiteLLMCompletionResponsesConfig._function_arguments_to_custom_tool_input(
+                            function_definition.get("arguments") or ""
+                        ),
+                        call_id=tool.id or "",
+                        id=tool.id or "",
+                        type="custom_tool_call",
+                    )
+                else:
+                    output_tool_call = ResponseFunctionToolCall(
+                        name=function_name,
+                        arguments=function_definition.get("arguments") or "",
+                        call_id=tool.id or "",
+                        id=tool.id or "",
+                        type="function_call",  # critical this is "function_call" to work with tools like openai codex
+                        status=function_definition.get("status") or "completed",
+                    )
 
                 # Pass through provider_specific_fields as-is if present
                 if provider_specific_fields:
@@ -1683,6 +1782,9 @@ class LiteLLMCompletionResponsesConfig:
             output=LiteLLMCompletionResponsesConfig._transform_chat_completion_choices_to_responses_output(
                 chat_completion_response=chat_completion_response,
                 choices=getattr(chat_completion_response, "choices", []),
+                custom_tool_names=LiteLLMCompletionResponsesConfig._get_custom_tool_names(
+                    responses_api_request.get("tools")
+                ),
             ),
             parallel_tool_calls=getattr(
                 chat_completion_response, "parallel_tool_calls", False
@@ -1725,12 +1827,14 @@ class LiteLLMCompletionResponsesConfig:
     def _transform_chat_completion_choices_to_responses_output(
         chat_completion_response: ModelResponse,
         choices: List[Choices],
+        custom_tool_names: Optional[Set[str]] = None,
     ) -> List[
         Union[
             GenericResponseOutputItem,
             OutputCodeInterpreterCall,
             OutputFunctionToolCall,
             OutputImageGenerationCall,
+            ResponseCustomToolCall,
             ResponseFunctionToolCall,
         ]
     ]:
@@ -1740,6 +1844,7 @@ class LiteLLMCompletionResponsesConfig:
                 OutputCodeInterpreterCall,
                 OutputFunctionToolCall,
                 OutputImageGenerationCall,
+                ResponseCustomToolCall,
                 ResponseFunctionToolCall,
             ]
         ] = []
@@ -1756,7 +1861,8 @@ class LiteLLMCompletionResponsesConfig:
         )
         responses_output.extend(
             LiteLLMCompletionResponsesConfig.transform_chat_completion_tools_to_responses_tools(
-                chat_completion_response=chat_completion_response
+                chat_completion_response=chat_completion_response,
+                custom_tool_names=custom_tool_names,
             )
         )
 
@@ -1950,6 +2056,10 @@ class LiteLLMCompletionResponsesConfig:
             Union[GenericResponseOutputItem, OutputImageGenerationCall]
         ] = []
         for choice in choices:
+            if getattr(choice.message, "tool_calls", None):
+                # A tool-only Chat Completions choice maps to Responses tool
+                # items; it must not also create an empty message output item.
+                continue
             # Check if message has images (image generation)
             if hasattr(choice.message, "images") and choice.message.images:
                 # Extract image generation output

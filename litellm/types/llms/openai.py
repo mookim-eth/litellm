@@ -62,7 +62,7 @@ except (ImportError, AttributeError):
         ResponseTextConfigParam as ResponseText,
     )
 
-from openai.types.responses import ResponseFunctionToolCall
+from openai.types.responses import ResponseCustomToolCall
 from openai.types.responses.response_create_params import (
     Reasoning,
     ResponseIncludable,
@@ -1262,6 +1262,7 @@ class ResponsesAPIResponse(BaseLiteLLMOpenAIResponseObject):
                 OutputCodeInterpreterCall,
                 OutputFunctionToolCall,
                 OutputImageGenerationCall,
+                ResponseCustomToolCall,
                 ResponseFunctionToolCall,
             ]
         ],
