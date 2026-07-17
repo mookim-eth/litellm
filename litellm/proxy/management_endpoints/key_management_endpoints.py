@@ -83,6 +83,7 @@ from litellm.proxy.utils import (
     is_valid_api_key,
 )
 from litellm.router import Router
+from litellm.secret_managers.base_secret_manager import raise_if_unsafe_secret_name
 from litellm.secret_managers.main import get_secret
 from litellm.types.proxy.management_endpoints.key_management_endpoints import (
     BulkUpdateKeyRequest,
@@ -5778,10 +5779,20 @@ def _validate_key_alias_format(key_alias: Optional[str]) -> None:
     - start/end with alphanumeric
     - only allow a-zA-Z0-9_-/.@
     """
-    if not litellm.enable_key_alias_format_validation:
+    if key_alias is None:
         return
 
-    if key_alias is None:
+    try:
+        raise_if_unsafe_secret_name(key_alias)
+    except ValueError:
+        raise ProxyException(
+            message="Invalid key_alias",
+            type=ProxyErrorTypes.bad_request_error,
+            param="key_alias",
+            code=400,
+        )
+
+    if not litellm.enable_key_alias_format_validation:
         return
 
     if not _KEY_ALIAS_PATTERN.match(key_alias):

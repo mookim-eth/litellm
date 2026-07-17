@@ -1,9 +1,20 @@
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Union
 
 import httpx
 
 from litellm import verbose_logger
+
+_UNSAFE_SECRET_NAME_PATTERN = re.compile(
+    r"(^|/)\.\.(/|$)|[\x00-\x1f\x7f-\x9f\u0085\u2028\u2029]"
+)
+
+
+def raise_if_unsafe_secret_name(secret_name: str) -> None:
+    """Reject traversal segments and control characters in secret names."""
+    if _UNSAFE_SECRET_NAME_PATTERN.search(secret_name):
+        raise ValueError("Invalid secret_name")
 
 
 class BaseSecretManager(ABC):
