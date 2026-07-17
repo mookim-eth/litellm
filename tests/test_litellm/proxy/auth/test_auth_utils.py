@@ -2,8 +2,11 @@
 Unit tests for auth_utils functions related to rate limiting and customer ID extraction.
 """
 
+import json
 from typing import Optional
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.auth_utils import (
@@ -12,7 +15,48 @@ from litellm.proxy.auth.auth_utils import (
     get_model_from_request,
     get_key_model_rpm_limit,
     get_key_model_tpm_limit,
+    is_request_body_safe,
 )
+
+
+@pytest.mark.parametrize(
+    "request_body",
+    [
+        {"model": "gpt-4", "langsmith_api_key": "attacker-value"},
+        {
+            "model": "gpt-4",
+            "metadata": {"posthog_api_key": "attacker-value"},
+        },
+        {
+            "model": "gpt-4",
+            "litellm_metadata": json.dumps(
+                {"braintrust_api_key": "attacker-value"}
+            ),
+        },
+    ],
+)
+def test_request_body_rejects_observability_credentials_in_all_metadata_forms(
+    request_body,
+):
+    with pytest.raises(ValueError, match="not allowed in request body"):
+        is_request_body_safe(
+            request_body=request_body,
+            general_settings={},
+            llm_router=None,
+            model="gpt-4",
+        )
+
+
+def test_request_body_allows_informational_callback_fields():
+    assert is_request_body_safe(
+        request_body={
+            "model": "gpt-4",
+            "metadata": {"langsmith_sampling_rate": 0.1},
+        },
+        general_settings={},
+        llm_router=None,
+        model="gpt-4",
+    )
 
 
 class TestGetKeyModelRpmLimit:
