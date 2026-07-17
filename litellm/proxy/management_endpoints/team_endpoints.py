@@ -1800,21 +1800,22 @@ def team_member_add_duplication_check(
 async def _validate_team_member_add_permissions(
     user_api_key_dict: UserAPIKeyAuth,
     complete_team_data: LiteLLM_TeamTable,
+    data: TeamMemberAddRequest,
 ) -> None:
-    """Validate if user has permission to add members to the team."""
-    if (
-        hasattr(user_api_key_dict, "user_role")
-        and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value
-        and not _is_user_team_admin(
-            user_api_key_dict=user_api_key_dict, team_obj=complete_team_data
-        )
-        and not await _is_user_org_admin_for_team(
-            user_api_key_dict=user_api_key_dict, team_obj=complete_team_data
-        )
-        and not _is_available_team(
-            team_id=complete_team_data.team_id,
-            user_api_key_dict=user_api_key_dict,
-        )
+    """Allow available-team self-join without granting membership control."""
+    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+    if _is_user_team_admin(
+        user_api_key_dict=user_api_key_dict, team_obj=complete_team_data
+    ):
+        return
+    if await _is_user_org_admin_for_team(
+        user_api_key_dict=user_api_key_dict, team_obj=complete_team_data
+    ):
+        return
+    if not _is_available_team(
+        team_id=complete_team_data.team_id,
+        user_api_key_dict=user_api_key_dict,
     ):
         raise HTTPException(
             status_code=403,
@@ -1825,6 +1826,27 @@ async def _validate_team_member_add_permissions(
                 )
             },
         )
+
+    members = data.member if isinstance(data.member, list) else [data.member]
+    for member in members:
+        if member.role != "user":
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "Available-team self-join cannot assign admin role."
+                },
+            )
+        if (
+            user_api_key_dict.user_id is None
+            or member.user_id is None
+            or member.user_id != user_api_key_dict.user_id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "Available-team self-join can only add the caller."
+                },
+            )
 
 
 async def _process_team_members(
@@ -2171,6 +2193,7 @@ async def team_member_add(
     await _validate_team_member_add_permissions(
         user_api_key_dict=user_api_key_dict,
         complete_team_data=complete_team_data,
+        data=data,
     )
 
     # Validate and populate user_email/user_id for members before processing
@@ -4280,16 +4303,12 @@ async def team_member_permissions(
         and not await _is_user_org_admin_for_team(
             user_api_key_dict=user_api_key_dict, team_obj=complete_team_data
         )
-        and not _is_available_team(
-            team_id=complete_team_data.team_id,
-            user_api_key_dict=user_api_key_dict,
-        )
     ):
         raise HTTPException(
             status_code=403,
             detail={
                 "error": "Call not allowed. User not proxy admin OR team admin. route={}, team_id={}".format(
-                    "/team/member_add",
+                    "/team/permissions_update",
                     complete_team_data.team_id,
                 )
             },

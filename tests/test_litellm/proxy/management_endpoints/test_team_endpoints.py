@@ -984,6 +984,7 @@ async def test_validate_team_member_add_permissions_admin():
     await _validate_team_member_add_permissions(
         user_api_key_dict=admin_user,
         complete_team_data=team,
+        data=MagicMock(),
     )
 
 
@@ -1022,6 +1023,7 @@ async def test_validate_team_member_add_permissions_non_admin():
             await _validate_team_member_add_permissions(
                 user_api_key_dict=regular_user,
                 complete_team_data=team,
+                data=MagicMock(),
             )
 
         assert exc_info.value.status_code == 403
@@ -6969,3 +6971,42 @@ async def test_update_team_rejects_unauthorized_caller():
                 user_api_key_dict=caller,
             )
         assert exc_info.value.code == "403"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "member",
+    [
+        Member(user_id="caller", role="admin"),
+        Member(user_id="someone-else", role="user"),
+    ],
+)
+async def test_available_team_join_cannot_escalate_or_add_other_user(member):
+    from litellm.proxy._types import TeamMemberAddRequest
+    from litellm.proxy.management_endpoints.team_endpoints import (
+        _validate_team_member_add_permissions,
+    )
+
+    team = LiteLLM_TeamTable(
+        team_id="available-team",
+        team_alias="available-team",
+        members_with_roles=[],
+    )
+    caller = UserAPIKeyAuth(
+        user_id="caller",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+    )
+    data = TeamMemberAddRequest(team_id=team.team_id, member=member)
+
+    with patch(
+        "litellm.proxy.management_endpoints.team_endpoints._is_available_team",
+        return_value=True,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await _validate_team_member_add_permissions(
+                user_api_key_dict=caller,
+                complete_team_data=team,
+                data=data,
+            )
+
+    assert exc_info.value.status_code == 403
