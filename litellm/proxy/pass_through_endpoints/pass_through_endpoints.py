@@ -653,6 +653,7 @@ async def pass_through_request(  # noqa: PLR0915
         custom_llm_provider: Optional field - custom LLM provider for the endpoint
         guardrails_config: Optional field - guardrails configuration for passthrough endpoint
     """
+    from litellm.integrations.custom_guardrail import ModifyResponseException
     from litellm.litellm_core_utils.litellm_logging import Logging
     from litellm.proxy.pass_through_endpoints.passthrough_guardrails import (
         PassthroughGuardrailHandler,
@@ -933,8 +934,27 @@ async def pass_through_request(  # noqa: PLR0915
 
         content = await response.aread()
 
-        ## LOG SUCCESS
+        content_modified = False
         response_body: Optional[dict] = get_response_body(response)
+        if response_body is not None and guardrails_to_run:
+            hook_data = dict(_parsed_body or {})
+            hook_metadata = hook_data.get("metadata")
+            if not isinstance(hook_metadata, dict):
+                hook_metadata = {}
+            hook_data["metadata"] = {
+                **hook_metadata,
+                "guardrails": guardrails_to_run,
+            }
+            response_body = await proxy_logging_obj.post_call_success_hook(
+                data=hook_data,
+                user_api_key_dict=user_api_key_dict,
+                response=response_body,  # type: ignore[arg-type]
+            )
+            if isinstance(response_body, dict):
+                content = json.dumps(response_body).encode("utf-8")
+                content_modified = True
+
+        ## LOG SUCCESS
         passthrough_logging_payload["response_body"] = response_body
         end_time = datetime.now()
         asyncio.create_task(
@@ -962,13 +982,43 @@ async def pass_through_request(  # noqa: PLR0915
             api_base=str(url._uri_reference),
         )
 
+        response_headers = HttpPassThroughEndpointHelpers.get_response_headers(
+            headers=response.headers,
+            custom_headers=custom_headers,
+        )
+        if content_modified:
+            response_headers.pop("content-length", None)
+
         return Response(
             content=content,
             status_code=response.status_code,
-            headers=HttpPassThroughEndpointHelpers.get_response_headers(
-                headers=response.headers,
-                custom_headers=custom_headers,
+            headers=response_headers,
+        )
+    except ModifyResponseException as e:
+        try:
+            await proxy_logging_obj.post_call_failure_hook(
+                user_api_key_dict=user_api_key_dict,
+                original_exception=e,
+                request_data=e.request_data,
+            )
+        except Exception:
+            verbose_proxy_logger.warning(
+                "post_call_failure_hook failed while recording a guardrail block",
+                exc_info=True,
+            )
+        return Response(
+            content=json.dumps(
+                {
+                    "error": {
+                        "message": e.message or "Response blocked by guardrail",
+                        "type": "content_filter",
+                        "guardrail_name": e.guardrail_name,
+                        "model": e.model,
+                    }
+                }
             ),
+            status_code=200,
+            media_type="application/json",
         )
     except Exception as e:
         custom_headers = ProxyBaseLLMRequestProcessing.get_custom_headers(
