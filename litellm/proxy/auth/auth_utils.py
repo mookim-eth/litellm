@@ -9,7 +9,7 @@ from fastapi import HTTPException, Request, status
 
 from litellm import Router, provider_list
 from litellm._logging import verbose_proxy_logger
-from litellm.constants import STANDARD_CUSTOMER_ID_HEADERS
+from litellm.constants import MINIMUM_CUSTOM_KEY_LENGTH, STANDARD_CUSTOMER_ID_HEADERS
 from litellm.proxy._types import *
 from litellm.types.router import CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS
 from litellm.types.utils import CustomPricingLiteLLMParams
@@ -1083,4 +1083,6 @@ def get_model_from_request(
 
 
 def abbreviate_api_key(api_key: str) -> str:
+    if len(api_key) < MINIMUM_CUSTOM_KEY_LENGTH:
+        return "sk-..."
     return f"sk-...{api_key[-4:]}"

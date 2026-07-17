@@ -32,6 +32,7 @@ from litellm.caching import DualCache
 from litellm.constants import (
     LENGTH_OF_LITELLM_GENERATED_KEY,
     LITELLM_PROXY_ADMIN_NAME,
+    MINIMUM_CUSTOM_KEY_LENGTH,
     UI_SESSION_TOKEN_TEAM_ID,
 )
 from litellm.litellm_core_utils.duration_parser import duration_in_seconds
@@ -1025,6 +1026,16 @@ async def _common_key_generation_helper(  # noqa: PLR0915
             status_code=400,
             detail={
                 "error": f"Invalid key format. LiteLLM Virtual Key must start with 'sk-'. Received: {_masked}"
+            },
+        )
+    if data.key is not None and len(data.key) < MINIMUM_CUSTOM_KEY_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": (
+                    "Invalid key format. LiteLLM Virtual Key must be at least "
+                    f"{MINIMUM_CUSTOM_KEY_LENGTH} characters long."
+                )
             },
         )
 
@@ -3916,7 +3927,6 @@ async def get_new_token(data: Optional[RegenerateKeyRequest]) -> str:
     if data and data.new_key is not None:
         # Reject custom key values if disabled by admin
         await _check_custom_key_allowed(data.new_key)
-        new_token = data.new_key
         if not data.new_key.startswith("sk-"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -3924,6 +3934,17 @@ async def get_new_token(data: Optional[RegenerateKeyRequest]) -> str:
                     "error": "New key must start with 'sk-'. This is to distinguish a key hash (used by litellm for logging / internal logic) from the actual key."
                 },
             )
+        if len(data.new_key) < MINIMUM_CUSTOM_KEY_LENGTH:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": (
+                        "New key must be at least "
+                        f"{MINIMUM_CUSTOM_KEY_LENGTH} characters long."
+                    )
+                },
+            )
+        new_token = data.new_key
     else:
         new_token = f"sk-{secrets.token_urlsafe(LENGTH_OF_LITELLM_GENERATED_KEY)}"
     return new_token
@@ -4015,7 +4036,7 @@ async def _execute_virtual_key_regeneration(
 
     new_token = await get_new_token(data=data)
     new_token_hash = hash_token(new_token)
-    new_token_key_name = f"sk-...{new_token[-4:]}"
+    new_token_key_name = abbreviate_api_key(api_key=new_token)
     update_data = {"token": new_token_hash, "key_name": new_token_key_name}
 
     non_default_values = {}
