@@ -1688,6 +1688,14 @@ async def generate_key_fn(
 
         verbose_proxy_logger.debug("entered /key/generate")
 
+        # Reject untrusted policy/control fields before custom callbacks or
+        # object lookups observe them. The common helper repeats this check as
+        # defense in depth after trusted defaults are applied.
+        _check_non_admin_key_control_fields(
+            data=data,
+            user_api_key_dict=user_api_key_dict,
+        )
+
         # Validate budget values are not negative and are finite numbers
         # (GHSA-2rv4-xv66-fpjg): float('nan') passes `< 0` because nan < 0 is False.
         if data.max_budget is not None and (
@@ -1893,6 +1901,12 @@ async def generate_service_account_key_fn(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": CommonProxyErrors.db_not_connected_error.value},
         )
+
+    # Match /key/generate: fail before team lookup and custom callback dispatch.
+    _check_non_admin_key_control_fields(
+        data=data,
+        user_api_key_dict=user_api_key_dict,
+    )
 
     await validate_team_id_used_in_service_account_request(
         team_id=data.team_id,

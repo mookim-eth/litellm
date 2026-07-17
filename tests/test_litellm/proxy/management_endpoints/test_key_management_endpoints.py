@@ -9215,6 +9215,80 @@ class TestNonAdminKeyControlFields:
 
         _check_non_admin_key_control_fields(data=data, user_api_key_dict=caller)
 
+    @pytest.mark.asyncio
+    async def test_generate_rejects_control_fields_before_project_lookup_or_callback(self):
+        data = GenerateKeyRequest(
+            project_id="foreign-project",
+            metadata={"user_role": "proxy_admin"},
+        )
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+        project_check = AsyncMock()
+        custom_callback = AsyncMock(return_value={"decision": True})
+
+        with (
+            patch("litellm.proxy.proxy_server.prisma_client", AsyncMock()),
+            patch("litellm.proxy.proxy_server.user_api_key_cache", MagicMock()),
+            patch(
+                "litellm.proxy.proxy_server.user_custom_key_generate",
+                custom_callback,
+            ),
+            patch(
+                "litellm.proxy.management_endpoints.key_management_endpoints._check_project_key_limits",
+                project_check,
+            ),
+        ):
+            with pytest.raises(ProxyException) as exc_info:
+                await generate_key_fn(
+                    data=data,
+                    user_api_key_dict=caller,
+                    litellm_changed_by=None,
+                )
+
+        assert str(exc_info.value.code) == "403"
+        project_check.assert_not_awaited()
+        custom_callback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_service_account_rejects_control_fields_before_team_lookup_or_callback(
+        self,
+    ):
+        from litellm.proxy.management_endpoints.key_management_endpoints import (
+            generate_service_account_key_fn,
+        )
+
+        data = GenerateKeyRequest(team_id="foreign-team", tpm_limit=999999)
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+        team_validation = AsyncMock()
+        custom_callback = AsyncMock(return_value={"decision": True})
+
+        with (
+            patch("litellm.proxy.proxy_server.prisma_client", AsyncMock()),
+            patch(
+                "litellm.proxy.proxy_server.user_custom_key_generate",
+                custom_callback,
+            ),
+            patch(
+                "litellm.proxy.management_endpoints.key_management_endpoints.validate_team_id_used_in_service_account_request",
+                team_validation,
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await generate_service_account_key_fn(
+                    data=data,
+                    user_api_key_dict=caller,
+                    litellm_changed_by=None,
+                )
+
+        assert exc_info.value.status_code == 403
+        team_validation.assert_not_awaited()
+        custom_callback.assert_not_awaited()
+
 
 class TestDelegatedKeyExpiryCeiling:
     def test_generate_inherits_finite_caller_expiry_when_duration_omitted(self):
