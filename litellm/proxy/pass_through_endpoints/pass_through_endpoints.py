@@ -2,6 +2,7 @@ import ast
 import asyncio
 import copy
 import json
+import posixpath
 import traceback
 from base64 import b64encode
 from datetime import datetime
@@ -586,7 +587,24 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
         if subpath.startswith("/"):
             subpath = subpath[1:]
 
-        return base_target + subpath
+        safe_subpath = posixpath.normpath("/" + subpath).lstrip("/")
+        if safe_subpath == ".":
+            safe_subpath = ""
+        return base_target + safe_subpath
+
+    @staticmethod
+    def join_base_and_endpoint_path(base_url: httpx.URL, endpoint_path: str) -> str:
+        """Join a caller path without allowing it above the configured prefix."""
+        base_path = (base_url.path or "").rstrip("/")
+        if not base_path:
+            return posixpath.normpath("/" + endpoint_path.lstrip("/"))
+
+        combined = posixpath.normpath(
+            base_path + "/" + endpoint_path.lstrip("/")
+        )
+        if combined != base_path and not combined.startswith(base_path + "/"):
+            return base_path + "/"
+        return combined
 
     @staticmethod
     def _update_stream_param_based_on_request_body(

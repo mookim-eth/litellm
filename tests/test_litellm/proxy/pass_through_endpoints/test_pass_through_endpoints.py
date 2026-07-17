@@ -429,6 +429,29 @@ def test_construct_target_url_with_subpath():
     )
     assert result == "http://example.com/api/v1"
 
+    result = HttpPassThroughEndpointHelpers.construct_target_url_with_subpath(
+        base_target="http://example.com/operator/prefix",
+        subpath="../../admin",
+        include_subpath=True,
+    )
+    assert result == "http://example.com/operator/prefix/admin"
+
+
+def test_join_base_and_endpoint_path_cannot_escape_configured_prefix():
+    import httpx
+
+    from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
+        HttpPassThroughEndpointHelpers,
+    )
+
+    base = httpx.URL("https://provider.example/operator/prefix")
+    assert (
+        HttpPassThroughEndpointHelpers.join_base_and_endpoint_path(
+            base, "../../admin"
+        )
+        == "/operator/prefix/"
+    )
+
 
 def test_add_exact_path_route():
     """

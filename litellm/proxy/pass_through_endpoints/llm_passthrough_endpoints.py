@@ -126,18 +126,13 @@ async def llm_passthrough_factory_proxy_route(
     if not encoded_endpoint.startswith("/"):
         encoded_endpoint = "/" + encoded_endpoint
 
-    # Construct the full target URL using httpx
+    # Construct the full target URL while preserving the configured base path.
     base_url = httpx.URL(base_target_url)
-    # Join paths correctly by removing trailing/leading slashes as needed
-    if not base_url.path or base_url.path == "/":
-        # If base URL has no path, just use the new path
-        updated_url = base_url.copy_with(path=encoded_endpoint)
-    else:
-        # Otherwise, combine the paths
-        base_path = base_url.path.rstrip("/")
-        clean_path = encoded_endpoint.lstrip("/")
-        full_path = f"{base_path}/{clean_path}"
-        updated_url = base_url.copy_with(path=full_path)
+    updated_url = base_url.copy_with(
+        path=HttpPassThroughEndpointHelpers.join_base_and_endpoint_path(
+            base_url, encoded_endpoint
+        )
+    )
 
     # Add or update query parameters
     provider_api_key = passthrough_endpoint_router.get_credentials(
@@ -216,7 +211,11 @@ async def gemini_proxy_route(
 
     # Construct the full target URL using httpx
     base_url = httpx.URL(base_target_url)
-    updated_url = base_url.copy_with(path=encoded_endpoint)
+    updated_url = base_url.copy_with(
+        path=HttpPassThroughEndpointHelpers.join_base_and_endpoint_path(
+            base_url, encoded_endpoint
+        )
+    )
 
     # Add or update query parameters
     gemini_api_key: Optional[str] = passthrough_endpoint_router.get_credentials(
@@ -276,7 +275,11 @@ async def cohere_proxy_route(
 
     # Construct the full target URL using httpx
     base_url = httpx.URL(base_target_url)
-    updated_url = base_url.copy_with(path=encoded_endpoint)
+    updated_url = base_url.copy_with(
+        path=HttpPassThroughEndpointHelpers.join_base_and_endpoint_path(
+            base_url, encoded_endpoint
+        )
+    )
 
     # Add or update query parameters
     cohere_api_key = passthrough_endpoint_router.get_credentials(
@@ -402,7 +405,11 @@ async def mistral_proxy_route(
 
     # Construct the full target URL using httpx
     base_url = httpx.URL(base_target_url)
-    updated_url = base_url.copy_with(path=encoded_endpoint)
+    updated_url = base_url.copy_with(
+        path=HttpPassThroughEndpointHelpers.join_base_and_endpoint_path(
+            base_url, encoded_endpoint
+        )
+    )
 
     # Add or update query parameters
     mistral_api_key = passthrough_endpoint_router.get_credentials(
@@ -547,7 +554,11 @@ async def milvus_proxy_route(
 
     # Construct the full target URL using httpx
     base_url = httpx.URL(base_target_url)
-    updated_url = base_url.copy_with(path=encoded_endpoint)
+    updated_url = base_url.copy_with(
+        path=HttpPassThroughEndpointHelpers.join_base_and_endpoint_path(
+            base_url, encoded_endpoint
+        )
+    )
     ## CREATE PASS-THROUGH
     endpoint_func = create_pass_through_route(
         endpoint=endpoint,
@@ -602,7 +613,11 @@ async def anthropic_proxy_route(
 
     # Construct the full target URL using httpx
     base_url = httpx.URL(base_target_url)
-    updated_url = base_url.copy_with(path=encoded_endpoint)
+    updated_url = base_url.copy_with(
+        path=HttpPassThroughEndpointHelpers.join_base_and_endpoint_path(
+            base_url, encoded_endpoint
+        )
+    )
 
     # Add or update query parameters
     anthropic_api_key = passthrough_endpoint_router.get_credentials(
@@ -1056,7 +1071,11 @@ async def bedrock_proxy_route(
 
     # Construct the full target URL using httpx
     base_url = httpx.URL(base_target_url)
-    updated_url = base_url.copy_with(path=encoded_endpoint)
+    updated_url = base_url.copy_with(
+        path=HttpPassThroughEndpointHelpers.join_base_and_endpoint_path(
+            base_url, encoded_endpoint
+        )
+    )
 
     # Add or update query parameters
     from litellm.llms.bedrock.chat import BedrockConverseLLM
@@ -1232,7 +1251,11 @@ async def assemblyai_proxy_route(
 
     # Construct the full target URL using httpx
     base_url = httpx.URL(base_target_url)
-    updated_url = base_url.copy_with(path=encoded_endpoint)
+    updated_url = base_url.copy_with(
+        path=HttpPassThroughEndpointHelpers.join_base_and_endpoint_path(
+            base_url, encoded_endpoint
+        )
+    )
 
     # Add or update query parameters
     assemblyai_api_key = passthrough_endpoint_router.get_credentials(
@@ -2076,16 +2099,13 @@ class BaseOpenAIPassThroughHandler:
         """
         Properly joins a base URL with a path, preserving any existing path in the base URL.
         """
-        # Join paths correctly by removing trailing/leading slashes as needed
-        if not base_url.path or base_url.path == "/":
-            # If base URL has no path, just use the new path
-            joined_path_str = str(base_url.copy_with(path=path))
-        else:
-            # Otherwise, combine the paths
-            base_path = base_url.path.rstrip("/")
-            clean_path = path.lstrip("/")
-            full_path = f"{base_path}/{clean_path}"
-            joined_path_str = str(base_url.copy_with(path=full_path))
+        joined_path_str = str(
+            base_url.copy_with(
+                path=HttpPassThroughEndpointHelpers.join_base_and_endpoint_path(
+                    base_url, path
+                )
+            )
+        )
 
         # Apply OpenAI-specific path handling for both branches
         if (
@@ -2166,7 +2186,11 @@ async def cursor_proxy_route(
         encoded_endpoint = "/" + encoded_endpoint
 
     base_url = httpx.URL(base_target_url)
-    updated_url = base_url.copy_with(path=encoded_endpoint)
+    updated_url = base_url.copy_with(
+        path=HttpPassThroughEndpointHelpers.join_base_and_endpoint_path(
+            base_url, encoded_endpoint
+        )
+    )
 
     auth_value = base64.b64encode(f"{cursor_api_key}:".encode("utf-8")).decode("ascii")
 
