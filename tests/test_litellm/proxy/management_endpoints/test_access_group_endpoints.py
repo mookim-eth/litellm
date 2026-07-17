@@ -804,7 +804,9 @@ def test_delete_access_group_503_on_db_connection_error(client_and_mocks):
 
     existing = _make_access_group_record(access_group_id="ag-to-delete")
     mock_table.find_unique = AsyncMock(return_value=existing)
-    mock_table.delete = AsyncMock(side_effect=PrismaError())
+    mock_table.delete = AsyncMock(
+        side_effect=PrismaError("Can't reach database server")
+    )
 
     resp = client.delete("/v1/access_group/ag-to-delete")
     assert resp.status_code == 503
