@@ -170,7 +170,7 @@ When opening issues or pull requests, follow these templates:
 
 ### Upstream security advisory sync status
 
-As of 2026-07-11, the following GitHub Security Advisories have already been
+As of 2026-07-17, the following GitHub Security Advisories have already been
 synced into this branch. During future upstream sync/rebase work, use this list
 to quickly filter advisory-related upstream commits or release notes that are
 already covered here:
@@ -213,6 +213,17 @@ already covered here:
     passthrough only when every explicitly resolved target MCP server is
     operator-configured with `auth_type=oauth2`; unresolved, empty, mixed, and
     non-OAuth2 targets fail closed.
+- RCEliteLLM chain (LiteLLM ≤ 1.83.14 RCE via master-key leak + Jinja2 SSTI).
+  - Upstream fixed in `1.84.0-rc.1` / commits:
+    - `f2f1e3a0ba` / `22c01adeb2` / `1ebb192cbe` (PR #26851): remove
+      `get_secret()` from key/team logging callback metadata conversion, reject
+      `os.environ/` callback refs via `validate_no_callback_env_reference`, and
+      ignore invalid callback metadata rows.
+    - `15d4d51453`: when a custom Langsmith/Langfuse host/base_url is supplied
+      dynamically, do not fall back to process environment credentials
+      (`allow_env_credentials=False`).
+  - SSTI stage was already covered here via `ImmutableSandboxedEnvironment` in
+    GitLab/BitBucket/Dotprompt/Arize prompt managers.
 
 Do not treat this section as a local patch inventory. It is only a security
 advisory filter for future upstream syncs. If a future upstream sync contains

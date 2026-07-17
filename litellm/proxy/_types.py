@@ -1817,6 +1817,10 @@ class AddTeamCallback(LiteLLMPydanticObjectBase):
     @model_validator(mode="before")
     @classmethod
     def validate_callback_vars(cls, values):
+        from litellm.litellm_core_utils.initialize_dynamic_callback_params import (
+            validate_no_callback_env_reference,
+        )
+
         callback_vars = values.get("callback_vars", {})
         valid_keys = set(StandardCallbackDynamicParams.__annotations__.keys())
         for key, value in callback_vars.items():
@@ -1824,8 +1828,10 @@ class AddTeamCallback(LiteLLMPydanticObjectBase):
                 raise ValueError(
                     f"Invalid callback variable: {key}. Must be one of {valid_keys}"
                 )
-            if not isinstance(value, str):
-                callback_vars[key] = str(value)
+            callback_vars[key] = str(value)
+            validate_no_callback_env_reference(
+                key, callback_vars[key], source="key/team callback metadata"
+            )
         return values
 
 

