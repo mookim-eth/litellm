@@ -1934,12 +1934,17 @@ class TestCustomUISSO:
             "x-forwarded-for": "10.0.0.1",
         }
         mock_request.base_url = "https://custom.litellm.ai/"
+        mock_request.client = MagicMock()
+        mock_request.client.host = "127.0.0.1"
 
         # Mock the redirect response method
         mock_redirect_response = MagicMock()
         mock_redirect_response.status_code = 303
 
-        with patch("litellm.proxy.proxy_server.premium_user", True):
+        with patch("litellm.proxy.proxy_server.premium_user", True), patch(
+            "litellm.proxy.proxy_server.general_settings",
+            {"trusted_proxy_ranges": ["127.0.0.1/32"]},
+        ):
             with patch(
                 "litellm.proxy.proxy_server.user_custom_ui_sso_sign_in_handler",
                 test_handler_instance,
@@ -5410,4 +5415,3 @@ class TestSyncUserRoleFromJwtRoleMap:
         )
 
         prisma.db.litellm_usertable.update.assert_not_called()
-

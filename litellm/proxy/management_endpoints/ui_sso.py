@@ -2411,8 +2411,10 @@ class SSOAuthenticationHandler:
             team_request = NewTeamRequest(**_team_request)
         elif isinstance(litellm.default_team_params, DefaultTeamSSOParams):
             _default_team_params = deepcopy(litellm.default_team_params)
-            _new_team_request = team_request.model_dump()
-            _new_team_request.update(_default_team_params)
+            _new_team_request = team_request.model_dump(exclude_unset=True)
+            _new_team_request.update(
+                _default_team_params.model_dump(exclude_unset=True)
+            )
             team_request = NewTeamRequest(**_new_team_request)
         return team_request
 
