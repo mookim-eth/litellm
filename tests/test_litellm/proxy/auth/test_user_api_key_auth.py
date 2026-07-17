@@ -23,10 +23,62 @@ from litellm.proxy._types import (
 from litellm.proxy.auth.handle_jwt import JWTHandler
 from litellm.proxy.auth.route_checks import RouteChecks
 from litellm.proxy.auth.user_api_key_auth import (
+    _enforce_key_and_fallback_model_access,
     _run_post_custom_auth_checks,
     get_api_key,
     user_api_key_auth,
 )
+
+
+@pytest.mark.asyncio
+async def test_key_alias_target_is_reauthorized():
+    token = UserAPIKeyAuth(models=["safe-alias"], aliases={"safe-alias": "restricted"})
+
+    async def reject_restricted(*, model, **kwargs):
+        if model == "restricted":
+            raise PermissionError("restricted target")
+
+    with patch(
+        "litellm.proxy.auth.user_api_key_auth.can_key_call_model",
+        side_effect=reject_restricted,
+    ):
+        with pytest.raises(PermissionError, match="restricted target"):
+            await _enforce_key_and_fallback_model_access(
+                valid_token=token,
+                request_data={"model": "safe-alias"},
+                route="/chat/completions",
+                llm_model_list=None,
+                llm_router=None,
+            )
+
+
+@pytest.mark.asyncio
+async def test_router_override_nested_fallback_is_reauthorized():
+    token = UserAPIKeyAuth(models=["safe-model"])
+
+    async def reject_restricted(*, model, **kwargs):
+        if model == "restricted-fallback":
+            raise PermissionError("restricted fallback")
+
+    with patch(
+        "litellm.proxy.auth.user_api_key_auth.can_key_call_model",
+        side_effect=reject_restricted,
+    ):
+        with pytest.raises(PermissionError, match="restricted fallback"):
+            await _enforce_key_and_fallback_model_access(
+                valid_token=token,
+                request_data={
+                    "model": "safe-model",
+                    "router_settings_override": {
+                        "fallbacks": [
+                            {"safe-model": ["restricted-fallback"]}
+                        ]
+                    },
+                },
+                route="/chat/completions",
+                llm_model_list=None,
+                llm_router=None,
+            )
 
 
 def test_get_api_key():
@@ -449,7 +501,14 @@ async def test_proxy_admin_expired_key_from_cache():
                 setattr(_proxy_server_mod, attr, val)
 
             # Create a mock request
-            request = Request(scope={"type": "http"})
+                request = Request(
+                    scope={
+                        "type": "http",
+                        "method": "POST",
+                        "path": "/chat/completions",
+                        "headers": [],
+                    }
+                )
             request._url = URL(url="/chat/completions")
             request_data = {}
 

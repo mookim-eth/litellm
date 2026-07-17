@@ -1814,13 +1814,7 @@ async def _enforce_key_and_fallback_model_access(
     Key-level model allowlist and client fallbacks (same as standard auth).
     Not included in common_checks — common_checks enforces team/user/project model access only.
     """
-    config = valid_token.config
-
-    if config != {}:
-        model_list = config.get("model_list", [])
-        new_model_list = model_list
-        verbose_proxy_logger.debug(f"\n new llm router model list {new_model_list}")
-    elif (
+    if (
         isinstance(valid_token.models, list) and "all-team-models" in valid_token.models
     ):
         pass
@@ -1831,6 +1825,53 @@ async def _enforce_key_and_fallback_model_access(
             request_data.get("fallbacks", None),
         )
 
+        # Router overrides use a nested mapping format and are promoted to
+        # actual router kwargs later. Authorize every resolved fallback model,
+        # not merely the primary/request-level fallback list.
+        nested_fallback_models: List[str] = []
+        override = request_data.get("router_settings_override")
+        if isinstance(override, dict):
+            for nested_key in (
+                "fallbacks",
+                "context_window_fallbacks",
+                "content_policy_fallbacks",
+            ):
+                nested = override.get(nested_key)
+                if not isinstance(nested, list):
+                    continue
+                for entry in nested:
+                    if isinstance(entry, str):
+                        nested_fallback_models.append(entry)
+                    elif isinstance(entry, dict):
+                        for value in entry.values():
+                            if isinstance(value, str):
+                                nested_fallback_models.append(value)
+                            elif isinstance(value, list):
+                                nested_fallback_models.extend(
+                                    item for item in value if isinstance(item, str)
+                                )
+
+        def _resolve_key_or_team_alias(model_name: str) -> str:
+            """Resolve chained aliases with a bounded loop for auth checks."""
+            resolved = model_name
+            seen = {resolved}
+            for _ in range(10):
+                target: Optional[str] = None
+                for alias_map in (
+                    valid_token.aliases,
+                    valid_token.team_model_aliases,
+                ):
+                    if isinstance(alias_map, dict):
+                        candidate = alias_map.get(resolved)
+                        if isinstance(candidate, str):
+                            target = candidate
+                            break
+                if target is None or target in seen:
+                    return resolved
+                resolved = target
+                seen.add(resolved)
+            return resolved
+
         if model is not None:
             await can_key_call_model(
                 model=model,
@@ -1838,6 +1879,14 @@ async def _enforce_key_and_fallback_model_access(
                 valid_token=valid_token,
                 llm_router=llm_router,
             )
+            resolved_model = _resolve_key_or_team_alias(model)
+            if resolved_model != model:
+                await can_key_call_model(
+                    model=resolved_model,
+                    llm_model_list=llm_model_list,
+                    valid_token=valid_token,
+                    llm_router=llm_router,
+                )
 
         if fallback_models is not None:
             for m in fallback_models:
@@ -1852,6 +1901,19 @@ async def _enforce_key_and_fallback_model_access(
                     llm_router=llm_router,
                     user_model=None,
                 )
+
+        for nested_model in nested_fallback_models:
+            await can_key_call_model(
+                model=nested_model,
+                llm_model_list=llm_model_list,
+                valid_token=valid_token,
+                llm_router=llm_router,
+            )
+            await is_valid_fallback_model(
+                model=nested_model,
+                llm_router=llm_router,
+                user_model=None,
+            )
 
 
 async def _run_post_custom_auth_checks(
