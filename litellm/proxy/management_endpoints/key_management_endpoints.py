@@ -445,11 +445,19 @@ def common_key_access_checks(
 
 
 _NON_ADMIN_RESTRICTED_KEY_CONTROL_FIELDS = (
+    "allowed_routes",
     "allowed_passthrough_routes",
     "config",
     "aliases",
     "router_settings",
     "access_group_ids",
+    "permissions",
+    "object_permission",
+    "tags",
+    "guardrails",
+    "policies",
+    "prompts",
+    "blocked",
 )
 
 
@@ -461,18 +469,30 @@ def _check_non_admin_key_control_fields(
     if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
         return
 
-    metadata = getattr(data, "metadata", None)
-    if isinstance(metadata, dict) and metadata:
+    fields_set = getattr(data, "model_fields_set", set())
+
+    # Presence matters on update/regenerate: an explicit empty mapping can
+    # clear an existing policy-bearing value just as effectively as replacing
+    # it. Defaults that the caller omitted are not included in model_fields_set.
+    if "metadata" in fields_set:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "Only proxy admins can set `metadata` on a key."},
+        )
+
+    if (
+        "key_type" in fields_set
+        and getattr(data, "key_type", None) == LiteLLMKeyType.MANAGEMENT
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
-                "error": "Only proxy admins can set non-empty `metadata` on a key."
+                "error": "Only proxy admins can create management-route keys."
             },
         )
 
     for field_name in _NON_ADMIN_RESTRICTED_KEY_CONTROL_FIELDS:
-        value = getattr(data, field_name, None)
-        if value not in (None, {}, []):
+        if field_name in fields_set:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
@@ -2148,11 +2168,6 @@ async def _validate_update_key_data(
 ) -> None:
     """Validate permissions and constraints for key update."""
     _is_proxy_admin = user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value
-
-    _ignore_allowed_routes_for_non_admin_update(
-        data=data,
-        user_api_key_dict=user_api_key_dict,
-    )
 
     _check_allowed_routes_caller_permission(
         allowed_routes=data.allowed_routes,

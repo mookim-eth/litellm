@@ -478,6 +478,11 @@ async def new_user(
                 detail=f"Only proxy admins can create administrative users (proxy_admin, proxy_admin_viewer). Attempted to create user with role: {data.user_role}. Your role: {user_api_key_dict.user_role}",
             )
 
+        _check_non_admin_key_control_fields(
+            data=data,
+            user_api_key_dict=user_api_key_dict,
+        )
+
         data_json = data.json()  # type: ignore
         data_json = _update_internal_new_user_params(data_json, data)
         if (
@@ -1150,7 +1155,7 @@ def _update_internal_user_params(
     return non_default_values
 
 
-async def _update_single_user_helper(
+async def _update_single_user_helper(  # noqa: PLR0915
     user_request: UpdateUserRequest,
     user_api_key_dict: UserAPIKeyAuth,
     litellm_changed_by: Optional[str] = None,
@@ -1169,6 +1174,11 @@ async def _update_single_user_helper(
     # Validate user identifier
     if not user_request.user_id and not user_request.user_email:
         raise ValueError("Either user_id or user_email must be provided")
+
+    _check_non_admin_key_control_fields(
+        data=user_request,
+        user_api_key_dict=user_api_key_dict,
+    )
 
     # Convert to data format expected by update logic
     data_json: dict = user_request.model_dump(exclude_unset=True)

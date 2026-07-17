@@ -18,6 +18,7 @@ from fastapi import HTTPException
 
 from litellm.proxy._types import (
     GenerateKeyRequest,
+    LiteLLMKeyType,
     LiteLLM_BudgetTable,
     LiteLLM_OrganizationTable,
     LiteLLM_TeamTableCachedObj,
@@ -8760,7 +8761,7 @@ class TestAllowedRoutesCallerPermission:
         assert result is stub_response
 
     @pytest.mark.asyncio
-    async def test_non_admin_update_key_with_allowed_routes_ignored(self):
+    async def test_non_admin_update_key_with_allowed_routes_rejected(self):
         data = UpdateKeyRequest(
             key="sk-test",
             allowed_routes=["/*"],
@@ -8778,24 +8779,18 @@ class TestAllowedRoutesCallerPermission:
             tpm_limit=10,
         )
 
-        await _validate_update_key_data(
-            data=data,
-            existing_key_row=existing_key_row,
-            user_api_key_dict=user_api_key_dict,
-            llm_router=None,
-            premium_user=True,
-            prisma_client=None,
-            user_api_key_cache=MagicMock(),
-        )
+        with pytest.raises(HTTPException) as exc_info:
+            await _validate_update_key_data(
+                data=data,
+                existing_key_row=existing_key_row,
+                user_api_key_dict=user_api_key_dict,
+                llm_router=None,
+                premium_user=True,
+                prisma_client=None,
+                user_api_key_cache=MagicMock(),
+            )
 
-        prepared_update = await prepare_key_update_data(
-            data=data,
-            existing_key_row=existing_key_row,
-        )
-
-        assert prepared_update["tpm_limit"] == 123
-        assert "allowed_routes" not in prepared_update
-        assert "allowed_routes" not in data.model_dump(exclude_unset=True)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_admin_update_key_with_allowed_routes_allowed(self):
@@ -8843,6 +8838,14 @@ class TestNonAdminKeyControlFields:
             ("aliases", {"safe-model": "restricted-model"}),
             ("router_settings", {"fallbacks": [{"safe-model": ["restricted-model"]}]}),
             ("access_group_ids", ["privileged-group"]),
+            ("allowed_routes", []),
+            ("permissions", {}),
+            ("object_permission", {"vector_stores": ["vs-privileged"]}),
+            ("tags", []),
+            ("guardrails", []),
+            ("policies", []),
+            ("prompts", []),
+            ("blocked", False),
         ],
     )
     def test_non_admin_restricted_key_control_field_rejected(
@@ -8861,14 +8864,38 @@ class TestNonAdminKeyControlFields:
         assert field_name in str(exc_info.value.detail)
 
     @pytest.mark.parametrize("metadata", [None, {}])
-    def test_non_admin_empty_metadata_allowed(self, metadata):
+    def test_non_admin_explicit_empty_metadata_rejected(self, metadata):
         data = GenerateKeyRequest(metadata=metadata)
         caller = UserAPIKeyAuth(
             user_id="internal-user-123",
             user_role=LitellmUserRoles.INTERNAL_USER,
         )
 
+        with pytest.raises(HTTPException) as exc_info:
+            _check_non_admin_key_control_fields(data=data, user_api_key_dict=caller)
+
+        assert exc_info.value.status_code == 403
+
+    def test_non_admin_omitted_control_fields_allowed(self):
+        data = GenerateKeyRequest()
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+
         _check_non_admin_key_control_fields(data=data, user_api_key_dict=caller)
+
+    def test_non_admin_management_key_type_rejected(self):
+        data = GenerateKeyRequest(key_type=LiteLLMKeyType.MANAGEMENT)
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            _check_non_admin_key_control_fields(data=data, user_api_key_dict=caller)
+
+        assert exc_info.value.status_code == 403
 
     def test_admin_restricted_key_control_fields_allowed(self):
         data = GenerateKeyRequest(
