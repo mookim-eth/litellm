@@ -232,6 +232,25 @@ already covered here:
     features as a compensating control. Do not re-enable any of them until the
     omitted parts of upstream `15d4d51453` and their security tests are
     backported and reviewed.
+- Delegated virtual-key authority hardening from `cfc39606cc`.
+  - Non-admin callers cannot write policy-, quota-, accounting-, project-, or
+    object-scope fields through generate, service-account, update, regenerate,
+    or bulk variants. `models` and `max_budget` remain available only through
+    their delegated ceilings.
+  - A finite-lived caller cannot mint or extend a key beyond its own expiry;
+    omitted duration on newly generated keys inherits the caller's remaining
+    lifetime. Regeneration reuses the complete update authorization and limit
+    checks and enforces `upperbound_key_generate_params`.
+  - Preserve the cross-path regression matrix when syncing upstream changes to
+    key request schemas or management endpoint helpers.
+
+The 2026-07-17 security sync froze upstream range
+`2c786ca2e65ab13aeac0212c1a5f6ff0644c2078..dc9297d36f6b9ef0965ff365664c7696bc4131a8`.
+It reviewed 727 commits touching the auth, management, pass-through,
+pre-call/integration, and enterprise-auth surfaces, including 140 merges and 93
+merges with independent conflict-resolution changes. Future reviews must start
+with a fresh fetch and a new range; do not reuse this range as proof that newer
+upstream changes were inspected.
 - Organization-admin boundary fixes from `91bfbe6efe`, `a9bc5549b2`, and
   `467166fdd7`.
   - Multi-organization authorization requires admin access to every requested
