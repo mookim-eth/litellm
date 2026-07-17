@@ -538,6 +538,58 @@ def test_check_passthrough_route_access_key_metadata_prefix_match():
     assert result is True
 
 
+def test_passthrough_metadata_cannot_grant_admin_route_access():
+    valid_token = UserAPIKeyAuth(
+        user_id="internal-user",
+        metadata={"allowed_passthrough_routes": ["/user"]},
+    )
+    user_obj = LiteLLM_UserTable(
+        user_id="internal-user",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+    )
+    request = MagicMock(spec=Request)
+    request.method = "POST"
+    request.query_params = {}
+
+    with patch.object(
+        RouteChecks, "_is_registered_pass_through_route", return_value=False
+    ), pytest.raises(Exception):
+        RouteChecks.non_proxy_admin_allowed_routes_check(
+            user_obj=user_obj,
+            _user_role=LitellmUserRoles.INTERNAL_USER,
+            route="/user/delete",
+            request=request,
+            valid_token=valid_token,
+            request_data={},
+        )
+
+
+def test_registered_passthrough_metadata_still_grants_passthrough_access():
+    valid_token = UserAPIKeyAuth(
+        user_id="internal-user",
+        metadata={"allowed_passthrough_routes": ["/custom-endpoint"]},
+    )
+    user_obj = LiteLLM_UserTable(
+        user_id="internal-user",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+    )
+    request = MagicMock(spec=Request)
+    request.method = "POST"
+    request.query_params = {}
+
+    with patch.object(
+        RouteChecks, "_is_registered_pass_through_route", return_value=True
+    ):
+        RouteChecks.non_proxy_admin_allowed_routes_check(
+            user_obj=user_obj,
+            _user_role=LitellmUserRoles.INTERNAL_USER,
+            route="/custom-endpoint",
+            request=request,
+            valid_token=valid_token,
+            request_data={},
+        )
+
+
 def test_check_passthrough_route_access_key_metadata_no_match():
     """Test that key metadata allowed_passthrough_routes denies non-matching routes"""
 

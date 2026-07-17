@@ -414,6 +414,11 @@ def common_key_access_checks(
     """
     Check if user is allowed to make a key request, for this key
     """
+    _check_non_admin_key_control_fields(
+        data=data,
+        user_api_key_dict=user_api_key_dict,
+    )
+
     try:
         _is_allowed_to_make_key_request(
             user_api_key_dict=user_api_key_dict,
@@ -437,6 +442,43 @@ def common_key_access_checks(
         premium_user=premium_user,
     )
     return True
+
+
+_NON_ADMIN_RESTRICTED_KEY_CONTROL_FIELDS = (
+    "allowed_passthrough_routes",
+    "config",
+    "aliases",
+    "router_settings",
+    "access_group_ids",
+)
+
+
+def _check_non_admin_key_control_fields(
+    data: Union[GenerateKeyRequest, UpdateKeyRequest, RegenerateKeyRequest],
+    user_api_key_dict: UserAPIKeyAuth,
+) -> None:
+    """Reject key fields that can alter proxy policy for non-admin callers."""
+    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+
+    metadata = getattr(data, "metadata", None)
+    if isinstance(metadata, dict) and metadata:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "Only proxy admins can set non-empty `metadata` on a key."
+            },
+        )
+
+    for field_name in _NON_ADMIN_RESTRICTED_KEY_CONTROL_FIELDS:
+        value = getattr(data, field_name, None)
+        if value not in (None, {}, []):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": f"Only proxy admins can set `{field_name}` on a key."
+                },
+            )
 
 
 router = APIRouter()
@@ -4038,6 +4080,12 @@ async def regenerate_key_fn(  # noqa: PLR0915
         key = data.key if data and data.key else key
         if not key:
             raise HTTPException(status_code=400, detail={"error": "No key passed in."})
+
+        if data is not None:
+            _check_non_admin_key_control_fields(
+                data=data,
+                user_api_key_dict=user_api_key_dict,
+            )
         ### 1. Create New copy that is duplicate of existing key
         ######################################################################
 

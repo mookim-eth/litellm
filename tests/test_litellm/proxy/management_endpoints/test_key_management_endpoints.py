@@ -34,6 +34,7 @@ from litellm.proxy.management_endpoints.key_management_endpoints import (
     _check_org_key_limits,
     _check_team_key_limits,
     _common_key_generation_helper,
+    _check_non_admin_key_control_fields,
     _enforce_upperbound_key_params,
     _get_and_validate_existing_key,
     _list_key_helper,
@@ -7863,8 +7864,8 @@ async def test_block_key_allowed_for_team_admin(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_update_key_max_budget_rejected_for_internal_user(monkeypatch):
-    """Internal users should not be able to modify max_budget on keys."""
+async def test_update_personal_key_budget_above_caller_ceiling_rejected(monkeypatch):
+    """Personal key owners cannot set a budget above their delegation ceiling."""
     from litellm.proxy.management_endpoints.key_management_endpoints import (
         update_key_fn,
     )
@@ -7913,6 +7914,7 @@ async def test_update_key_max_budget_rejected_for_internal_user(monkeypatch):
         user_role=LitellmUserRoles.INTERNAL_USER,
         api_key="sk-internal",
         user_id="internal_user",
+        max_budget=100.0,
     )
 
     with pytest.raises(ProxyException) as exc:
@@ -7923,8 +7925,8 @@ async def test_update_key_max_budget_rejected_for_internal_user(monkeypatch):
             litellm_changed_by=None,
         )
 
-    assert str(exc.value.code) == "403"
-    assert "Only proxy admins, team admins, or org admins" in str(exc.value.message)
+    assert str(exc.value.code) == "400"
+    assert "cannot exceed" in str(exc.value.message).lower()
 
 
 @pytest.mark.asyncio
@@ -8828,6 +8830,58 @@ class TestAllowedRoutesCallerPermission:
         )
 
         assert prepared_update["allowed_routes"] == ["/chat/completions"]
+
+
+class TestNonAdminKeyControlFields:
+    @pytest.mark.parametrize(
+        ("field_name", "field_value"),
+        [
+            ("metadata", {"allowed_passthrough_routes": ["/user"]}),
+            ("metadata", {"app": "example"}),
+            ("allowed_passthrough_routes", ["/user"]),
+            ("config", {"anything": True}),
+            ("aliases", {"safe-model": "restricted-model"}),
+            ("router_settings", {"fallbacks": [{"safe-model": ["restricted-model"]}]}),
+            ("access_group_ids", ["privileged-group"]),
+        ],
+    )
+    def test_non_admin_restricted_key_control_field_rejected(
+        self, field_name, field_value
+    ):
+        data = GenerateKeyRequest(**{field_name: field_value})
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            _check_non_admin_key_control_fields(data=data, user_api_key_dict=caller)
+
+        assert exc_info.value.status_code == 403
+        assert field_name in str(exc_info.value.detail)
+
+    @pytest.mark.parametrize("metadata", [None, {}])
+    def test_non_admin_empty_metadata_allowed(self, metadata):
+        data = GenerateKeyRequest(metadata=metadata)
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+
+        _check_non_admin_key_control_fields(data=data, user_api_key_dict=caller)
+
+    def test_admin_restricted_key_control_fields_allowed(self):
+        data = GenerateKeyRequest(
+            metadata={"allowed_passthrough_routes": ["/user"]},
+            config={"anything": True},
+            aliases={"safe-model": "restricted-model"},
+        )
+        caller = UserAPIKeyAuth(
+            user_id="admin-user",
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+        )
+
+        _check_non_admin_key_control_fields(data=data, user_api_key_dict=caller)
 
 
 def test_jinja_prompt_manager_is_sandboxed():

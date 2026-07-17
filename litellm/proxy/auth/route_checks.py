@@ -270,7 +270,9 @@ class RouteChecks:
             pass
         elif route.startswith("/v1/mcp/") or route.startswith("/mcp-rest/"):
             pass  # authN/authZ handled by api itself
-        elif RouteChecks.check_passthrough_route_access(
+        elif RouteChecks._is_registered_pass_through_route(
+            route=route
+        ) and RouteChecks.check_passthrough_route_access(
             route=route, user_api_key_dict=valid_token
         ):
             pass
@@ -641,6 +643,17 @@ class RouteChecks:
                 return True
 
         return False
+
+    @staticmethod
+    def _is_registered_pass_through_route(route: str) -> bool:
+        """Return whether ``route`` belongs to an operator-registered passthrough."""
+        from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
+            InitPassThroughEndpointHelpers,
+        )
+
+        return InitPassThroughEndpointHelpers.is_registered_pass_through_route(
+            route=route
+        )
 
     @staticmethod
     def _is_assistants_api_request(request: Request) -> bool:
