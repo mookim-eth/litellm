@@ -83,6 +83,37 @@ class TestBuildAuditLogPayload:
         assert payload["before_value"] is None
         assert payload["updated_values"] is None
 
+    def test_redacts_all_callback_vars_before_db_or_callback_dispatch(self):
+        snapshot = {
+            "metadata": {
+                "logging": [
+                    {
+                        "callback_name": "gcs",
+                        "callback_vars": {
+                            "gcs_path_service_account": "service-account-json",
+                            "gcs_bucket_name": "bucket-name",
+                        },
+                    }
+                ]
+            }
+        }
+        audit_log = LiteLLM_AuditLogs(
+            id="callback-secret-audit",
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            changed_by="admin",
+            action="updated",
+            table_name=LitellmTableNames.TEAM_TABLE_NAME,
+            object_id="team-with-callback",
+            before_value=json.dumps(snapshot),
+            updated_values=json.dumps(snapshot),
+        )
+
+        payload = _build_audit_log_payload(audit_log)
+        serialized = json.dumps(payload)
+        assert "service-account-json" not in serialized
+        assert "bucket-name" not in serialized
+        assert "***REDACTED***" in serialized
+
 
 class TestDispatchAuditLogToCallbacks:
     @pytest.mark.asyncio

@@ -3045,6 +3045,32 @@ AUDIT_ACTIONS = Literal[
 ]
 
 
+_AUDIT_CALLBACK_VAR_REDACTION = "***REDACTED***"
+_AUDIT_REDACTION_MAX_DEPTH = 20
+
+
+def _redact_callback_vars_for_audit(value: Any, depth: int = 0) -> Any:
+    """Redact callback credentials from any nested audit snapshot."""
+    if depth >= _AUDIT_REDACTION_MAX_DEPTH:
+        return _AUDIT_CALLBACK_VAR_REDACTION
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            if key == "callback_vars" and isinstance(item, dict):
+                redacted[key] = {
+                    callback_key: _AUDIT_CALLBACK_VAR_REDACTION
+                    for callback_key in item
+                }
+            else:
+                redacted[key] = _redact_callback_vars_for_audit(item, depth + 1)
+        return redacted
+    if isinstance(value, list):
+        return [
+            _redact_callback_vars_for_audit(item, depth + 1) for item in value
+        ]
+    return value
+
+
 class LiteLLM_AuditLogs(LiteLLMPydanticObjectBase):
     id: str
     updated_at: datetime
@@ -3077,6 +3103,7 @@ class LiteLLM_AuditLogs(LiteLLMPydanticObjectBase):
                 json_before_value = self.before_value
 
             if json_before_value is not None:
+                json_before_value = _redact_callback_vars_for_audit(json_before_value)
                 json_before_value = masker.mask_dict(json_before_value)
                 self.before_value = json.dumps(json_before_value, default=str)
 
@@ -3088,6 +3115,9 @@ class LiteLLM_AuditLogs(LiteLLMPydanticObjectBase):
                 json_updated_values = self.updated_values
 
             if json_updated_values is not None:
+                json_updated_values = _redact_callback_vars_for_audit(
+                    json_updated_values
+                )
                 json_updated_values = masker.mask_dict(json_updated_values)
                 self.updated_values = json.dumps(json_updated_values, default=str)
 
