@@ -1848,6 +1848,10 @@ async def increment_spend_counters(
     team_id: Optional[str],
     user_id: Optional[str],
     response_cost: Optional[float],
+    org_id: Optional[str] = None,
+    budget_reservation: Optional[dict] = None,
+    end_user_id: Optional[str] = None,
+    tags: Optional[List[str]] = None,
 ):
     """
     Atomically increment spend counters for budget enforcement.
@@ -1917,10 +1921,45 @@ async def increment_spend_counters(
                 increment=response_cost,
             )
 
+    if end_user_id is not None:
+        end_user_counter_key = f"spend:end_user:{end_user_id}"
+        if end_user_counter_key not in reserved_counter_keys:
+            await _init_and_increment_spend_counter(
+                counter_key=end_user_counter_key,
+                source_cache_key=f"end_user_id:{end_user_id}",
+                increment=response_cost,
+            )
+
+    for tag in dict.fromkeys(tags or []):
+        if not isinstance(tag, str) or not tag:
+            continue
+        tag_counter_key = f"spend:tag:{tag}"
+        if tag_counter_key not in reserved_counter_keys:
+            await _init_and_increment_spend_counter(
+                counter_key=tag_counter_key,
+                source_cache_key=f"tag:{tag}",
+                increment=response_cost,
+            )
+
+    if org_id is not None:
+        org_counter_key = f"spend:org:{org_id}"
+        if org_counter_key not in reserved_counter_keys:
+            await _init_and_increment_spend_counter(
+                counter_key=org_counter_key,
+                source_cache_key=[
+                    f"org_id:{org_id}:with_budget",
+                    f"org_id:{org_id}",
+                ],
+                increment=response_cost,
+            )
+
+    if budget_reservation is not None:
+        budget_reservation["finalized"] = True
+
 
 async def _init_and_increment_spend_counter(
     counter_key: str,
-    source_cache_key: str,
+    source_cache_key: Union[str, List[str]],
     increment: float,
 ):
     """
@@ -1963,11 +2002,17 @@ async def _init_and_increment_window_spend_counter(
 
 async def _ensure_spend_counter_initialized(
     counter_key: str,
-    source_cache_key: str,
+    source_cache_key: Union[str, List[str]],
 ):
     current = await spend_counter_cache.async_get_cache(key=counter_key)
     if current is None:
-        source = await user_api_key_cache.async_get_cache(key=source_cache_key)
+        source = None
+        for cache_key in (
+            source_cache_key if isinstance(source_cache_key, list) else [source_cache_key]
+        ):
+            source = await user_api_key_cache.async_get_cache(key=cache_key)
+            if source is not None:
+                break
         base_spend = 0.0
         if source is not None:
             if isinstance(source, dict):

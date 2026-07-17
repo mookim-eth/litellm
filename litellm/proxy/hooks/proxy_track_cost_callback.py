@@ -209,27 +209,21 @@ class _ProxyDBLogger(CustomLogger):
                     team_id=team_id,
                     end_user_id=end_user_id,
                 ):
-                    ## UPDATE DATABASE
-                    await proxy_logging_obj.db_spend_update_writer.update_database(
-                        token=user_api_key,
-                        response_cost=response_cost,
+                    await _update_database_and_spend_counters(
+                        proxy_logging_obj=proxy_logging_obj,
+                        increment_spend_counters=increment_spend_counters,
+                        user_api_key=user_api_key,
                         user_id=user_id,
                         end_user_id=end_user_id,
                         team_id=team_id,
+                        org_id=org_id,
                         kwargs=kwargs,
                         completion_response=completion_response,
                         start_time=start_time,
                         end_time=end_time,
-                        org_id=org_id,
-                    )
-
-                    # Atomically update spend counters (in-memory + Redis)
-                    # for cross-pod budget enforcement.
-                    await increment_spend_counters(
-                        token=user_api_key,
-                        team_id=team_id,
-                        user_id=user_id,
                         response_cost=response_cost,
+                        budget_reservation=budget_reservation,
+                        request_tags=tags,
                     )
 
                     # update cache (fire-and-forget for backward compat:
@@ -432,6 +426,7 @@ async def _update_database_and_spend_counters(
     end_time: Any,
     response_cost: float,
     budget_reservation: Optional[dict],
+    request_tags: Optional[List[str]] = None,
 ) -> None:
     try:
         await proxy_logging_obj.db_spend_update_writer.update_database(
@@ -459,6 +454,8 @@ async def _update_database_and_spend_counters(
             response_cost=response_cost,
             org_id=org_id,
             budget_reservation=budget_reservation,
+            end_user_id=end_user_id,
+            tags=request_tags,
         )
     except Exception:
         if budget_reservation is not None:

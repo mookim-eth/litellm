@@ -239,7 +239,10 @@ async def _get_budget_counters(
                 entity_prefix=f"spend:key:{valid_token.token}",
                 entity_type="Key",
                 entity_id=valid_token.token,
-                budget_limits=valid_token.budget_limits,
+                # ``budget_limits`` was added after this branch. Keep the
+                # reservation hardening compatible without backporting that
+                # separate multi-window budget feature and its DB schema.
+                budget_limits=getattr(valid_token, "budget_limits", None),
                 fallback_spend=float(valid_token.spend or 0.0),
             )
         )
@@ -262,7 +265,7 @@ async def _get_budget_counters(
                 entity_prefix=f"spend:team:{team_id}",
                 entity_type="Team",
                 entity_id=team_id,
-                budget_limits=team_object.budget_limits,
+                budget_limits=getattr(team_object, "budget_limits", None),
                 fallback_spend=float(team_object.spend or 0.0),
             )
         )
