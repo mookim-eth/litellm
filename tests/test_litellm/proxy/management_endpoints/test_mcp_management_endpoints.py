@@ -671,10 +671,10 @@ class TestListMCPServers:
             for server in result:
                 if server.server_id == "db_server_allowed":
                     assert server.alias == "Allowed Gmail MCP"
-                    assert server.url == "https://gmail-mcp.example.com/mcp"
+                    assert server.url is None
                 elif server.server_id == "config_server_allowed":
                     assert server.alias == "Allowed Zapier MCP"
-                    assert server.url == "https://actions.zapier.com/mcp/sse"
+                    assert server.url is None
 
     @pytest.mark.asyncio
     async def test_admin_user_with_object_permission_respects_mcp_servers(self):
@@ -2459,8 +2459,10 @@ async def test_store_mcp_oauth_user_credential_returns_status():
             return_value=mock_prisma,
         ),
         patch(
-            "litellm.proxy.management_endpoints.mcp_management_endpoints.get_mcp_server",
-            new=AsyncMock(return_value=generate_mock_mcp_server_db_record(server_id=server_id)),
+            "litellm.proxy.management_endpoints.mcp_management_endpoints._authorize_user_mcp_server_state",
+            new=AsyncMock(
+                return_value=generate_mock_mcp_server_db_record(server_id=server_id)
+            ),
         ),
         patch(
             "litellm.proxy.management_endpoints.mcp_management_endpoints.store_user_oauth_credential",
@@ -2512,6 +2514,12 @@ async def test_delete_mcp_oauth_user_credential_only_deletes_oauth():
         patch(
             "litellm.proxy.management_endpoints.mcp_management_endpoints.get_user_oauth_credential",
             new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "litellm.proxy.management_endpoints.mcp_management_endpoints._authorize_user_mcp_server_state",
+            new=AsyncMock(
+                return_value=generate_mock_mcp_server_db_record(server_id=server_id)
+            ),
         ),
         patch(
             "litellm.proxy.management_endpoints.mcp_management_endpoints.delete_user_credential",
