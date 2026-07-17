@@ -1544,6 +1544,37 @@ if MCP_AVAILABLE:
 
         return Response(status_code=status.HTTP_202_ACCEPTED)
 
+    async def _authorize_user_mcp_server_state(
+        prisma_client: Any,
+        user_api_key_dict: UserAPIKeyAuth,
+        server_id: str,
+    ) -> LiteLLM_MCPServerTable:
+        """Resolve DB/config servers and enforce the gateway's server allowlist."""
+        server = await get_mcp_server(prisma_client, server_id)
+        if server is None:
+            registry_server = global_mcp_server_manager.get_mcp_server_by_id(server_id)
+            if registry_server is not None:
+                server = global_mcp_server_manager._build_mcp_server_table(
+                    registry_server
+                )
+
+        if _user_has_admin_view(user_api_key_dict):
+            if server is None:
+                raise HTTPException(status_code=404, detail={"error": "MCP server not found"})
+            return server
+
+        allowed_server_ids: set[str] = set()
+        for auth_context in await build_effective_auth_contexts(user_api_key_dict):
+            allowed_server_ids.update(
+                await global_mcp_server_manager.get_allowed_mcp_servers(auth_context)
+            )
+        if server is None or server.server_id not in allowed_server_ids:
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "User does not have permission to access this MCP server"},
+            )
+        return server
+
     @router.post(
         "/server/{server_id}/user-credential",
         description="Store or update the calling user's API key for a BYOK MCP server",
@@ -1560,12 +1591,9 @@ if MCP_AVAILABLE:
         prisma_client = get_prisma_client_or_throw(
             "Database not connected. Connect a database to your proxy"
         )
-        mcp_server = await get_mcp_server(prisma_client, server_id)
-        if mcp_server is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={"error": f"MCP Server {server_id} not found"},
-            )
+        mcp_server = await _authorize_user_mcp_server_state(
+            prisma_client, user_api_key_dict, server_id
+        )
         if not getattr(mcp_server, "is_byok", False):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1605,6 +1633,9 @@ if MCP_AVAILABLE:
         prisma_client = get_prisma_client_or_throw(
             "Database not connected. Connect a database to your proxy"
         )
+        await _authorize_user_mcp_server_state(
+            prisma_client, user_api_key_dict, server_id
+        )
         user_id = user_api_key_dict.user_id or ""
         if not user_id:
             raise HTTPException(
@@ -1640,12 +1671,9 @@ if MCP_AVAILABLE:
         prisma_client = get_prisma_client_or_throw(
             "Database not connected. Connect a database to your proxy"
         )
-        mcp_server = await get_mcp_server(prisma_client, server_id)
-        if mcp_server is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={"error": f"MCP Server {server_id} not found"},
-            )
+        await _authorize_user_mcp_server_state(
+            prisma_client, user_api_key_dict, server_id
+        )
         user_id = user_api_key_dict.user_id or ""
         if not user_id:
             raise HTTPException(
@@ -1687,6 +1715,9 @@ if MCP_AVAILABLE:
         """Revoke/delete the user's OAuth2 credential."""
         prisma_client = get_prisma_client_or_throw(
             "Database not connected. Connect a database to your proxy"
+        )
+        await _authorize_user_mcp_server_state(
+            prisma_client, user_api_key_dict, server_id
         )
         user_id = user_api_key_dict.user_id or ""
         if not user_id:
