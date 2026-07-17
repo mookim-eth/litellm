@@ -1049,6 +1049,12 @@ async def _common_key_generation_helper(  # noqa: PLR0915
         from litellm.proxy.proxy_server import prisma_client, user_api_key_cache
 
         if prisma_client:
+            if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value:
+                await _validate_caller_can_assign_key_org(
+                    user_api_key_dict=user_api_key_dict,
+                    organization_id=data.organization_id,
+                    prisma_client=prisma_client,
+                )
             org_table = await get_org_object(
                 org_id=data.organization_id,
                 user_api_key_cache=user_api_key_cache,
@@ -1406,6 +1412,37 @@ def check_org_key_rpm_tpm_limits(
         entity_tpm_limit=entity_tpm_limit,
         entity_type="organization",
     )
+
+
+async def _validate_caller_can_assign_key_org(
+    user_api_key_dict: UserAPIKeyAuth,
+    organization_id: str,
+    prisma_client: PrismaClient,
+) -> None:
+    """Require non-admin key assignment targets to be one of the caller's orgs."""
+    if user_api_key_dict.user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot assign a key to an organization without a caller user_id",
+        )
+
+    user_row = await prisma_client.db.litellm_usertable.find_unique(
+        where={"user_id": user_api_key_dict.user_id},
+        include={"organization_memberships": True},
+    )
+    memberships = (
+        getattr(user_row, "organization_memberships", None) if user_row else None
+    )
+    member_org_ids = {
+        membership.organization_id
+        for membership in (memberships or [])
+        if membership.organization_id is not None
+    }
+    if organization_id not in member_org_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Caller is not a member of organization_id={organization_id}",
+        )
 
 
 async def _check_org_key_limits(
@@ -2277,6 +2314,18 @@ async def _validate_update_key_data(
         user_api_key_cache=user_api_key_cache,
     )
 
+    existing_org_id = getattr(existing_key_row, "organization_id", None)
+    if (
+        data.organization_id is not None
+        and data.organization_id != existing_org_id
+        and not _is_proxy_admin
+    ):
+        await _validate_caller_can_assign_key_org(
+            user_api_key_dict=user_api_key_dict,
+            organization_id=data.organization_id,
+            prisma_client=prisma_client,
+        )
+
     # Only admins may modify team/org key budgets. Personal key owners may update
     # their own key budget, but still cannot exceed their delegation ceiling.
     if data.max_budget is not None and data.max_budget != existing_key_row.max_budget:
@@ -2357,9 +2406,7 @@ async def _validate_update_key_data(
         )
 
     # Check org key limits only when throughput-related fields or organization_id change
-    _org_id_to_check = data.organization_id or getattr(
-        existing_key_row, "organization_id", None
-    )
+    _org_id_to_check = data.organization_id or existing_org_id
     _throughput_fields_changed = (
         data.organization_id is not None
         or data.tpm_limit is not None
@@ -4060,6 +4107,18 @@ async def _execute_virtual_key_regeneration(
         existing_key_row=key_in_db,
         user_api_key_dict=user_api_key_dict,
     )
+
+    if data is not None and data.organization_id is not None:
+        existing_org_id = getattr(key_in_db, "organization_id", None)
+        is_proxy_admin = (
+            user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value
+        )
+        if data.organization_id != existing_org_id and not is_proxy_admin:
+            await _validate_caller_can_assign_key_org(
+                user_api_key_dict=user_api_key_dict,
+                organization_id=data.organization_id,
+                prisma_client=prisma_client,
+            )
 
     new_token = await get_new_token(data=data)
     new_token_hash = hash_token(new_token)
