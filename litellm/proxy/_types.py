@@ -2345,6 +2345,11 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
         None,
         description="CIDR ranges of trusted reverse proxies. When set, X-Forwarded-For headers are only trusted from these IPs.",
     )
+    mcp_xff_num_trusted_hops: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Number of trusted append-style proxies used to resolve MCP client IP from the right side of X-Forwarded-For.",
+    )
     use_cloudflare_header: Optional[bool] = Field(
         None,
         description="When True, use Cloudflare client-IP headers (CF-Connecting-IP / True-Client-IP) for requester IP extraction.",

@@ -6,12 +6,34 @@ External callers (public IPs) only see servers with available_on_public_internet
 """
 
 import ipaddress
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import Request
+from pydantic import TypeAdapter, ValidationError
 
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy.auth.auth_utils import _get_request_ip_address
+
+_POSITIVE_INT_ADAPTER = TypeAdapter(int)
+
+
+@dataclass(frozen=True, slots=True)
+class _HopCountUnset:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _HopCountInvalid:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _HopCount:
+    value: int
+
+
+_HopCountSetting = Union[_HopCountUnset, _HopCountInvalid, _HopCount]
 
 
 class IPAddressUtils:
@@ -107,6 +129,38 @@ class IPAddressUtils:
         return any(addr in network for network in networks)
 
     @staticmethod
+    def extract_client_ip_from_xff_hops(
+        xff_header: str, num_trusted_hops: int
+    ) -> Optional[str]:
+        entries = tuple(part.strip() for part in xff_header.split(",") if part.strip())
+        if num_trusted_hops < 1 or len(entries) < num_trusted_hops:
+            return None
+        candidate = entries[-num_trusted_hops]
+        try:
+            ipaddress.ip_address(candidate)
+        except ValueError:
+            return None
+        return candidate
+
+    @staticmethod
+    def _resolve_num_trusted_hops(raw_value: object) -> _HopCountSetting:
+        if raw_value is None:
+            return _HopCountUnset()
+        try:
+            value = _POSITIVE_INT_ADAPTER.validate_python(raw_value)
+        except ValidationError:
+            verbose_proxy_logger.warning(
+                "Invalid mcp_xff_num_trusted_hops; failing closed"
+            )
+            return _HopCountInvalid()
+        if value < 1:
+            verbose_proxy_logger.warning(
+                "mcp_xff_num_trusted_hops must be at least 1; failing closed"
+            )
+            return _HopCountInvalid()
+        return _HopCount(value)
+
+    @staticmethod
     def get_mcp_client_ip(
         request: Request,
         general_settings: Optional[Dict[str, Any]] = None,
@@ -157,6 +211,21 @@ class IPAddressUtils:
                         "XFF header from untrusted IP %s, ignoring", direct_ip
                     )
                     return direct_ip
+            hop_setting = IPAddressUtils._resolve_num_trusted_hops(
+                general_settings.get("mcp_xff_num_trusted_hops")
+            )
+            if isinstance(hop_setting, _HopCountInvalid):
+                return ""
+            if isinstance(hop_setting, _HopCount):
+                client_ip = IPAddressUtils.extract_client_ip_from_xff_hops(
+                    request.headers["x-forwarded-for"], hop_setting.value
+                )
+                if client_ip is None:
+                    verbose_proxy_logger.warning(
+                        "XFF chain is shorter than mcp_xff_num_trusted_hops or invalid; failing closed"
+                    )
+                    return ""
+                return client_ip
         return _get_request_ip_address(
             request,
             use_x_forwarded_for=use_xff,
