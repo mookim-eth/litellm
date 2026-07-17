@@ -453,8 +453,11 @@ def common_key_access_checks(
 
 
 _NON_ADMIN_RESTRICTED_KEY_CONTROL_FIELDS = (
+    "agent_id",
     "allowed_routes",
     "allowed_passthrough_routes",
+    "allowed_cache_controls",
+    "allowed_vector_store_indexes",
     "config",
     "aliases",
     "router_settings",
@@ -466,6 +469,22 @@ _NON_ADMIN_RESTRICTED_KEY_CONTROL_FIELDS = (
     "policies",
     "prompts",
     "blocked",
+    "budget_id",
+    "budget_duration",
+    "enforced_params",
+    "grace_period",
+    "max_parallel_requests",
+    "model_max_budget",
+    "model_rpm_limit",
+    "model_tpm_limit",
+    "project_id",
+    "rpm_limit",
+    "rpm_limit_type",
+    "spend",
+    "temp_budget_expiry",
+    "temp_budget_increase",
+    "tpm_limit",
+    "tpm_limit_type",
 )
 
 
@@ -501,6 +520,11 @@ def _check_non_admin_key_control_fields(
 
     for field_name in _NON_ADMIN_RESTRICTED_KEY_CONTROL_FIELDS:
         if field_name in fields_set:
+            # /key/update already has an object-aware spend gate below that also
+            # preserves the established error contract. Generate/regenerate still
+            # reject caller-supplied spend here.
+            if field_name == "spend" and isinstance(data, UpdateKeyRequest):
+                continue
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
@@ -556,6 +580,9 @@ async def _enforce_delegated_model_ceiling(
     requested_models = data.models
     caller_models = user_api_key_dict.models or []
 
+    if "models" not in fields_set and not inherit_when_omitted:
+        return
+
     if "models" not in fields_set and inherit_when_omitted:
         if caller_models:
             data.models = list(caller_models)
@@ -582,6 +609,68 @@ async def _enforce_delegated_model_ceiling(
             llm_model_list=llm_model_list,
             valid_token=user_api_key_dict,
             llm_router=llm_router,
+        )
+
+
+def _caller_expiry(user_api_key_dict: UserAPIKeyAuth) -> Optional[datetime]:
+    expires = user_api_key_dict.expires
+    if expires is None:
+        return None
+    if isinstance(expires, datetime):
+        parsed = expires
+    else:
+        parsed = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _enforce_delegated_expiry_ceiling(
+    data: Union[GenerateKeyRequest, UpdateKeyRequest, RegenerateKeyRequest],
+    user_api_key_dict: UserAPIKeyAuth,
+    *,
+    inherit_when_omitted: bool,
+) -> None:
+    """Prevent a finite-lived caller from minting or extending longer-lived keys."""
+    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+
+    caller_expires = _caller_expiry(user_api_key_dict)
+    if caller_expires is None:
+        return
+
+    fields_set = getattr(data, "model_fields_set", set())
+    if "duration" not in fields_set:
+        if inherit_when_omitted:
+            remaining_seconds = int(
+                (caller_expires - datetime.now(timezone.utc)).total_seconds()
+            )
+            if remaining_seconds <= 0:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"error": "The caller key has already expired."},
+                )
+            data.duration = f"{remaining_seconds}s"
+        return
+
+    requested_duration = data.duration
+    if requested_duration is None or requested_duration == "-1":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "A finite-lived caller cannot create a non-expiring key."
+            },
+        )
+
+    requested_expiry = datetime.now(timezone.utc) + timedelta(
+        seconds=duration_in_seconds(requested_duration)
+    )
+    if requested_expiry > caller_expires:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "Key expiry cannot exceed the caller key's expiry."
+            },
         )
 
 
@@ -849,6 +938,12 @@ async def _common_key_generation_helper(  # noqa: PLR0915
         data=data,
         llm_router=llm_router,
         premium_user=premium_user,
+    )
+
+    _enforce_delegated_expiry_ceiling(
+        data=data,
+        user_api_key_dict=user_api_key_dict,
+        inherit_when_omitted=True,
     )
 
     if (
@@ -2301,6 +2396,12 @@ async def _validate_update_key_data(
     )
 
     await _enforce_delegated_model_ceiling(
+        data=data,
+        user_api_key_dict=user_api_key_dict,
+        inherit_when_omitted=False,
+    )
+
+    _enforce_delegated_expiry_ceiling(
         data=data,
         user_api_key_dict=user_api_key_dict,
         inherit_when_omitted=False,
@@ -4249,7 +4350,9 @@ async def regenerate_key_fn(  # noqa: PLR0915
     try:
         from litellm.proxy.proxy_server import (
             hash_token,
+            llm_router,
             master_key,
+            premium_user,
             prisma_client,
             proxy_logging_obj,
             user_api_key_cache,
@@ -4317,6 +4420,18 @@ async def regenerate_key_fn(  # noqa: PLR0915
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": f"Key {key} not found."},
+            )
+
+        if data is not None:
+            _enforce_upperbound_key_params(data, fill_defaults=False)
+            await _validate_update_key_data(
+                data=data,  # type: ignore[arg-type]
+                existing_key_row=_key_in_db,
+                user_api_key_dict=user_api_key_dict,
+                llm_router=llm_router,
+                premium_user=premium_user,
+                prisma_client=prisma_client,
+                user_api_key_cache=user_api_key_cache,
             )
 
         # check if user has permission to regenerate key

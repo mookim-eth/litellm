@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import litellm
@@ -27,6 +28,7 @@ from litellm.proxy._types import (
     LitellmUserRoles,
     Member,
     ProxyException,
+    RegenerateKeyRequest,
     ResetSpendRequest,
     UpdateKeyRequest,
 )
@@ -37,6 +39,7 @@ from litellm.proxy.management_endpoints.key_management_endpoints import (
     _common_key_generation_helper,
     _check_non_admin_key_control_fields,
     _enforce_upperbound_key_params,
+    _enforce_delegated_expiry_ceiling,
     _get_and_validate_existing_key,
     _list_key_helper,
     _persist_deleted_verification_tokens,
@@ -9090,6 +9093,25 @@ class TestNonAdminKeyControlFields:
             ("policies", []),
             ("prompts", []),
             ("blocked", False),
+            ("agent_id", "privileged-agent"),
+            ("allowed_cache_controls", []),
+            (
+                "allowed_vector_store_indexes",
+                [{"index_name": "privileged", "index_permissions": ["write"]}],
+            ),
+            ("budget_id", "privileged-budget"),
+            ("budget_duration", "1s"),
+            ("enforced_params", []),
+            ("max_parallel_requests", 1000),
+            ("model_max_budget", {}),
+            ("model_rpm_limit", {}),
+            ("model_tpm_limit", {}),
+            ("project_id", "other-project"),
+            ("rpm_limit", 1000),
+            ("rpm_limit_type", "dynamic"),
+            ("spend", -100.0),
+            ("tpm_limit", 1000000),
+            ("tpm_limit_type", "dynamic"),
         ],
     )
     def test_non_admin_restricted_key_control_field_rejected(
@@ -9119,6 +9141,45 @@ class TestNonAdminKeyControlFields:
             _check_non_admin_key_control_fields(data=data, user_api_key_dict=caller)
 
         assert exc_info.value.status_code == 403
+
+    def test_non_admin_regenerate_grace_period_rejected(self):
+        data = RegenerateKeyRequest(grace_period="30d")
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            _check_non_admin_key_control_fields(data=data, user_api_key_dict=caller)
+
+        assert exc_info.value.status_code == 403
+        assert "grace_period" in str(exc_info.value.detail)
+
+    @pytest.mark.parametrize(
+        ("field_name", "field_value"),
+        [
+            ("temp_budget_expiry", datetime.now(timezone.utc) + timedelta(days=1)),
+            ("temp_budget_increase", 1000.0),
+        ],
+    )
+    def test_non_admin_update_temporary_budget_controls_rejected(
+        self, field_name, field_value
+    ):
+        data = UpdateKeyRequest.model_construct(
+            key="sk-test",
+            _fields_set={"key", field_name},
+            **{field_name: field_value},
+        )
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            _check_non_admin_key_control_fields(data=data, user_api_key_dict=caller)
+
+        assert exc_info.value.status_code == 403
+        assert field_name in str(exc_info.value.detail)
 
     def test_non_admin_omitted_control_fields_allowed(self):
         data = GenerateKeyRequest()
@@ -9154,6 +9215,73 @@ class TestNonAdminKeyControlFields:
 
         _check_non_admin_key_control_fields(data=data, user_api_key_dict=caller)
 
+
+class TestDelegatedKeyExpiryCeiling:
+    def test_generate_inherits_finite_caller_expiry_when_duration_omitted(self):
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            expires=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        data = GenerateKeyRequest()
+
+        _enforce_delegated_expiry_ceiling(
+            data=data,
+            user_api_key_dict=caller,
+            inherit_when_omitted=True,
+        )
+
+        assert data.duration is not None
+        inherited_seconds = int(data.duration.removesuffix("s"))
+        assert 3500 <= inherited_seconds <= 3600
+
+    @pytest.mark.parametrize("duration", [None, "-1", "2h"])
+    def test_finite_caller_cannot_delegate_longer_or_unbounded_expiry(self, duration):
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            expires=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        data = GenerateKeyRequest(duration=duration)
+
+        with pytest.raises(HTTPException) as exc_info:
+            _enforce_delegated_expiry_ceiling(
+                data=data,
+                user_api_key_dict=caller,
+                inherit_when_omitted=True,
+            )
+
+        assert exc_info.value.status_code == 403
+
+    def test_update_omitting_duration_preserves_existing_expiry(self):
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            expires=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        data = UpdateKeyRequest(key="sk-test")
+
+        _enforce_delegated_expiry_ceiling(
+            data=data,
+            user_api_key_dict=caller,
+            inherit_when_omitted=False,
+        )
+
+        assert data.duration is None
+
+    def test_unbounded_caller_can_choose_unbounded_expiry(self):
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            expires=None,
+        )
+        data = GenerateKeyRequest(duration=None)
+
+        _enforce_delegated_expiry_ceiling(
+            data=data,
+            user_api_key_dict=caller,
+            inherit_when_omitted=True,
+        )
 
 def test_jinja_prompt_manager_is_sandboxed():
     """
