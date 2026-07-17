@@ -5,6 +5,32 @@ from starlette.requests import Request
 
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.auth.user_api_key_auth import _run_centralized_common_checks
+
+
+@pytest.mark.asyncio
+async def test_centralized_checks_skip_public_readiness_route():
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": "/health/readiness",
+            "headers": [],
+        }
+    )
+
+    with patch(
+        "litellm.proxy.auth.user_api_key_auth.common_checks",
+        new=AsyncMock(),
+    ) as common:
+        await _run_centralized_common_checks(
+            user_api_key_auth_obj=UserAPIKeyAuth(),
+            request=request,
+            request_data={},
+            route="/health/readiness",
+        )
+
+    common.assert_not_awaited()
 
 
 @pytest.mark.asyncio

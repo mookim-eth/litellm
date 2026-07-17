@@ -1606,7 +1606,16 @@ async def _run_centralized_common_checks(
         user_custom_auth,
     )
 
-    if master_key is None:
+    if (
+        route in LiteLLMRoutes.public_routes.value
+        or route_in_additonal_public_routes(current_route=route)
+    ):
+        return
+    if master_key is None and not (
+        general_settings.get("enable_jwt_auth", False)
+        or general_settings.get("enable_oauth2_auth", False)
+        or general_settings.get("enable_oauth2_proxy_auth", False)
+    ):
         return
     if user_custom_auth is not None and not general_settings.get(
         "custom_auth_run_common_checks", False
@@ -1694,14 +1703,11 @@ async def _run_centralized_common_checks(
         end_user_object = None
         global_proxy_spend = None
 
-    if (
-        user_object is None
-        and user_api_key_auth_obj.user_role == LitellmUserRoles.PROXY_ADMIN
-    ):
+    if user_api_key_auth_obj.user_role == LitellmUserRoles.PROXY_ADMIN:
         user_object = LiteLLM_UserTable(
             user_id=user_api_key_auth_obj.user_id or litellm_proxy_admin_name,
             user_role=LitellmUserRoles.PROXY_ADMIN,
-            spend=0.0,
+            spend=user_object.spend if user_object is not None else 0.0,
         )
 
     if project_object is not None:
