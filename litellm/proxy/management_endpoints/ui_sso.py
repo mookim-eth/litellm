@@ -125,6 +125,23 @@ router = APIRouter()
 _OAUTH_TOKEN_FIELDS = frozenset({"access_token", "id_token", "refresh_token"})
 
 
+def _validate_pkce_state_cookie(request: Request) -> None:
+    """Bind a cached PKCE verifier to the browser that initiated the login."""
+    url_state = request.query_params.get("state")
+    cookie_state = request.cookies.get("litellm_oauth_state")
+    if (
+        not url_state
+        or not cookie_state
+        or not secrets.compare_digest(url_state, cookie_state)
+    ):
+        raise ProxyException(
+            message="Invalid OAuth state parameter for this browser session.",
+            type=ProxyErrorTypes.auth_error,
+            param="state",
+            code=status.HTTP_400_BAD_REQUEST,
+        )
+
+
 def normalize_email(email: Optional[str]) -> Optional[str]:
     """
     Normalize email address to lowercase for consistent storage and comparison.
@@ -423,6 +440,7 @@ async def google_login(
             google_client_id=google_client_id,
             generic_client_id=generic_client_id,
             state=cli_state,
+            request=request,
         )
         if return_to is not None and sso_redirect is not None:
             if SSOAuthenticationHandler._validate_return_to(return_to):
@@ -904,6 +922,7 @@ async def get_generic_sso_response(
         authorization_code = request.query_params.get("code")
 
         if code_verifier:
+            _validate_pkce_state_cookie(request)
             if not authorization_code:
                 raise ProxyException(
                     message="Missing authorization code in callback",
@@ -1896,6 +1915,7 @@ class SSOAuthenticationHandler:
         microsoft_client_id: Optional[str] = None,
         generic_client_id: Optional[str] = None,
         state: Optional[str] = None,
+        request: Optional[Request] = None,
     ) -> Optional[RedirectResponse]:
         """
         Step 1. Call Get Login Redirect for the SSO provider. Send the redirect response to `redirect_url`
@@ -2015,6 +2035,7 @@ class SSOAuthenticationHandler:
                 generic_sso=generic_sso,
                 state=state,
                 generic_authorization_endpoint=generic_authorization_endpoint,
+                request=request,
             )
         raise ValueError(
             "Unknown SSO provider. Please setup SSO with client IDs https://docs.litellm.ai/docs/proxy/admin_ui_sso"
@@ -2025,6 +2046,7 @@ class SSOAuthenticationHandler:
         generic_sso: Any,
         state: Optional[str] = None,
         generic_authorization_endpoint: Optional[str] = None,
+        request: Optional[Request] = None,
     ) -> Optional[RedirectResponse]:
         """
         Get the redirect response for Generic SSO
@@ -2104,6 +2126,18 @@ class SSOAuthenticationHandler:
 
                     # Update the redirect response
                     redirect_response.headers["location"] = new_url
+
+                state_value = redirect_params.get("state")
+                if state_value and redirect_response is not None:
+                    secure_cookie = request is None or request.url.scheme == "https"
+                    redirect_response.set_cookie(
+                        key="litellm_oauth_state",
+                        value=state_value,
+                        max_age=600,
+                        httponly=True,
+                        samesite="lax",
+                        secure=secure_cookie,
+                    )
             return redirect_response
 
     @staticmethod
@@ -3726,6 +3760,7 @@ async def debug_sso_login(request: Request):
             microsoft_client_id=microsoft_client_id,
             google_client_id=google_client_id,
             generic_client_id=generic_client_id,
+            request=request,
         )
 
 
