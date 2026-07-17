@@ -498,6 +498,36 @@ class TestGuardrailSensitiveFieldStripping:
         assert "sk-secret" not in serialized
 
 
+def test_guardrail_response_masks_embedded_callback_credentials():
+    import json
+
+    from litellm.types.guardrails import GuardrailEventHooks
+
+    guardrail = CustomGuardrail(
+        guardrail_name="test_guardrail",
+        event_hook=GuardrailEventHooks.pre_call,
+    )
+    request_data: dict = {"metadata": {}}
+    plaintext = "lsv2_pt_abcdef1234567890"
+
+    guardrail.add_standard_logging_guardrail_information_to_request_data(
+        guardrail_json_response={
+            "metadata_snapshot": {
+                "callback_vars": {
+                    "langsmith_api_key": plaintext,
+                    "langsmith_project": "project",
+                }
+            }
+        },
+        request_data=request_data,
+        guardrail_status="success",
+    )
+
+    serialized = json.dumps(request_data)
+    assert plaintext not in serialized
+    assert "project" in serialized
+
+
 class TestCustomGuardrailPassthroughSupport:
     """Tests for passthrough endpoint guardrail support - Issue fixes."""
 

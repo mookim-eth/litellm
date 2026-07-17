@@ -1,6 +1,8 @@
 from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Set
 
+from pydantic import BaseModel
+
 from litellm.constants import DEFAULT_MAX_RECURSE_DEPTH_SENSITIVE_DATA_MASKER
 
 
@@ -141,6 +143,39 @@ class SensitiveDataMasker:
                 masked_data[k] = "<unable to serialize>"
 
         return masked_data
+
+
+_credential_masker = SensitiveDataMasker()
+
+
+def mask_credentials_in_payload(data: object) -> object:
+    """Mask sensitive string leaves without distorting logging payload types."""
+    return _walk_payload(data, key_is_sensitive=False, depth=0)
+
+
+def _walk_payload(node: object, key_is_sensitive: bool, depth: int) -> object:
+    if depth >= DEFAULT_MAX_RECURSE_DEPTH_SENSITIVE_DATA_MASKER:
+        return node
+    if isinstance(node, Mapping):
+        return {
+            key: _walk_payload(
+                value,
+                _credential_masker.is_sensitive_key(key),
+                depth + 1,
+            )
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [_walk_payload(item, key_is_sensitive, depth + 1) for item in node]
+    if isinstance(node, tuple):
+        return tuple(
+            _walk_payload(item, key_is_sensitive, depth + 1) for item in node
+        )
+    if isinstance(node, BaseModel):
+        return _walk_payload(node.model_dump(), key_is_sensitive, depth)
+    if key_is_sensitive and isinstance(node, str) and node:
+        return _credential_masker._mask_value(node)
+    return node
 
 
 # Usage example:

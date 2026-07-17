@@ -151,3 +151,28 @@ def test_cost_per_token_fields_not_masked():
     # Actual secrets must still be masked
     assert "*" in masked["api_key"]
     assert "*" in masked["access_token"]
+
+
+def test_mask_credentials_in_payload_preserves_types_and_masks_secrets():
+    from litellm.litellm_core_utils.sensitive_data_masker import (
+        mask_credentials_in_payload,
+    )
+
+    plaintext = "lsv2_pt_abcdef1234567890"
+    result = mask_credentials_in_payload(
+        {
+            "reason": None,
+            "confidence": 0.42,
+            "flagged": True,
+            "callback_vars": {
+                "langsmith_api_key": plaintext,
+                "langsmith_project": "proj",
+            },
+        }
+    )
+
+    assert result["reason"] is None
+    assert result["confidence"] == 0.42
+    assert result["flagged"] is True
+    assert result["callback_vars"]["langsmith_project"] == "proj"
+    assert plaintext not in str(result)

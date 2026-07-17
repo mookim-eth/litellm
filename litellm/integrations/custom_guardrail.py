@@ -599,6 +599,14 @@ class CustomGuardrail(CustomLogger):
                 if isinstance(item, dict):
                     item.pop("secret_fields", None)
 
+        from litellm.litellm_core_utils.sensitive_data_masker import (
+            mask_credentials_in_payload,
+        )
+
+        clean_guardrail_response = mask_credentials_in_payload(
+            clean_guardrail_response
+        )
+
         slg = StandardLoggingGuardrailInformation(
             guardrail_name=self.guardrail_name,
             guardrail_provider=guardrail_provider,
