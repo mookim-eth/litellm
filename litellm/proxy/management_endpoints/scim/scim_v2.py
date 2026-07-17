@@ -393,6 +393,24 @@ def _scim_active_value(metadata: Optional[Dict[str, Any]]) -> Optional[bool]:
     return bool(metadata["scim_active"])
 
 
+async def _delete_rows_referencing_user(prisma_client: Any, user_id: str) -> None:
+    await prisma_client.db.litellm_invitationlink.delete_many(
+        where={
+            "OR": [
+                {"user_id": user_id},
+                {"created_by": user_id},
+                {"updated_by": user_id},
+            ]
+        }
+    )
+    await prisma_client.db.litellm_organizationmembership.delete_many(
+        where={"user_id": user_id}
+    )
+    await prisma_client.db.litellm_teammembership.delete_many(
+        where={"user_id": user_id}
+    )
+
+
 async def _create_user_if_not_exists(
     user_id: str, created_via: str = "scim_group"
 ) -> Optional[NewUserResponse]:
@@ -1078,6 +1096,7 @@ async def delete_user(
         # Block keys before deleting the owner row. Auth intentionally permits
         # some legacy orphan rows, so deleting the user alone is insufficient.
         await _set_user_keys_blocked(user_id=user_id, blocked=True)
+        await _delete_rows_referencing_user(prisma_client, user_id)
 
         # Delete user
         await prisma_client.db.litellm_usertable.delete(where={"user_id": user_id})

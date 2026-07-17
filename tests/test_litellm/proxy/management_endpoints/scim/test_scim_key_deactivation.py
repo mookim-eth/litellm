@@ -86,6 +86,9 @@ async def test_scim_delete_blocks_keys_before_deleting_owner():
         return_value=LiteLLM_UserTable(user_id="user-1", teams=[])
     )
     prisma.db.litellm_usertable.delete = AsyncMock()
+    prisma.db.litellm_invitationlink.delete_many = AsyncMock()
+    prisma.db.litellm_organizationmembership.delete_many = AsyncMock()
+    prisma.db.litellm_teammembership.delete_many = AsyncMock()
 
     with (
         patch("litellm.proxy.proxy_server.prisma_client", prisma),
@@ -97,6 +100,13 @@ async def test_scim_delete_blocks_keys_before_deleting_owner():
         await delete_user(user_id="user-1")
 
     set_blocked.assert_awaited_once_with(user_id="user-1", blocked=True)
+    prisma.db.litellm_invitationlink.delete_many.assert_awaited_once()
+    prisma.db.litellm_organizationmembership.delete_many.assert_awaited_once_with(
+        where={"user_id": "user-1"}
+    )
+    prisma.db.litellm_teammembership.delete_many.assert_awaited_once_with(
+        where={"user_id": "user-1"}
+    )
     prisma.db.litellm_usertable.delete.assert_awaited_once()
 
 
