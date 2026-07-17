@@ -59,6 +59,16 @@ def test_request_body_allows_informational_callback_fields():
     )
 
 
+def test_request_body_always_rejects_server_owned_model_list():
+    with pytest.raises(ValueError, match="model_list is not allowed"):
+        is_request_body_safe(
+            request_body={"model": "gpt-4", "model_list": []},
+            general_settings={"allow_client_side_credentials": True},
+            llm_router=None,
+            model="gpt-4",
+        )
+
+
 class TestGetKeyModelRpmLimit:
     """Tests for get_key_model_rpm_limit function."""
 

@@ -283,6 +283,7 @@ _BANNED_REQUEST_BODY_PARAMS: Tuple[str, ...] = (
     "s3_endpoint_url",
     "sagemaker_base_url",
     "deployment_url",
+    "model_list",
     *sorted(_build_banned_observability_params()),
     *_custom_pricing_fields(),
 )
@@ -327,6 +328,12 @@ def is_request_body_safe(
     A malicious user can set the ﻿api_base to their own domain and invoke POST /chat/completions to intercept and steal the OpenAI API key.
     Relevant issue: https://huntr.com/bounties/4001e1a2-7b7a-4776-a3ae-e6692ec3d997
     """
+    # This is server-owned router configuration, not a client credential
+    # passthrough field, so the client-side-credentials opt-in never permits it.
+    if "model_list" in request_body:
+        raise ValueError(
+            "Rejected Request: model_list is not allowed in the request body."
+        )
     _check_banned_params(request_body, general_settings, llm_router, model)
     for nested_key in _NESTED_CONFIG_KEYS:
         nested = request_body.get(nested_key)
