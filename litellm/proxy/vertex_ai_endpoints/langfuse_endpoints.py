@@ -14,9 +14,12 @@ from base64 import b64encode
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response, status
 
 import litellm
+from litellm.litellm_core_utils.disabled_observability_integrations import (
+    DISABLED_OBSERVABILITY_INTEGRATIONS_MESSAGE,
+)
 from litellm.proxy._types import *
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.common_utils.http_parsing_utils import _safe_get_request_headers
@@ -54,6 +57,13 @@ async def langfuse_proxy_route(
 
     [Docs](https://docs.litellm.ai/docs/pass_through/langfuse)
     """
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={"error": DISABLED_OBSERVABILITY_INTEGRATIONS_MESSAGE},
+    )
+
+    # Kept unreachable so the upstream implementation remains easy to restore once
+    # its credential isolation and SSRF protections have been fully backported.
     from litellm.proxy.proxy_server import proxy_config
 
     ## CHECK FOR LITELLM API KEY IN THE QUERY PARAMS - ?..key=LITELLM_API_KEY

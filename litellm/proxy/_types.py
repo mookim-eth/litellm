@@ -1817,6 +1817,9 @@ class AddTeamCallback(LiteLLMPydanticObjectBase):
     @model_validator(mode="before")
     @classmethod
     def validate_callback_vars(cls, values):
+        from litellm.litellm_core_utils.disabled_observability_integrations import (
+            ensure_observability_integration_enabled,
+        )
         from litellm.litellm_core_utils.initialize_dynamic_callback_params import (
             validate_no_callback_env_reference,
         )
@@ -1832,6 +1835,7 @@ class AddTeamCallback(LiteLLMPydanticObjectBase):
             validate_no_callback_env_reference(
                 key, callback_vars[key], source="key/team callback metadata"
             )
+        ensure_observability_integration_enabled(str(values.get("callback_name", "")))
         return values
 
 

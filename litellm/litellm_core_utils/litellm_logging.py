@@ -153,6 +153,9 @@ from ..integrations.langfuse.langfuse import LangFuseLogger
 from ..integrations.langfuse.langfuse_handler import LangFuseHandler
 from ..integrations.langfuse.langfuse_prompt_management import LangfusePromptManagement
 from ..integrations.langsmith import LangsmithLogger
+from .disabled_observability_integrations import (
+    ensure_observability_integration_enabled,
+)
 from ..integrations.litellm_agent import LiteLLMAgentModelResolver
 from ..integrations.literal_ai import LiteralAILogger
 from ..integrations.logfire_logger import LogfireLevel, LogfireLogger
@@ -3636,6 +3639,8 @@ def set_callbacks(callback_list, function_id=None):  # noqa: PLR0915
 
     try:
         for callback in callback_list:
+            if isinstance(callback, str):
+                ensure_observability_integration_enabled(callback)
             if callback == "sentry":
                 try:
                     import sentry_sdk
@@ -3741,6 +3746,7 @@ def _init_custom_logger_compatible_class(  # noqa: PLR0915
     Initialize a custom logger compatible class
     """
     try:
+        ensure_observability_integration_enabled(logging_integration)
         custom_logger_init_args = custom_logger_init_args or {}
         if logging_integration == "agentops":  # Add AgentOps initialization
             for callback in _in_memory_loggers:
@@ -4400,6 +4406,7 @@ def get_custom_logger_compatible_class(  # noqa: PLR0915
     logging_integration: _custom_logger_compatible_callbacks_literal,
 ) -> Optional[CustomLogger]:
     try:
+        ensure_observability_integration_enabled(logging_integration)
         if logging_integration == "lago":
             for callback in _in_memory_loggers:
                 if isinstance(callback, LagoLogger):

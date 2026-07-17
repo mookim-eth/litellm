@@ -224,6 +224,14 @@ already covered here:
       (`allow_env_credentials=False`).
   - SSTI stage was already covered here via `ImmutableSandboxedEnvironment` in
     GitLab/BitBucket/Dotprompt/Arize prompt managers.
+  - Local review on 2026-07-17 found the backport incomplete: the Langfuse
+    prompt-management dynamic-host calls still permit environment credential
+    fallback, and `/langfuse/*` passthrough still lacks upstream credential
+    isolation and SSRF/path hardening. Do not mark this advisory fully fixed.
+  - This branch disables all proxy-side Langfuse, Langfuse OTEL, and Langsmith
+    features as a compensating control. Do not re-enable any of them until the
+    omitted parts of upstream `15d4d51453` and their security tests are
+    backported and reviewed.
 
 Do not treat this section as a local patch inventory. It is only a security
 advisory filter for future upstream syncs. If a future upstream sync contains

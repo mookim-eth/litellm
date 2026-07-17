@@ -162,6 +162,17 @@ async def health_services_endpoint(  # noqa: PLR0915
     ```
     """
     try:
+        from litellm.litellm_core_utils.disabled_observability_integrations import (
+            DISABLED_OBSERVABILITY_INTEGRATIONS,
+            DISABLED_OBSERVABILITY_INTEGRATIONS_MESSAGE,
+        )
+
+        if service in DISABLED_OBSERVABILITY_INTEGRATIONS:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": DISABLED_OBSERVABILITY_INTEGRATIONS_MESSAGE},
+            )
+
         from litellm.proxy.proxy_server import (
             general_settings,
             prisma_client,

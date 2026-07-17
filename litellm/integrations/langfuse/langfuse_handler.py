@@ -9,6 +9,9 @@ Handles Key/Team Based Langfuse Logging
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from litellm.litellm_core_utils.litellm_logging import StandardCallbackDynamicParams
+from litellm.litellm_core_utils.disabled_observability_integrations import (
+    ensure_observability_integration_enabled,
+)
 
 from .langfuse import LangFuseLogger, LangfuseLoggingConfig
 
@@ -35,6 +38,7 @@ class LangFuseHandler:
         2. If dynamic credentials are not passed return the globalLangfuseLogger
 
         """
+        ensure_observability_integration_enabled("langfuse")
         temp_langfuse_logger: Optional[LangFuseLogger] = globalLangfuseLogger
         if (
             LangFuseHandler._dynamic_langfuse_credentials_are_passed(
