@@ -232,6 +232,29 @@ already covered here:
     features as a compensating control. Do not re-enable any of them until the
     omitted parts of upstream `15d4d51453` and their security tests are
     backported and reviewed.
+- Organization-admin boundary fixes from `91bfbe6efe`, `a9bc5549b2`, and
+  `467166fdd7`.
+  - Multi-organization authorization requires admin access to every requested
+    organization; team queries remain organization-scoped when filtering by a
+    target user; organization writes and every `/user/delete` target receive
+    object-level authorization before any mutation.
+- SCIM key-revocation chain from `236e896189`, `9aef4ee695`, `8c409006ad`,
+  `be4f46683a`, and `8cf3bf11bd`.
+  - Deactivation and deletion revoke virtual keys and invalidate caches,
+    including legacy `blocked=NULL` rows. Reactivation only restores keys
+    carrying the SCIM block marker, omitted `active` on PUT preserves the prior
+    state, and user deletion clears referencing rows before deleting the user.
+- Redaction-control ingress fixes from `7497674661` and `09c4d0d01e`.
+  - Client attempts to disable global message redaction are stripped unless an
+    administrator-owned key or team metadata flag explicitly opts in.
+- MCP OAuth endpoint type gating from `c370503091`.
+  - Authorize, token, registration, and named discovery flows reject or hide
+    non-OAuth MCP servers.
+- Guardrail enforcement fixes from `939117bb8d`, `7e57b15de2`, and
+  `9b78dc78c2`.
+  - Apply-style model pre-call guardrails execute through the unified hook,
+    fresh team metadata cannot be shadowed by unrelated request metadata, and
+    non-streaming pass-through responses run configured post-call guardrails.
 
 Do not treat this section as a local patch inventory. It is only a security
 advisory filter for future upstream syncs. If a future upstream sync contains
