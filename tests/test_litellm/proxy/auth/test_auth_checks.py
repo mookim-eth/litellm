@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 import litellm
 from litellm.proxy._types import (
@@ -31,6 +32,7 @@ from litellm.proxy.auth.auth_checks import (
     _can_object_call_vector_stores,
     _check_team_member_budget,
     _get_fuzzy_user_object,
+    _guardrail_modification_check,
     _get_team_db_check,
     _log_budget_lookup_failure,
     _team_max_budget_check,
@@ -41,6 +43,24 @@ from litellm.proxy.auth.auth_checks import (
     get_user_object,
     vector_store_access_check,
 )
+
+
+@pytest.mark.parametrize(
+    "container_key,value",
+    [
+        ("metadata", {"disable_global_guardrails": True}),
+        ("litellm_metadata", {"disable_global_guardrail": False}),
+        ("metadata", json.dumps({"opted_out_global_guardrails": []})),
+    ],
+)
+def test_guardrail_modification_variants_fail_closed(container_key, value):
+    with pytest.raises(HTTPException) as exc_info:
+        _guardrail_modification_check(
+            request_body={container_key: value},
+            team_object=None,
+        )
+
+    assert exc_info.value.status_code == 403
 from litellm.proxy.common_utils.encrypt_decrypt_utils import decrypt_value_helper
 from litellm.utils import get_utc_datetime
 

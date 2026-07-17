@@ -18,6 +18,7 @@ from fastapi import HTTPException, Request, status
 from pydantic import BaseModel
 
 import litellm
+from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
 from litellm._logging import verbose_proxy_logger
 from litellm.caching.caching import DualCache
 from litellm.caching.dual_cache import LimitedSizeOrderedDict
@@ -331,12 +332,61 @@ def _global_proxy_budget_check(
             )
 
 
+_GUARDRAIL_MODIFICATION_KEYS: tuple = (
+    "guardrails",
+    "disable_global_guardrails",
+    "disable_global_guardrail",
+    "opted_out_global_guardrails",
+)
+
+
 def _guardrail_modification_check(
     request_body: dict, team_object: Optional[LiteLLM_TeamTable]
 ) -> None:
-    _request_metadata: dict = request_body.get("metadata", {}) or {}
-    if not _request_metadata.get("guardrails"):
+    """Reject all request-controlled guardrail modification variants."""
+
+    def _coerce_to_dict(container: Any) -> Optional[dict]:
+        if isinstance(container, dict):
+            return container
+        if isinstance(container, str):
+            parsed = safe_json_loads(container)
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
+    def _requested_modification_keys(container: Any) -> set:
+        coerced = _coerce_to_dict(container)
+        if coerced is None:
+            return set()
+        # Presence is sufficient: false/empty values can still clear or
+        # override policy state in downstream merge paths.
+        return {key for key in _GUARDRAIL_MODIFICATION_KEYS if key in coerced}
+
+    requested_keys = (
+        _requested_modification_keys(request_body.get("metadata"))
+        | _requested_modification_keys(request_body.get("litellm_metadata"))
+        | _requested_modification_keys(request_body)
+    )
+    if not requested_keys:
         return
+
+    bypass_keys = requested_keys - {"guardrails"}
+    if bypass_keys:
+        team_metadata = team_object.metadata if team_object is not None else None
+        guardrail_policy = (
+            team_metadata.get("guardrails")
+            if isinstance(team_metadata, dict)
+            else None
+        )
+        if not (
+            isinstance(guardrail_policy, dict)
+            and guardrail_policy.get("modify_guardrails") is True
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "Your team does not have permission to modify guardrails."
+                },
+            )
 
     from litellm.proxy.guardrails.guardrail_helpers import can_modify_guardrails
 
