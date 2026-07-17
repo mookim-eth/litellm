@@ -4638,21 +4638,22 @@ async def get_team_daily_activity(
     # If not, filter by user's API keys
     user_api_keys: Optional[List[str]] = None
     if not _user_has_admin_view(user_api_key_dict) and team_ids_list and team_aliases:
-        # Check if user is team admin or has usage view permission for any team
-        has_full_team_view = False
+        # Full view is valid only if every requested team grants it. An admin
+        # of team A must not gain key-level visibility into team B by batching
+        # both IDs in one request.
+        has_full_team_view = True
         for team_alias in team_aliases:
             team_obj = LiteLLM_TeamTable(**team_alias.model_dump())
-            if _is_user_team_admin(
+            is_team_admin = _is_user_team_admin(
                 user_api_key_dict=user_api_key_dict, team_obj=team_obj
-            ):
-                has_full_team_view = True
-                break
-            if _team_member_has_permission(
+            )
+            has_permission = _team_member_has_permission(
                 user_api_key_dict=user_api_key_dict,
                 team_obj=team_obj,
                 permission="/team/daily/activity",
-            ):
-                has_full_team_view = True
+            )
+            if not (is_team_admin or has_permission):
+                has_full_team_view = False
                 break
 
         # If user does not have full team view, filter by their API keys

@@ -31,6 +31,7 @@ from litellm.types.agents import (
 from litellm.litellm_core_utils.litellm_logging import _get_masked_values
 from litellm.types.llms.custom_http import httpxSpecialProvider
 from litellm.types.proxy.management_endpoints.common_daily_activity import (
+    DailySpendMetadata,
     SpendAnalyticsPaginatedResponse,
 )
 
@@ -956,7 +957,50 @@ async def get_agent_daily_activity(
             exclude_agent_ids.split(",") if exclude_agent_ids else None
         )
 
-    where_condition = {}
+    from litellm.proxy.agent_endpoints.auth.agent_permission_handler import (
+        AgentRequestHandler,
+    )
+    from litellm.proxy.management_endpoints.common_utils import _user_has_admin_view
+
+    where_condition: Dict[str, Any] = {}
+    if not _user_has_admin_view(user_api_key_dict):
+        permitted_agent_ids = await AgentRequestHandler.get_allowed_agents(
+            user_api_key_auth=user_api_key_dict
+        )
+        if not permitted_agent_ids:
+            owned_records = await prisma_client.db.litellm_agentstable.find_many(
+                where={"created_by": user_api_key_dict.user_id}
+            )
+            permitted_agent_ids = [agent.agent_id for agent in owned_records]
+
+        if agent_ids_list:
+            agent_ids_list = [
+                agent_id
+                for agent_id in agent_ids_list
+                if agent_id in permitted_agent_ids
+            ]
+        else:
+            agent_ids_list = list(permitted_agent_ids)
+
+        if not agent_ids_list:
+            return SpendAnalyticsPaginatedResponse(
+                results=[],
+                metadata=DailySpendMetadata(
+                    total_spend=0.0,
+                    total_prompt_tokens=0,
+                    total_completion_tokens=0,
+                    total_tokens=0,
+                    total_api_requests=0,
+                    total_successful_requests=0,
+                    total_failed_requests=0,
+                    total_cache_read_input_tokens=0,
+                    total_cache_creation_input_tokens=0,
+                    page=page,
+                    total_pages=0,
+                    has_more=False,
+                ),
+            )
+
     if agent_ids_list:
         where_condition["agent_id"] = {"in": list(agent_ids_list)}
 
