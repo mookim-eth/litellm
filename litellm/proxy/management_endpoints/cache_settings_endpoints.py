@@ -25,6 +25,9 @@ from litellm.types.management_endpoints import (
 
 router = APIRouter()
 
+_CACHE_SENSITIVE_FIELDS = {"password", "sentinel_password", "url"}
+_REDACTED_CACHE_VALUE = "***REDACTED***"
+
 
 class CacheSettingsManager:
     """
@@ -206,6 +209,10 @@ async def get_cache_settings(
                         decrypted_settings["redis_type"] = "sentinel"
                     else:
                         decrypted_settings["redis_type"] = "node"
+
+                for sensitive_field in _CACHE_SENSITIVE_FIELDS:
+                    if decrypted_settings.get(sensitive_field):
+                        decrypted_settings[sensitive_field] = _REDACTED_CACHE_VALUE
 
                 current_values = decrypted_settings
 
