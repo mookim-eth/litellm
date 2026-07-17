@@ -2817,3 +2817,64 @@ def test_resolve_provider_hint_from_model_name():
         "azure/gpt-4", config, None, pre_alias_model_name="gpt-4", provider="azure"
     )
     assert result == "azure-cred"
+@pytest.mark.parametrize(
+    ("auth_metadata", "expected_present"),
+    [({}, False), ({"allow_client_message_redaction_opt_out": True}, True)],
+)
+@pytest.mark.asyncio
+async def test_client_redaction_opt_out_requires_admin_owned_key_flag(
+    auth_metadata, expected_present
+):
+    from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
+
+    request = MagicMock(spec=Request)
+    request.url.path = "/v1/chat/completions"
+    request.url = MagicMock()
+    request.url.__str__.return_value = "http://localhost/v1/chat/completions"
+    request.method = "POST"
+    request.query_params = {}
+    request.headers = {
+        "Content-Type": "application/json",
+        "litellm-disable-message-redaction": "true",
+    }
+    request.client = MagicMock(host="127.0.0.1")
+
+    original = litellm.turn_off_message_logging
+    litellm.turn_off_message_logging = True
+    try:
+        result = await add_litellm_data_to_request(
+            data={
+                "model": "gpt-3.5-turbo",
+                "turn_off_message_logging": False,
+                "metadata": {
+                    "headers": {"litellm-disable-message-redaction": "true"}
+                },
+                "litellm_metadata": json.dumps(
+                    {
+                        "headers": {
+                            "LiteLLM-Disable-Message-Redaction": "true"
+                        }
+                    }
+                ),
+            },
+            request=request,
+            user_api_key_dict=UserAPIKeyAuth(
+                api_key="hashed-key", metadata=auth_metadata
+            ),
+            proxy_config=MagicMock(),
+            general_settings={},
+            version="test-version",
+        )
+    finally:
+        litellm.turn_off_message_logging = original
+
+    assert ("turn_off_message_logging" in result) is expected_present
+    for headers in (
+        result["metadata"]["headers"],
+        result["proxy_server_request"]["headers"],
+        (result.get("litellm_metadata") or {}).get("headers", {}),
+    ):
+        assert (
+            "litellm-disable-message-redaction"
+            in {name.lower() for name in headers}
+        ) is expected_present

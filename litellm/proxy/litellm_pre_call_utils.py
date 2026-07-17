@@ -171,8 +171,12 @@ _UNTRUSTED_REQUEST_HEADER_CONTROL_FIELDS = frozenset(
 )
 
 
-def _strip_untrusted_request_header_controls(headers: Any) -> None:
+def _strip_untrusted_request_header_controls(
+    headers: Any, *, allow_redaction_opt_out: bool = False
+) -> None:
     if not isinstance(headers, dict):
+        return
+    if allow_redaction_opt_out:
         return
     for header_name in list(headers):
         if (
@@ -182,12 +186,17 @@ def _strip_untrusted_request_header_controls(headers: Any) -> None:
             headers.pop(header_name, None)
 
 
-def _strip_untrusted_metadata_controls(data: Dict[str, Any]) -> None:
+def _strip_untrusted_metadata_controls(
+    data: Dict[str, Any], *, allow_redaction_opt_out: bool = False
+) -> None:
     for metadata_key in ("metadata", "litellm_metadata"):
         metadata = data.get(metadata_key)
         if not isinstance(metadata, dict):
             continue
-        _strip_untrusted_request_header_controls(metadata.get("headers"))
+        _strip_untrusted_request_header_controls(
+            metadata.get("headers"),
+            allow_redaction_opt_out=allow_redaction_opt_out,
+        )
         for field in list(metadata):
             if (
                 field.startswith("user_api_key_")
@@ -219,7 +228,20 @@ def _strip_untrusted_request_controls(
         if allow_mock and field in {"mock_response", "mock_tool_calls"}:
             continue
         data.pop(field, None)
-    _strip_untrusted_metadata_controls(data)
+    _strip_untrusted_metadata_controls(
+        data,
+        allow_redaction_opt_out=_key_or_team_metadata_flag_is_true(
+            user_api_key_dict, "allow_client_message_redaction_opt_out"
+        ),
+    )
+
+
+def _is_false_like(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value is False
+    if isinstance(value, str):
+        return value.strip().lower() in {"false", "0", "no", "off"}
+    return False
 
 
 def _strip_client_pricing_overrides(data: Dict[str, Any]) -> None:
@@ -1518,7 +1540,16 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     from litellm.proxy.proxy_server import llm_router, premium_user
     from litellm.types.proxy.litellm_pre_call_utils import RedactedDict, SecretFields
 
+    allow_redaction_opt_out = _key_or_team_metadata_flag_is_true(
+        user_api_key_dict, "allow_client_message_redaction_opt_out"
+    )
     _strip_untrusted_request_controls(data, user_api_key_dict)
+    if (
+        not allow_redaction_opt_out
+        and litellm.turn_off_message_logging is True
+        and _is_false_like(data.get("turn_off_message_logging"))
+    ):
+        data.pop("turn_off_message_logging", None)
     _reject_url_valued_destinations(data)
 
     _raw_headers: Dict[str, str] = RedactedDict(_safe_get_request_headers(request))
@@ -1553,7 +1584,9 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
         forward_llm_provider_auth_headers=forward_llm_auth,
         authenticated_with_header=authenticated_with_header,
     )
-    _strip_untrusted_request_header_controls(_headers)
+    _strip_untrusted_request_header_controls(
+        _headers, allow_redaction_opt_out=allow_redaction_opt_out
+    )
     verbose_proxy_logger.debug(f"Request Headers: {_headers}")
     verbose_proxy_logger.debug(f"Raw Headers: {_raw_headers}")
 
@@ -1680,7 +1713,9 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
 
     # Run again after decoding JSON-string metadata so multipart/extra_body
     # cannot bypass the dict-only checks above.
-    _strip_untrusted_metadata_controls(data)
+    _strip_untrusted_metadata_controls(
+        data, allow_redaction_opt_out=allow_redaction_opt_out
+    )
     if not _key_or_team_metadata_flag_is_true(
         user_api_key_dict, "allow_client_pricing_override"
     ):
