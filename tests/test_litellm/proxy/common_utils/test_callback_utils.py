@@ -6,6 +6,8 @@ sys.path.insert(
 )  # Adds the parent directory to the system path
 
 from litellm.proxy.common_utils.callback_utils import (
+    decrypt_callback_vars,
+    encrypt_callback_vars,
     get_remaining_tokens_and_requests_from_request_data,
     normalize_callback_names,
 )
@@ -81,3 +83,26 @@ def test_normalize_callback_names_none_returns_empty_list():
 def test_normalize_callback_names_lowercases_strings():
     assert normalize_callback_names(["SQS", "S3", "CUSTOM_CALLBACK"]) == ["sqs", "s3", "custom_callback"]
 
+
+def test_callback_credentials_are_encrypted_and_legacy_rows_remain_readable(monkeypatch):
+    monkeypatch.setenv("LITELLM_SALT_KEY", "callback-encryption-test-key")
+    metadata = {
+        "logging": [
+            {
+                "callback_name": "gcs",
+                "callback_vars": {
+                    "gcs_path_service_account": "service-account-json",
+                    "gcs_bucket_name": "non-secret-bucket",
+                },
+            }
+        ]
+    }
+
+    encrypted = encrypt_callback_vars(metadata)
+    callback_vars = encrypted["logging"][0]["callback_vars"]
+    assert callback_vars["gcs_path_service_account"].startswith("litellm_enc::")
+    assert callback_vars["gcs_path_service_account"] != "service-account-json"
+    assert callback_vars["gcs_bucket_name"] == "non-secret-bucket"
+    assert encrypt_callback_vars(encrypted) == encrypted
+    assert decrypt_callback_vars(encrypted) == metadata
+    assert decrypt_callback_vars(metadata) == metadata

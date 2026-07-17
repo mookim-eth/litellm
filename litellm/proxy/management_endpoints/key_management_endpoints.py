@@ -53,6 +53,10 @@ from litellm.proxy.auth.auth_checks import (
 )
 from litellm.proxy.auth.auth_utils import abbreviate_api_key
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.common_utils.callback_utils import (
+    decrypt_callback_vars,
+    encrypt_callback_vars,
+)
 from litellm.proxy.common_utils.timezone_utils import get_budget_reset_time
 from litellm.proxy.hooks.key_management_event_hooks import KeyManagementEventHooks
 from litellm.proxy.management_endpoints.common_utils import (
@@ -1847,7 +1851,7 @@ def prepare_metadata_fields(
             )
         )
 
-    non_default_values["metadata"] = casted_metadata
+    non_default_values["metadata"] = encrypt_callback_vars(casted_metadata)
     return non_default_values
 
 
@@ -3279,7 +3283,7 @@ async def generate_key_helper_fn(  # noqa: PLR0915
         metadata = metadata or {}
         metadata["prompts"] = prompts
 
-    metadata_json = json.dumps(metadata)
+    metadata_json = json.dumps(encrypt_callback_vars(metadata))
     validate_model_max_budget(model_max_budget)
     model_max_budget_json = json.dumps(model_max_budget)
     user_role = user_role
@@ -5682,7 +5686,7 @@ async def key_health(
             logging_statuses = await test_key_logging(
                 user_api_key_dict=user_api_key_dict,
                 request=request,
-                key_logging=key_metadata["logging"],
+                key_logging=decrypt_callback_vars(key_metadata)["logging"],
             )
             health_status["logging_callbacks"] = logging_statuses
 

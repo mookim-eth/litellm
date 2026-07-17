@@ -804,6 +804,31 @@ def test_team_dynamic_logging_settings():
     assert result is None
 
 
+def test_encrypted_team_callback_vars_are_decrypted_before_use(monkeypatch):
+    from litellm.proxy.common_utils.callback_utils import encrypt_callback_vars
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "callback-encryption-test-key")
+    metadata = {
+        "logging": [
+            {
+                "callback_name": "gcs",
+                "callback_type": "success",
+                "callback_vars": {
+                    "gcs_path_service_account": "service-account-json",
+                    "gcs_bucket_name": "test-bucket",
+                },
+            }
+        ]
+    }
+    auth = UserAPIKeyAuth(
+        api_key="test-key", metadata={}, team_metadata=encrypt_callback_vars(metadata)
+    )
+
+    result = KeyAndTeamLoggingSettings.get_team_dynamic_logging_settings(auth)
+
+    assert result == metadata["logging"]
+
+
 def test_get_dynamic_logging_metadata_with_arize_team_logging():
     """
     Test _get_dynamic_logging_metadata function with arize team logging and dynamic parameters
