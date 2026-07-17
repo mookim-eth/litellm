@@ -2064,6 +2064,14 @@ async def _process_single_key_update(
     # Validate max_budget
     _validate_max_budget(key_update_item.max_budget)
 
+    # Bulk updates must enforce the same policy-bearing field boundary as the
+    # single update endpoint. model_fields_set keeps omitted optional fields
+    # from being mistaken for caller input.
+    _check_non_admin_key_control_fields(
+        data=key_update_item,  # type: ignore[arg-type]
+        user_api_key_dict=user_api_key_dict,
+    )
+
     # Get and validate existing key
     existing_key_row = await _get_and_validate_existing_key(
         token=key_update_item.key,
