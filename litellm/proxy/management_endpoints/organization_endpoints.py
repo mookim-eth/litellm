@@ -509,6 +509,12 @@ async def update_organization(
     if data.updated_by is None:
         data.updated_by = user_api_key_dict.user_id
 
+    await _verify_org_access(
+        organization_id=data.organization_id,
+        user_api_key_dict=user_api_key_dict,
+        prisma_client=prisma_client,
+    )
+
     existing_organization_row = (
         await prisma_client.db.litellm_organizationtable.find_unique(
             where={"organization_id": data.organization_id},
@@ -918,6 +924,12 @@ async def organization_member_add(
         if prisma_client is None:
             raise HTTPException(status_code=500, detail={"error": "No db connected"})
 
+        await _verify_org_access(
+            organization_id=data.organization_id,
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
+        )
+
         # Check if organization exists
         existing_organization_row = (
             await prisma_client.db.litellm_organizationtable.find_unique(
@@ -1026,6 +1038,12 @@ async def organization_member_update(
                 status_code=500,
                 detail={"error": CommonProxyErrors.db_not_connected_error.value},
             )
+
+        await _verify_org_access(
+            organization_id=data.organization_id,
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
+        )
 
         # Check if organization exists
         existing_organization_row = (
@@ -1163,6 +1181,12 @@ async def organization_member_delete(
                 status_code=500,
                 detail={"error": CommonProxyErrors.db_not_connected_error.value},
             )
+
+        await _verify_org_access(
+            organization_id=data.organization_id,
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
+        )
 
         if data.user_email is not None and data.user_id is None:
             existing_user_email_row = await find_member_if_email(

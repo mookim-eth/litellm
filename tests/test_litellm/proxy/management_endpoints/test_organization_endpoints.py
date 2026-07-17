@@ -560,3 +560,117 @@ async def test_organization_info_includes_user_email(monkeypatch):
 
     membership = LiteLLM_OrganizationMembershipTable(**raw_membership)
     assert membership.user_email == "alice@example.com"
+
+
+@pytest.fixture
+def unauthorized_org_caller():
+    from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+
+    return UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="random_authenticated_user",
+        api_key="hashed-random-key",
+    )
+
+
+@pytest.fixture
+def patched_unauthorized_org_prisma():
+    caller_user = MagicMock()
+    caller_user.organization_memberships = []
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client") as mock_prisma,
+        patch(
+            "litellm.proxy.management_endpoints.organization_endpoints.get_user_object",
+            new_callable=AsyncMock,
+            return_value=caller_user,
+        ),
+        patch("litellm.proxy.proxy_server.user_api_key_cache"),
+        patch("litellm.proxy.proxy_server.proxy_logging_obj"),
+    ):
+        yield mock_prisma
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handler_name", "request_type", "extra_args"),
+    [
+        (
+            "organization_member_update",
+            "OrganizationMemberUpdateRequest",
+            {"user_id": "victim", "role": "org_admin"},
+        ),
+        (
+            "organization_member_delete",
+            "OrganizationMemberDeleteRequest",
+            {"user_id": "victim"},
+        ),
+    ],
+)
+async def test_organization_member_writes_reject_out_of_scope_callers(
+    handler_name,
+    request_type,
+    extra_args,
+    patched_unauthorized_org_prisma,
+    unauthorized_org_caller,
+):
+    from litellm.proxy import _types
+    from litellm.proxy.management_endpoints import organization_endpoints
+
+    data = getattr(_types, request_type)(organization_id="org-victim", **extra_args)
+    with pytest.raises(HTTPException) as exc:
+        await getattr(organization_endpoints, handler_name)(
+            data=data, user_api_key_dict=unauthorized_org_caller
+        )
+    assert exc.value.status_code == 403
+    patched_unauthorized_org_prisma.db.litellm_organizationmembership.delete.assert_not_called()
+    patched_unauthorized_org_prisma.db.litellm_organizationmembership.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_organization_member_add_rejects_out_of_scope_caller(
+    patched_unauthorized_org_prisma, unauthorized_org_caller
+):
+    from fastapi import Request
+
+    from litellm.proxy._types import (
+        OrganizationMemberAddRequest,
+        OrgMember,
+        ProxyException,
+    )
+    from litellm.proxy.management_endpoints.organization_endpoints import (
+        organization_member_add,
+    )
+
+    data = OrganizationMemberAddRequest(
+        organization_id="org-victim",
+        member=OrgMember(role="internal_user", user_id="attacker-user"),
+    )
+    with pytest.raises((HTTPException, ProxyException)) as exc:
+        await organization_member_add(
+            data=data,
+            http_request=MagicMock(spec=Request),
+            user_api_key_dict=unauthorized_org_caller,
+        )
+    code = getattr(exc.value, "status_code", None) or getattr(exc.value, "code", None)
+    assert int(code) == 403
+    patched_unauthorized_org_prisma.db.litellm_organizationmembership.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_organization_update_rejects_out_of_scope_caller(
+    patched_unauthorized_org_prisma, unauthorized_org_caller
+):
+    from litellm.proxy.management_endpoints.organization_endpoints import (
+        update_organization,
+    )
+
+    request = MagicMock()
+    request.json = AsyncMock(
+        return_value={"organization_id": "org-victim", "metadata": {"owned": True}}
+    )
+    with pytest.raises(HTTPException) as exc:
+        await update_organization(
+            request=request, user_api_key_dict=unauthorized_org_caller
+        )
+    assert exc.value.status_code == 403
+    patched_unauthorized_org_prisma.db.litellm_organizationtable.update.assert_not_called()
