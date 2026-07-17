@@ -43,6 +43,7 @@ from litellm.proxy._types import *
 from litellm.proxy._types import LiteLLM_VerificationToken
 from litellm.proxy.auth.auth_checks import (
     _delete_cache_key_object,
+    can_key_call_model,
     can_team_access_model,
     get_org_object,
     get_project_object,
@@ -534,6 +535,49 @@ def handle_key_type(data: GenerateKeyRequest, data_json: dict) -> dict:
     return data_json
 
 
+async def _enforce_delegated_model_ceiling(
+    data: Union[GenerateKeyRequest, UpdateKeyRequest, RegenerateKeyRequest],
+    user_api_key_dict: UserAPIKeyAuth,
+    *,
+    inherit_when_omitted: bool,
+) -> None:
+    """Ensure a child key cannot receive more model access than its caller."""
+    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+
+    fields_set = getattr(data, "model_fields_set", set())
+    requested_models = data.models
+    caller_models = user_api_key_dict.models or []
+
+    if "models" not in fields_set and inherit_when_omitted:
+        if caller_models:
+            data.models = list(caller_models)
+        return
+
+    if not requested_models:
+        if caller_models and "*" not in caller_models:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": (
+                        "A restricted caller cannot grant unrestricted model "
+                        "access to a child key."
+                    )
+                },
+            )
+        return
+
+    from litellm.proxy.proxy_server import llm_model_list, llm_router
+
+    for model in requested_models:
+        await can_key_call_model(
+            model=model,
+            llm_model_list=llm_model_list,
+            valid_token=user_api_key_dict,
+            llm_router=llm_router,
+        )
+
+
 async def _get_key_budget_delegation_ceiling(
     user_api_key_dict: UserAPIKeyAuth,
     prisma_client: Optional[PrismaClient],
@@ -587,6 +631,7 @@ async def _enforce_key_budget_delegation_ceiling(
                 )
             },
         )
+
 
 def _check_allowed_routes_caller_permission(
     allowed_routes: Optional[list],
@@ -856,7 +901,6 @@ async def _common_key_generation_helper(  # noqa: PLR0915
             user_api_key_dict=user_api_key_dict,
             prisma_client=prisma_client,
         )
-
     # APPLY ENTERPRISE KEY MANAGEMENT PARAMS
     try:
         from litellm_enterprise.proxy.management_endpoints.key_management_endpoints import (
@@ -1574,6 +1618,12 @@ async def generate_key_fn(
             route=KeyManagementRoutes.KEY_GENERATE,
         )
 
+        await _enforce_delegated_model_ceiling(
+            data=data,
+            user_api_key_dict=user_api_key_dict,
+            inherit_when_omitted=True,
+        )
+
         if team_table is not None:
             await _check_team_key_limits(
                 team_table=team_table,
@@ -2186,6 +2236,12 @@ async def _validate_update_key_data(
         user_id=existing_key_row.user_id,
         llm_router=llm_router,
         premium_user=premium_user,
+    )
+
+    await _enforce_delegated_model_ceiling(
+        data=data,
+        user_api_key_dict=user_api_key_dict,
+        inherit_when_omitted=False,
     )
 
     await TeamMemberPermissionChecks.can_team_member_execute_key_management_endpoint(
@@ -4100,6 +4156,11 @@ async def regenerate_key_fn(  # noqa: PLR0915
             _check_non_admin_key_control_fields(
                 data=data,
                 user_api_key_dict=user_api_key_dict,
+            )
+            await _enforce_delegated_model_ceiling(
+                data=data,
+                user_api_key_dict=user_api_key_dict,
+                inherit_when_omitted=False,
             )
         ### 1. Create New copy that is duplicate of existing key
         ######################################################################
