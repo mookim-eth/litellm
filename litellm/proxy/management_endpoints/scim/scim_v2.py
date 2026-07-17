@@ -337,22 +337,48 @@ async def _handle_team_membership_changes(
         )
 
 
+SCIM_BLOCKED_METADATA_KEY = "scim_blocked"
+
+
+def _key_was_scim_blocked(metadata: Any) -> bool:
+    return (
+        isinstance(metadata, dict)
+        and metadata.get(SCIM_BLOCKED_METADATA_KEY) is True
+    )
+
+
 async def _set_user_keys_blocked(user_id: str, blocked: bool) -> int:
-    """Apply a SCIM active-state change to all of the user's virtual keys."""
+    """Apply SCIM state without undoing blocks imposed by an administrator."""
     from litellm.proxy.proxy_server import proxy_logging_obj, user_api_key_cache
 
     prisma_client = await _get_prisma_client_or_raise_exception()
-    affected_keys = await prisma_client.db.litellm_verificationtoken.find_many(
-        where={"user_id": user_id, "blocked": not blocked},
-    )
+    if blocked:
+        affected_keys = await prisma_client.db.litellm_verificationtoken.find_many(
+            where={
+                "user_id": user_id,
+                "OR": [{"blocked": False}, {"blocked": None}],
+            }
+        )
+    else:
+        blocked_keys = await prisma_client.db.litellm_verificationtoken.find_many(
+            where={"user_id": user_id, "blocked": True}
+        )
+        affected_keys = [
+            key for key in blocked_keys if _key_was_scim_blocked(key.metadata)
+        ]
     if not affected_keys:
         return 0
 
-    await prisma_client.db.litellm_verificationtoken.update_many(
-        where={"user_id": user_id, "blocked": not blocked},
-        data={"blocked": blocked},
-    )
     for key_row in affected_keys:
+        metadata = dict(key_row.metadata) if isinstance(key_row.metadata, dict) else {}
+        if blocked:
+            metadata[SCIM_BLOCKED_METADATA_KEY] = True
+        else:
+            metadata.pop(SCIM_BLOCKED_METADATA_KEY, None)
+        await prisma_client.db.litellm_verificationtoken.update(
+            where={"token": key_row.token},
+            data={"blocked": blocked, "metadata": safe_dumps(metadata)},
+        )
         await _delete_cache_key_object(
             hashed_token=key_row.token,
             user_api_key_cache=user_api_key_cache,
