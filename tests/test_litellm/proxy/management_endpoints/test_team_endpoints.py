@@ -2492,7 +2492,7 @@ async def test_list_team_v2_org_admin_cannot_view_other_orgs():
 async def test_list_team_v2_org_admin_with_user_id_returns_user_teams():
     """
     Test that an org admin passing user_id gets that user's direct team
-    memberships (not all org teams).
+    memberships only within the organizations they administer.
     """
     from datetime import datetime
     from unittest.mock import AsyncMock, Mock, patch
@@ -2579,10 +2579,10 @@ async def test_list_team_v2_org_admin_with_user_id_returns_user_teams():
 
         assert result["total"] == 1
 
-        # Verify the where clause filters by user's teams, not org scope
+        # Both membership and organization scope must be enforced.
         where = mock_db.litellm_teamtable.find_many.call_args.kwargs["where"]
         assert where["team_id"] == {"in": ["team_X", "team_Y"]}
-        assert "organization_id" not in where
+        assert where["organization_id"] == {"in": ["org_A"]}
 
 
 @pytest.mark.asyncio

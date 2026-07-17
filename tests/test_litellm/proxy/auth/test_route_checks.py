@@ -1410,6 +1410,17 @@ def test_user_is_org_admin_with_organizations_list():
     assert _user_is_org_admin({"organizations": ["org-1"]}, user_obj) is True
 
 
+def test_user_is_org_admin_requires_admin_access_to_every_requested_org():
+    """An allowed org must not authorize a second out-of-scope organization."""
+    user_obj = _make_org_admin_user("org-1")
+    assert (
+        _user_is_org_admin(
+            {"organizations": ["org-1", "org-out-of-scope"]}, user_obj
+        )
+        is False
+    )
+
+
 def test_user_is_org_admin_with_singular_organization_id():
     """Backward-compat: org admin can still be identified via singular `organization_id`."""
     user_obj = _make_org_admin_user("org-1")

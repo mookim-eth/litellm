@@ -3403,6 +3403,7 @@ async def _get_org_admin_org_ids(
         m.organization_id
         for m in (caller_user.organization_memberships or [])
         if m.user_role == LitellmUserRoles.ORG_ADMIN.value
+        and m.organization_id is not None
     ]
     return org_ids if org_ids else None
 
@@ -3437,13 +3438,9 @@ async def _build_team_list_where_conditions(
 
     if organization_id:
         where_conditions["organization_id"] = organization_id
-    elif org_admin_org_ids is not None and not user_id:
-        # Org admin without explicit org or user filter: scope to their orgs.
-        # NOTE: when user_id is provided, no org filter is applied — the
-        # query returns all teams the target user belongs to across all
-        # organisations.  This matches the legacy /team/list behaviour in
-        # _authorize_and_filter_teams which fetches direct-membership teams
-        # without an org constraint.
+    elif org_admin_org_ids is not None:
+        # Org admins must remain scoped to their organizations even when
+        # filtering by another user's memberships.
         where_conditions["organization_id"] = {"in": org_admin_org_ids}
 
     if user_id:
@@ -3863,20 +3860,12 @@ async def _authorize_and_filter_teams(
         )
         if not user_id:
             return list(org_teams)
-        # Also include teams the user is a direct member of (outside their orgs)
-        seen_team_ids = {team.team_id for team in org_teams}
-        all_teams = list(org_teams)
-        # Prisma doesn't support filtering JSON array fields, so we fetch by membership separately
-        member_teams = await prisma_client.db.litellm_teamtable.find_many(
-            where={"team_id": {"not_in": list(seen_team_ids)}} if seen_team_ids else {},
-            include={"litellm_model_table": True},
-        )
-        for team in member_teams:
-            if team.members_with_roles and any(
-                m.get("user_id") == user_id for m in team.members_with_roles
-            ):
-                all_teams.append(team)
-        return all_teams
+        return [
+            team
+            for team in org_teams
+            if team.members_with_roles
+            and any(m.get("user_id") == user_id for m in team.members_with_roles)
+        ]
     elif user_id:
         # Regular user: fetch all and filter by membership (Prisma can't filter JSON arrays)
         response = await prisma_client.db.litellm_teamtable.find_many(
