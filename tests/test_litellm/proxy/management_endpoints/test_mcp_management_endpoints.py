@@ -2161,6 +2161,7 @@ class TestMCPApprovalWorkflow:
         admin = generate_mock_user_api_key_auth(user_role=LitellmUserRoles.PROXY_ADMIN)
         pending = generate_mock_mcp_server_db_record(alias="Pending")
         pending.approval_status = "pending_review"
+        pending.credentials = {"auth_value": "submission-secret"}
         summary = MCPSubmissionsSummary(
             total=1, pending_review=1, active=0, rejected=0, items=[pending]
         )
@@ -2179,6 +2180,42 @@ class TestMCPApprovalWorkflow:
 
         assert result.total == 1
         assert result.pending_review == 1
+        assert result.items[0].credentials is None
+
+    @pytest.mark.asyncio
+    async def test_get_submissions_read_only_admin_hides_connection_details(self):
+        from litellm.proxy._types import MCPSubmissionsSummary
+        from litellm.proxy.management_endpoints.mcp_management_endpoints import (
+            get_mcp_server_submissions,
+        )
+
+        viewer = generate_mock_user_api_key_auth(
+            user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY
+        )
+        pending = generate_mock_mcp_server_db_record(alias="Pending")
+        pending.credentials = {"auth_value": "submission-secret"}
+        pending.static_headers = {"Authorization": "Bearer secret"}
+        pending.env = {"API_KEY": "secret"}
+        summary = MCPSubmissionsSummary(
+            total=1, pending_review=1, active=0, rejected=0, items=[pending]
+        )
+
+        with (
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints.get_prisma_client_or_throw",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints.get_mcp_submissions",
+                AsyncMock(return_value=summary),
+            ),
+        ):
+            result = await get_mcp_server_submissions(user_api_key_dict=viewer)
+
+        assert result.items[0].credentials is None
+        assert result.items[0].url is None
+        assert result.items[0].static_headers is None
+        assert result.items[0].env == {}
 
     @pytest.mark.asyncio
     async def test_approve_non_pending_server_raises_400(self):
