@@ -38,6 +38,7 @@ from litellm.proxy._types import (
     TeamMemberDeleteRequest,
     UserAPIKeyAuth,
 )
+from litellm.proxy.auth.auth_checks import _delete_cache_key_object
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.management_endpoints.internal_user_endpoints import new_user
 from litellm.proxy.management_endpoints.scim.scim_transformations import (
@@ -334,6 +335,36 @@ async def _handle_team_membership_changes(
             teams_ids_to_add_user_to=list(teams_to_add),
             teams_ids_to_remove_user_from=list(teams_to_remove),
         )
+
+
+async def _set_user_keys_blocked(user_id: str, blocked: bool) -> int:
+    """Apply a SCIM active-state change to all of the user's virtual keys."""
+    from litellm.proxy.proxy_server import proxy_logging_obj, user_api_key_cache
+
+    prisma_client = await _get_prisma_client_or_raise_exception()
+    affected_keys = await prisma_client.db.litellm_verificationtoken.find_many(
+        where={"user_id": user_id, "blocked": not blocked},
+    )
+    if not affected_keys:
+        return 0
+
+    await prisma_client.db.litellm_verificationtoken.update_many(
+        where={"user_id": user_id, "blocked": not blocked},
+        data={"blocked": blocked},
+    )
+    for key_row in affected_keys:
+        await _delete_cache_key_object(
+            hashed_token=key_row.token,
+            user_api_key_cache=user_api_key_cache,
+            proxy_logging_obj=proxy_logging_obj,
+        )
+    return len(affected_keys)
+
+
+def _scim_active_value(metadata: Optional[Dict[str, Any]]) -> Optional[bool]:
+    if not metadata or "scim_active" not in metadata:
+        return None
+    return bool(metadata["scim_active"])
 
 
 async def _create_user_if_not_exists(
@@ -927,6 +958,7 @@ async def update_user(
     try:
         prisma_client = await _get_prisma_client_or_raise_exception()
         existing_user = await _check_user_exists(user_id)
+        previous_active = _scim_active_value(existing_user.metadata)
 
         # Extract data from SCIM user
         user_data = _extract_scim_user_data(user)
@@ -962,6 +994,12 @@ async def update_user(
             where={"user_id": user_id},
             data=update_data,
         )
+
+        new_active = _scim_active_value(metadata)
+        if new_active is not None and new_active != (
+            True if previous_active is None else previous_active
+        ):
+            await _set_user_keys_blocked(user_id=user_id, blocked=not new_active)
 
         # Convert back to SCIM format
         scim_user = await ScimTransformations.transform_litellm_user_to_scim_user(
@@ -1008,6 +1046,10 @@ async def delete_user(
                 await prisma_client.db.litellm_teamtable.update(
                     where={"team_id": team.team_id}, data={"members": new_members}
                 )
+
+        # Block keys before deleting the owner row. Auth intentionally permits
+        # some legacy orphan rows, so deleting the user alone is insufficient.
+        await _set_user_keys_blocked(user_id=user_id, blocked=True)
 
         # Delete user
         await prisma_client.db.litellm_usertable.delete(where={"user_id": user_id})
@@ -1241,11 +1283,13 @@ async def patch_user(
     try:
         prisma_client = await _get_prisma_client_or_raise_exception()
         existing_user = await _check_user_exists(user_id)
+        previous_active = _scim_active_value(existing_user.metadata)
 
         update_data, final_team_set = _apply_patch_ops(
             existing_user=existing_user,
             patch_ops=patch_ops,
         )
+        new_active = _scim_active_value(update_data.get("metadata"))
 
         # Handle team membership changes
         await _handle_team_membership_changes(
@@ -1266,6 +1310,11 @@ async def patch_user(
             where={"user_id": user_id},
             data=update_data,
         )
+
+        if new_active is not None and new_active != (
+            True if previous_active is None else previous_active
+        ):
+            await _set_user_keys_blocked(user_id=user_id, blocked=not new_active)
 
         scim_user = await ScimTransformations.transform_litellm_user_to_scim_user(
             updated_user

@@ -38,6 +38,92 @@ class _RoutingRequest:
 
 
 @pytest.mark.asyncio
+async def test_scim_deactivated_user_key_is_rejected():
+    from fastapi import Request
+    from starlette.datastructures import URL
+
+    from litellm.proxy._types import LiteLLM_UserTable
+    from litellm.proxy.auth.user_api_key_auth import _user_api_key_auth_builder
+    from litellm.proxy.proxy_server import hash_token
+
+    api_key = "sk-scim-deactivated-user-key"
+    valid_token = UserAPIKeyAuth(
+        api_key=api_key,
+        token=hash_token(api_key),
+        user_id="scim-disabled-user",
+    )
+    deactivated_user = LiteLLM_UserTable(
+        user_id="scim-disabled-user", metadata={"scim_active": False}
+    )
+    proxy_server = litellm.proxy.proxy_server
+    replacements = {
+        "prisma_client": MagicMock(),
+        "user_api_key_cache": AsyncMock(),
+        "proxy_logging_obj": MagicMock(),
+        "master_key": "sk-master-key",
+        "general_settings": {},
+        "llm_model_list": [],
+        "llm_router": None,
+        "open_telemetry_logger": None,
+        "model_max_budget_limiter": MagicMock(),
+        "user_custom_auth": None,
+        "jwt_handler": None,
+        "litellm_proxy_admin_name": "admin",
+    }
+    originals = {name: getattr(proxy_server, name, None) for name in replacements}
+    try:
+        for name, value in replacements.items():
+            setattr(proxy_server, name, value)
+        proxy_server.user_api_key_cache.async_get_cache = AsyncMock(return_value=None)
+        proxy_server.proxy_logging_obj.internal_usage_cache = MagicMock()
+        proxy_server.proxy_logging_obj.internal_usage_cache.dual_cache = AsyncMock()
+        proxy_server.proxy_logging_obj.internal_usage_cache.dual_cache.async_delete_cache = AsyncMock()
+        proxy_server.proxy_logging_obj.post_call_failure_hook = AsyncMock(
+            return_value=None
+        )
+
+        request = Request(
+            scope={
+                "type": "http",
+                "method": "POST",
+                "path": "/chat/completions",
+                "headers": [],
+                "client": ("127.0.0.1", 12345),
+                "server": ("testserver", 80),
+                "scheme": "http",
+                "query_string": b"",
+            }
+        )
+        request._url = URL(url="/chat/completions")
+        with (
+            patch(
+                "litellm.proxy.auth.user_api_key_auth.get_key_object",
+                new_callable=AsyncMock,
+                return_value=valid_token,
+            ),
+            patch(
+                "litellm.proxy.auth.user_api_key_auth.get_user_object",
+                new_callable=AsyncMock,
+                return_value=deactivated_user,
+            ),
+            pytest.raises(ProxyException) as exc,
+        ):
+            await _user_api_key_auth_builder(
+                request=request,
+                api_key=f"Bearer {api_key}",
+                azure_api_key_header="",
+                anthropic_api_key_header=None,
+                google_ai_studio_api_key_header=None,
+                azure_apim_header=None,
+                request_data={},
+            )
+        assert "deactivated via SCIM" in str(exc.value.message)
+    finally:
+        for name, value in originals.items():
+            setattr(proxy_server, name, value)
+
+
+@pytest.mark.asyncio
 async def test_key_alias_target_is_reauthorized():
     token = UserAPIKeyAuth(models=["safe-alias"], aliases={"safe-alias": "restricted"})
 
