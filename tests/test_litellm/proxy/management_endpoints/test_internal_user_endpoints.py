@@ -1912,6 +1912,41 @@ async def test_delete_user_cleans_up_created_by_invitation_links(mocker):
 
 
 @pytest.mark.asyncio
+async def test_delete_user_rejects_org_admin_target_outside_scope(mocker):
+    from fastapi import HTTPException
+
+    from litellm.proxy._types import DeleteUserRequest, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints.internal_user_endpoints import delete_user
+
+    prisma = mocker.MagicMock()
+    target = mocker.MagicMock(user_id="victim", teams=[])
+    prisma.db.litellm_usertable.find_unique = mocker.AsyncMock(return_value=target)
+
+    caller_membership = mocker.MagicMock(organization_id="org-a")
+    target_membership = mocker.MagicMock(organization_id="org-b")
+
+    async def memberships(*args, **kwargs):
+        user_id = kwargs["where"]["user_id"]
+        return [caller_membership] if user_id == "org-admin" else [target_membership]
+
+    prisma.db.litellm_organizationmembership.find_many = mocker.AsyncMock(
+        side_effect=memberships
+    )
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", prisma)
+
+    with pytest.raises(HTTPException) as exc:
+        await delete_user(
+            data=DeleteUserRequest(user_ids=["victim"]),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="org-admin", user_role=LitellmUserRoles.ORG_ADMIN
+            ),
+        )
+    assert exc.value.status_code == 403
+    prisma.db.litellm_verificationtoken.delete_many.assert_not_called()
+    prisma.db.litellm_usertable.delete_many.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_user_info_v2_proxy_admin_can_query_any_user(mocker):
     """
     Test that proxy admin can query any user via /v2/user/info.

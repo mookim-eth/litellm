@@ -2103,7 +2103,35 @@ async def delete_user(
     if data.user_ids is None:
         raise HTTPException(status_code=400, detail={"error": "No user id passed in"})
 
-    # check that all teams passed exist
+    caller_is_proxy_admin = (
+        user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value
+    )
+    caller_admin_org_ids: set[str] = set()
+    if not caller_is_proxy_admin:
+        caller_memberships = (
+            await prisma_client.db.litellm_organizationmembership.find_many(
+                where={
+                    "user_id": user_api_key_dict.user_id,
+                    "user_role": LitellmUserRoles.ORG_ADMIN.value,
+                }
+            )
+            if user_api_key_dict.user_id
+            else []
+        )
+        caller_admin_org_ids = {
+            membership.organization_id
+            for membership in caller_memberships
+            if membership.organization_id
+        }
+        if not caller_admin_org_ids:
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "Only PROXY_ADMIN or ORG_ADMIN users may delete users."},
+            )
+
+    # Validate every target before making any mutations, so a mixed batch
+    # cannot partially delete in-scope users before reaching an invalid one.
+    user_rows: Dict[str, Any] = {}
     for user_id in data.user_ids:
         user_row = await prisma_client.db.litellm_usertable.find_unique(
             where={"user_id": user_id}
@@ -2114,30 +2142,49 @@ async def delete_user(
                 status_code=404,
                 detail={"error": f"User not found, passed user_id={user_id}"},
             )
-        else:
-            # Enterprise Feature - Audit Logging. Enable with litellm.store_audit_logs = True
-            # we do this after the first for loop, since first for loop is for validation. we only want this inserted after validation passes
-            if litellm.store_audit_logs is True:
-                # make an audit log for each team deleted
-                _user_row = user_row.json(exclude_none=True)
+        user_rows[user_id] = user_row
 
-                asyncio.create_task(
-                    create_audit_log_for_update(
-                        request_data=LiteLLM_AuditLogs(
-                            id=str(uuid.uuid4()),
-                            updated_at=datetime.now(timezone.utc),
-                            changed_by=litellm_changed_by
-                            or user_api_key_dict.user_id
-                            or litellm_proxy_admin_name,
-                            changed_by_api_key=user_api_key_dict.api_key,
-                            table_name=LitellmTableNames.USER_TABLE_NAME,
-                            object_id=user_id,
-                            action="deleted",
-                            updated_values="{}",
-                            before_value=_user_row,
-                        )
+        if not caller_is_proxy_admin:
+            target_memberships = (
+                await prisma_client.db.litellm_organizationmembership.find_many(
+                    where={"user_id": user_id}
+                )
+            )
+            target_org_ids = {
+                membership.organization_id
+                for membership in target_memberships
+                if membership.organization_id
+            }
+            if not target_org_ids or not target_org_ids.issubset(
+                caller_admin_org_ids
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": f"User {user_id} is outside your organization admin scope."
+                    },
+                )
+
+    for user_id in data.user_ids:
+        user_row = user_rows[user_id]
+        if litellm.store_audit_logs is True:
+            asyncio.create_task(
+                create_audit_log_for_update(
+                    request_data=LiteLLM_AuditLogs(
+                        id=str(uuid.uuid4()),
+                        updated_at=datetime.now(timezone.utc),
+                        changed_by=litellm_changed_by
+                        or user_api_key_dict.user_id
+                        or litellm_proxy_admin_name,
+                        changed_by_api_key=user_api_key_dict.api_key,
+                        table_name=LitellmTableNames.USER_TABLE_NAME,
+                        object_id=user_id,
+                        action="deleted",
+                        updated_values="{}",
+                        before_value=user_row.json(exclude_none=True),
                     )
                 )
+            )
 
         ## CLEANUP MEMBERS_WITH_ROLES
         fetch_all_teams = await prisma_client.db.litellm_teamtable.find_many(
