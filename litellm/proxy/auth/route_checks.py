@@ -6,6 +6,7 @@ from fastapi import HTTPException, Request, status
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import (
     CommonProxyErrors,
+    KeyManagementRoutes,
     LiteLLM_UserTable,
     LiteLLMRoutes,
     LitellmUserRoles,
@@ -13,6 +14,39 @@ from litellm.proxy._types import (
 )
 
 from .auth_checks_organization import _user_is_org_admin
+
+
+_PROXY_ADMIN_VIEW_ONLY_BLOCKED_ROUTES = frozenset(
+    {
+        "/user/new",
+        "/user/update",
+        "/user/delete",
+        "/user/bulk_update",
+        "/team/new",
+        "/team/update",
+        "/team/delete",
+        "/team/block",
+        "/team/unblock",
+        "/team/permissions_update",
+        "/model/new",
+        "/model/update",
+        "/model/delete",
+        "/fallback",
+        "/fallback/{model}",
+        "/jwt/key/mapping/new",
+        "/jwt/key/mapping/update",
+        "/jwt/key/mapping/delete",
+        KeyManagementRoutes.KEY_GENERATE.value,
+        KeyManagementRoutes.KEY_UPDATE.value,
+        KeyManagementRoutes.KEY_DELETE.value,
+        KeyManagementRoutes.KEY_REGENERATE.value,
+        KeyManagementRoutes.KEY_GENERATE_SERVICE_ACCOUNT.value,
+        KeyManagementRoutes.KEY_BLOCK.value,
+        KeyManagementRoutes.KEY_UNBLOCK.value,
+        KeyManagementRoutes.KEY_BULK_UPDATE.value,
+    }
+)
+_PROXY_ADMIN_VIEW_ONLY_BLOCKED_KEY_SUFFIXES = ("/regenerate", "/reset_spend")
 
 
 _AUTH_ENFORCED_PASS_THROUGH_ROUTE_GROUPS = frozenset(
@@ -703,38 +737,9 @@ class RouteChecks:
             route=route, allowed_routes=LiteLLMRoutes.management_routes.value
         ):
             # For management routes, only allow read operations or specific allowed updates
-            if route == "/user/update":
-                # Check the Request params are valid for PROXY_ADMIN_VIEW_ONLY
-                if request_data is not None and isinstance(request_data, dict):
-                    _params_updated = request_data.keys()
-                    for param in _params_updated:
-                        if param not in ["user_email", "password"]:
-                            raise HTTPException(
-                                status_code=status.HTTP_403_FORBIDDEN,
-                                detail=f"user not allowed to access this route, role= {_user_role}. Trying to access: {route} and updating invalid param: {param}. only user_email and password can be updated",
-                            )
-            elif (
-                route
-                in [
-                    "/user/new",
-                    "/user/delete",
-                    "/user/bulk_update",
-                    "/team/new",
-                    "/team/update",
-                    "/team/delete",
-                    "/model/new",
-                    "/model/update",
-                    "/model/delete",
-                    "/key/generate",
-                    "/key/delete",
-                    "/key/update",
-                    "/key/regenerate",
-                    "/key/service-account/generate",
-                    "/key/block",
-                    "/key/unblock",
-                ]
-                or route.startswith("/key/")
-                and route.endswith("/regenerate")
+            if route in _PROXY_ADMIN_VIEW_ONLY_BLOCKED_ROUTES or (
+                route.startswith("/key/")
+                and route.endswith(_PROXY_ADMIN_VIEW_ONLY_BLOCKED_KEY_SUFFIXES)
             ):
                 # Block write operations for PROXY_ADMIN_VIEW_ONLY
                 raise HTTPException(

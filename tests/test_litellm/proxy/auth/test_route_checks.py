@@ -90,6 +90,39 @@ def test_proxy_admin_viewer_config_update_route_rejected():
     assert "role= proxy_admin_viewer" in str(exc_info.value.detail)
 
 
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/key/bulk_update",
+        "/key/key-id/reset_spend",
+        "/team/block",
+        "/team/unblock",
+        "/team/permissions_update",
+        "/jwt/key/mapping/new",
+        "/fallback",
+        "/user/update",
+    ],
+)
+def test_proxy_admin_viewer_rejects_all_management_writes(route):
+    with pytest.raises(HTTPException) as exc_info:
+        RouteChecks._check_proxy_admin_viewer_access(
+            route=route,
+            _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+            request_data={},
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.parametrize("route", ["/key/list", "/team/info", "/user/list"])
+def test_proxy_admin_viewer_preserves_management_reads(route):
+    RouteChecks._check_proxy_admin_viewer_access(
+        route=route,
+        _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+        request_data={},
+    )
+
+
 def test_virtual_key_allowed_routes_with_litellm_routes_member_name_allowed():
     """Test that virtual key is allowed to call routes when allowed_routes contains LiteLLMRoutes member name"""
 
