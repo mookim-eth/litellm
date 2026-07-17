@@ -7010,3 +7010,53 @@ async def test_available_team_join_cannot_escalate_or_add_other_user(member):
             )
 
     assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_available_team_member_cannot_update_team_permissions(mock_db_client):
+    from fastapi import Request
+
+    from litellm.proxy.management_endpoints.team_endpoints import (
+        update_team_member_permissions,
+    )
+    from litellm.types.proxy.management_endpoints.team_endpoints import (
+        UpdateTeamMemberPermissionsRequest,
+    )
+
+    team = LiteLLM_TeamTable(
+        team_id="available-team",
+        team_alias="available-team",
+        members_with_roles=[],
+    )
+    caller = UserAPIKeyAuth(
+        user_id="ordinary-member",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+    )
+    data = UpdateTeamMemberPermissionsRequest(
+        team_id=team.team_id,
+        team_member_permissions=["/key/generate"],
+    )
+
+    with (
+        patch(
+            "litellm.proxy.management_endpoints.team_endpoints.get_team_object",
+            AsyncMock(return_value=team),
+        ),
+        patch(
+            "litellm.proxy.management_endpoints.team_endpoints._is_available_team",
+            return_value=True,
+        ),
+        patch(
+            "litellm.proxy.management_endpoints.team_endpoints._is_user_org_admin_for_team",
+            AsyncMock(return_value=False),
+        ),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await update_team_member_permissions(
+                data=data,
+                http_request=MagicMock(spec=Request),
+                user_api_key_dict=caller,
+            )
+
+    assert exc_info.value.status_code == 403
+    mock_db_client.db.litellm_teamtable.update.assert_not_called()
