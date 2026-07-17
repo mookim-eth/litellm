@@ -7,6 +7,63 @@ from litellm.proxy._types import CallTypes, UserAPIKeyAuth
 from litellm.types.utils import GuardrailTracingDetail
 
 
+class _ApplyStyleModelGuardrail(CustomGuardrail):
+    def __init__(self, block: bool):
+        from litellm.types.guardrails import GuardrailEventHooks
+
+        super().__init__(
+            guardrail_name="apply-style-model-guardrail",
+            event_hook=GuardrailEventHooks.pre_call,
+            default_on=False,
+        )
+        self.block = block
+        self.apply_called = False
+
+    async def apply_guardrail(
+        self, inputs, request_data, input_type, logging_obj=None
+    ):
+        from fastapi import HTTPException
+
+        self.apply_called = True
+        if self.block:
+            raise HTTPException(status_code=400, detail="blocked")
+        return inputs
+
+
+@pytest.mark.asyncio
+async def test_apply_style_model_guardrail_runs_at_deployment_pre_call():
+    from fastapi import HTTPException
+
+    guardrail = _ApplyStyleModelGuardrail(block=True)
+    request = {
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": "blocked content"}],
+        "guardrails": ["apply-style-model-guardrail"],
+        "metadata": {},
+    }
+    with pytest.raises(HTTPException):
+        await guardrail.async_pre_call_deployment_hook(
+            request, CallTypes.acompletion
+        )
+    assert guardrail.apply_called is True
+
+
+@pytest.mark.asyncio
+async def test_apply_style_model_guardrail_skips_when_not_selected():
+    guardrail = _ApplyStyleModelGuardrail(block=True)
+    request = {
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": "content"}],
+        "guardrails": ["other-guardrail"],
+        "metadata": {},
+    }
+    result = await guardrail.async_pre_call_deployment_hook(
+        request, CallTypes.acompletion
+    )
+    assert result == request
+    assert guardrail.apply_called is False
+
+
 class TestCustomGuardrailDeploymentHook:
 
     @pytest.mark.asyncio

@@ -332,9 +332,20 @@ class CustomGuardrail(CustomLogger):
         ):
             return kwargs
 
+        target: CustomLogger = self
+        if type(self).apply_guardrail is not CustomGuardrail.apply_guardrail:
+            try:
+                from litellm.proxy.utils import unified_guardrail
+            except ImportError as exc:
+                raise ImportError(
+                    "apply_guardrail model-level hooks require litellm[proxy]"
+                ) from exc
+            target = unified_guardrail
+            kwargs["guardrail_to_apply"] = self
+
         # CHECK IF GUARDRAIL REJECTS THE REQUEST
         if call_type == CallTypes.completion or call_type == CallTypes.acompletion:
-            result = await self.async_pre_call_hook(
+            result = await target.async_pre_call_hook(
                 user_api_key_dict=UserAPIKeyAuth(
                     user_id=kwargs.get("user_api_key_user_id"),
                     team_id=kwargs.get("user_api_key_team_id"),
@@ -344,7 +355,11 @@ class CustomGuardrail(CustomLogger):
                 ),
                 cache=dc,
                 data=kwargs,
-                call_type=call_type.value or "acompletion",  # type: ignore
+                call_type=(
+                    "completion"
+                    if call_type == CallTypes.completion
+                    else "acompletion"
+                ),
             )
 
             if result is not None and isinstance(result, dict):
