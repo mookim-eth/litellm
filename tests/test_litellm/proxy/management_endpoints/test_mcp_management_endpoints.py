@@ -301,6 +301,48 @@ class TestListMCPServers:
             assert {server.server_id for server in result} == {"server-1", "server-2"}
 
     @pytest.mark.asyncio
+    async def test_read_only_admin_does_not_receive_mcp_connection_details(self):
+        auth = generate_mock_user_api_key_auth(
+            user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY
+        )
+        server = generate_mock_mcp_server_db_record(server_id="sensitive-server")
+        server.credentials = {"auth_value": "secret"}
+        server.static_headers = {"Authorization": "Bearer secret"}
+        server.env = {"API_KEY": "secret"}
+        server.command = "credential-helper"
+        server.args = ["--secret"]
+        server.extra_headers = ["Authorization"]
+
+        manager = MagicMock()
+        manager.get_all_mcp_servers_unfiltered = AsyncMock(return_value=[server])
+
+        with (
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints._get_user_mcp_management_mode",
+                return_value="view_all",
+            ),
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints.global_mcp_server_manager",
+                manager,
+            ),
+        ):
+            from litellm.proxy.management_endpoints.mcp_management_endpoints import (
+                fetch_all_mcp_servers,
+            )
+
+            result = await fetch_all_mcp_servers(user_api_key_dict=auth)
+
+        assert len(result) == 1
+        sanitized = result[0]
+        assert sanitized.credentials is None
+        assert sanitized.url is None
+        assert sanitized.static_headers is None
+        assert sanitized.env == {}
+        assert sanitized.command is None
+        assert sanitized.args == []
+        assert sanitized.extra_headers == []
+
+    @pytest.mark.asyncio
     async def test_list_mcp_servers_view_all_mode_virtual_key_is_sanitized(self):
         """Issue #20325: virtual keys should get a safe discovery view."""
 

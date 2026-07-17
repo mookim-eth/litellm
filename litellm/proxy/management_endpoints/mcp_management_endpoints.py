@@ -343,6 +343,10 @@ if MCP_AVAILABLE:
     ) -> List[LiteLLM_MCPServerTable]:
         return [_redact_mcp_credentials(server) for server in mcp_servers]
 
+    def _user_is_full_admin(user_api_key_dict: UserAPIKeyAuth) -> bool:
+        """Only a full proxy admin may read MCP connection details."""
+        return user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN
+
     def _is_restricted_virtual_key_request(user_api_key_dict: UserAPIKeyAuth) -> bool:
         """Best-effort detection for route-restricted virtual keys.
 
@@ -836,7 +840,7 @@ if MCP_AVAILABLE:
         if is_restricted_virtual_key:
             return _sanitize_mcp_server_list_for_virtual_key(redacted_mcp_servers)
 
-        if not _user_has_admin_view(user_api_key_dict):
+        if not _user_is_full_admin(user_api_key_dict):
             return _sanitize_mcp_server_list_for_non_admin(redacted_mcp_servers)
 
         return redacted_mcp_servers
@@ -1206,7 +1210,7 @@ if MCP_AVAILABLE:
         redacted = _redact_mcp_credentials(mcp_server)
         if is_restricted_virtual_key:
             return _sanitize_mcp_server_for_virtual_key(redacted)
-        if not is_admin_view:
+        if not _user_is_full_admin(user_api_key_dict):
             return _sanitize_mcp_server_for_non_admin(redacted)
         return redacted
 
