@@ -297,8 +297,11 @@ class CustomGuardrail(CustomLogger):
 
         if "guardrails" in data:
             return data["guardrails"]
-        metadata = data.get("litellm_metadata") or data.get("metadata", {})
-        return metadata.get("guardrails") or []
+        for metadata_key in ("metadata", "litellm_metadata"):
+            metadata = data.get(metadata_key) or {}
+            if isinstance(metadata, dict) and "guardrails" in metadata:
+                return metadata.get("guardrails") or []
+        return []
 
     def _guardrail_is_in_requested_guardrails(
         self,

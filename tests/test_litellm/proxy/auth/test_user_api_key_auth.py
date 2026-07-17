@@ -124,6 +124,89 @@ async def test_scim_deactivated_user_key_is_rejected():
 
 
 @pytest.mark.asyncio
+async def test_auth_refreshes_team_policy_metadata_from_team_row():
+    from fastapi import Request
+
+    from litellm.proxy._types import LiteLLM_TeamTableCachedObj, LitellmUserRoles
+    from litellm.proxy.auth.user_api_key_auth import _user_api_key_auth_builder
+
+    token = UserAPIKeyAuth(
+        api_key="sk-team-policy-refresh",
+        token="hashed-team-policy-refresh",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        team_id="team-1",
+        team_metadata={"stale": True},
+    )
+    team = LiteLLM_TeamTableCachedObj(
+        team_id="team-1", metadata={"guardrails": ["required-guardrail"]}
+    )
+    proxy_server = litellm.proxy.proxy_server
+    replacements = {
+        "prisma_client": MagicMock(),
+        "user_api_key_cache": AsyncMock(),
+        "proxy_logging_obj": MagicMock(),
+        "master_key": "sk-master-key",
+        "general_settings": {},
+        "llm_model_list": [],
+        "llm_router": None,
+        "open_telemetry_logger": None,
+        "model_max_budget_limiter": MagicMock(),
+        "user_custom_auth": None,
+        "jwt_handler": None,
+        "litellm_proxy_admin_name": "admin",
+    }
+    originals = {name: getattr(proxy_server, name, None) for name in replacements}
+    try:
+        for name, value in replacements.items():
+            setattr(proxy_server, name, value)
+        proxy_server.user_api_key_cache.async_get_cache = AsyncMock(return_value=None)
+        proxy_server.user_api_key_cache.async_set_cache = AsyncMock()
+        proxy_server.proxy_logging_obj.internal_usage_cache = MagicMock()
+        proxy_server.proxy_logging_obj.internal_usage_cache.dual_cache = AsyncMock()
+        proxy_server.proxy_logging_obj.internal_usage_cache.dual_cache.async_delete_cache = AsyncMock()
+        proxy_server.proxy_logging_obj.post_call_failure_hook = AsyncMock(
+            return_value=None
+        )
+        request = Request(
+            scope={
+                "type": "http",
+                "method": "POST",
+                "path": "/chat/completions",
+                "headers": [],
+                "client": ("127.0.0.1", 12345),
+                "server": ("testserver", 80),
+                "scheme": "http",
+                "query_string": b"",
+            }
+        )
+        with (
+            patch(
+                "litellm.proxy.auth.user_api_key_auth.get_key_object",
+                new_callable=AsyncMock,
+                return_value=token,
+            ),
+            patch(
+                "litellm.proxy.auth.user_api_key_auth.get_team_object",
+                new_callable=AsyncMock,
+                return_value=team,
+            ),
+        ):
+            result = await _user_api_key_auth_builder(
+                request=request,
+                api_key="Bearer sk-team-policy-refresh",
+                azure_api_key_header="",
+                anthropic_api_key_header=None,
+                google_ai_studio_api_key_header=None,
+                azure_apim_header=None,
+                request_data={},
+            )
+        assert result.team_metadata == {"guardrails": ["required-guardrail"]}
+    finally:
+        for name, value in originals.items():
+            setattr(proxy_server, name, value)
+
+
+@pytest.mark.asyncio
 async def test_key_alias_target_is_reauthorized():
     token = UserAPIKeyAuth(models=["safe-alias"], aliases={"safe-alias": "restricted"})
 

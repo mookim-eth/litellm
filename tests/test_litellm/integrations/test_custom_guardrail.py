@@ -64,6 +64,15 @@ async def test_apply_style_model_guardrail_skips_when_not_selected():
     assert guardrail.apply_called is False
 
 
+def test_guardrails_in_metadata_are_not_shadowed_by_litellm_metadata():
+    guardrail = CustomGuardrail(guardrail_name="team-guardrail")
+    request = {
+        "metadata": {"guardrails": ["team-guardrail"]},
+        "litellm_metadata": {"unrelated": True},
+    }
+    assert guardrail.get_guardrail_from_metadata(request) == ["team-guardrail"]
+
+
 class TestCustomGuardrailDeploymentHook:
 
     @pytest.mark.asyncio
