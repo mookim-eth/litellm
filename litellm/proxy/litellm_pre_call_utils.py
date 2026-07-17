@@ -4,7 +4,7 @@ import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from pydantic import ValidationError as PydanticValidationError
 from starlette.datastructures import Headers
 
@@ -52,6 +52,7 @@ from litellm.secret_managers.main import get_secret_bool
 from litellm.types.llms.anthropic import ANTHROPIC_API_HEADERS
 from litellm.types.services import ServiceTypes
 from litellm.types.utils import (
+    CustomPricingLiteLLMParams,
     LlmProviders,
     ProviderSpecificHeader,
     StandardLoggingUserAPIKeyMetadata,
@@ -104,6 +105,144 @@ LITELLM_METADATA_ROUTES = (
     "responses",
     "files",
 )
+
+_UNTRUSTED_ROOT_CONTROL_FIELDS = (
+    "proxy_server_request",
+    "standard_logging_object",
+    "secret_fields",
+    "mock_response",
+    "mock_tool_calls",
+    "disable_global_guardrails",
+    "disable_global_guardrail",
+    "opted_out_global_guardrails",
+    "applied_guardrails",
+    "applied_policies",
+    "policy_sources",
+    "pillar_response_headers",
+    "_guardrail_pipelines",
+    "_pipeline_managed_guardrails",
+    "callbacks",
+    "service_callback",
+    "logger_fn",
+    "litellm_disabled_callbacks",
+    "_agentic_loop_depth",
+    "_agentic_loop_fingerprints",
+    "_code_interpreter_interception_active",
+    "_code_interpreter_interception_converted_stream",
+    "_code_interpreter_interception_sandbox_key",
+    "_code_interpreter_interception_session_scoped",
+    "max_agentic_loops",
+)
+
+_UNTRUSTED_METADATA_CONTROL_FIELDS = (
+    "disable_global_guardrails",
+    "disable_global_guardrail",
+    "opted_out_global_guardrails",
+    "pillar_response_headers",
+    "_pillar_response_headers_trusted",
+    "pillar_flagged",
+    "pillar_scanners",
+    "pillar_evidence",
+    "pillar_evidence_truncated",
+    "pillar_session_id_response",
+    "applied_guardrails",
+    "applied_policies",
+    "policy_sources",
+    "standard_logging_object",
+    "proxy_server_request",
+    "secret_fields",
+    "_guardrail_pipelines",
+    "_pipeline_managed_guardrails",
+    "client_disconnected",
+    "error_information",
+)
+
+_CLIENT_PRICING_CONTROL_FIELDS = frozenset(
+    CustomPricingLiteLLMParams.model_fields.keys()
+)
+_URL_DESTINATION_REQUEST_FIELDS = ("model", "file_id")
+_UNTRUSTED_REQUEST_HEADER_CONTROL_FIELDS = frozenset(
+    {"litellm-disable-message-redaction"}
+)
+
+
+def _strip_untrusted_request_header_controls(headers: Any) -> None:
+    if not isinstance(headers, dict):
+        return
+    for header_name in list(headers):
+        if (
+            isinstance(header_name, str)
+            and header_name.lower() in _UNTRUSTED_REQUEST_HEADER_CONTROL_FIELDS
+        ):
+            headers.pop(header_name, None)
+
+
+def _strip_untrusted_metadata_controls(data: Dict[str, Any]) -> None:
+    for metadata_key in ("metadata", "litellm_metadata"):
+        metadata = data.get(metadata_key)
+        if not isinstance(metadata, dict):
+            continue
+        _strip_untrusted_request_header_controls(metadata.get("headers"))
+        for field in list(metadata):
+            if (
+                field.startswith("user_api_key_")
+                or field in _UNTRUSTED_METADATA_CONTROL_FIELDS
+            ):
+                metadata.pop(field, None)
+
+
+def _key_or_team_metadata_flag_is_true(
+    user_api_key_dict: UserAPIKeyAuth, field: str
+) -> bool:
+    return any(
+        isinstance(metadata, dict) and metadata.get(field) is True
+        for metadata in (
+            user_api_key_dict.metadata,
+            user_api_key_dict.team_metadata,
+        )
+    )
+
+
+def _strip_untrusted_request_controls(
+    data: Dict[str, Any], user_api_key_dict: UserAPIKeyAuth
+) -> None:
+    """Remove request fields reserved for proxy-owned control state."""
+    allow_mock = _key_or_team_metadata_flag_is_true(
+        user_api_key_dict, "allow_client_mock_response"
+    )
+    for field in _UNTRUSTED_ROOT_CONTROL_FIELDS:
+        if allow_mock and field in {"mock_response", "mock_tool_calls"}:
+            continue
+        data.pop(field, None)
+    _strip_untrusted_metadata_controls(data)
+
+
+def _strip_client_pricing_overrides(data: Dict[str, Any]) -> None:
+    """Prevent a request from changing accounting or the global cost map."""
+    for field in _CLIENT_PRICING_CONTROL_FIELDS:
+        data.pop(field, None)
+    for metadata_key in ("metadata", "litellm_metadata"):
+        metadata = data.get(metadata_key)
+        if isinstance(metadata, dict):
+            metadata.pop("model_info", None)
+
+
+def _reject_url_valued_destinations(data: Dict[str, Any]) -> None:
+    """Reject identifier fields that become provider-controlled HTTP URLs."""
+    for field in _URL_DESTINATION_REQUEST_FIELDS:
+        value = data.get(field)
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_request",
+                    "param": field,
+                    "message": (
+                        f"URL-valued '{field}' is not allowed through the proxy; "
+                        "configure custom endpoints with api_base instead."
+                    ),
+                },
+            )
 
 
 def _get_metadata_variable_name(request: Request) -> str:
@@ -1246,6 +1385,9 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     from litellm.proxy.proxy_server import llm_router, premium_user
     from litellm.types.proxy.litellm_pre_call_utils import RedactedDict, SecretFields
 
+    _strip_untrusted_request_controls(data, user_api_key_dict)
+    _reject_url_valued_destinations(data)
+
     _raw_headers: Dict[str, str] = RedactedDict(_safe_get_request_headers(request))
 
     forward_llm_auth = False
@@ -1278,6 +1420,7 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
         forward_llm_provider_auth_headers=forward_llm_auth,
         authenticated_with_header=authenticated_with_header,
     )
+    _strip_untrusted_request_header_controls(_headers)
     verbose_proxy_logger.debug(f"Request Headers: {_headers}")
     verbose_proxy_logger.debug(f"Raw Headers: {_raw_headers}")
 
@@ -1391,9 +1534,6 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
                 verbose_proxy_logger.warning(
                     f"Failed to parse 'metadata' as JSON dict. Received value: {data['metadata']}"
                 )
-        data[_metadata_variable_name]["requester_metadata"] = copy.deepcopy(
-            data["metadata"]
-        )
 
     # Parse litellm_metadata if it's a string (e.g., from multipart/form-data or extra_body)
     if "litellm_metadata" in data and data["litellm_metadata"] is not None:
@@ -1405,11 +1545,78 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
                 )
             else:
                 data["litellm_metadata"] = parsed_litellm_metadata
-        # Merge litellm_metadata into the metadata variable (preserving existing values)
-        if isinstance(data["litellm_metadata"], dict):
-            for key, value in data["litellm_metadata"].items():
-                if key not in data[_metadata_variable_name]:
-                    data[_metadata_variable_name][key] = value
+
+    # Run again after decoding JSON-string metadata so multipart/extra_body
+    # cannot bypass the dict-only checks above.
+    _strip_untrusted_metadata_controls(data)
+    if not _key_or_team_metadata_flag_is_true(
+        user_api_key_dict, "allow_client_pricing_override"
+    ):
+        _strip_client_pricing_overrides(data)
+
+    # Refresh the body snapshot from sanitized data. The initial snapshot is
+    # created before metadata decoding for latency accounting, but must not
+    # preserve forged control fields in logs or downstream audit consumers.
+    _proxy_server_request = data.pop("proxy_server_request", None)
+    if isinstance(_proxy_server_request, dict):
+        _proxy_server_request["body"] = (
+            _build_proxy_server_request_body_for_memory_safe_logging(
+                data=data,
+                general_settings=general_settings,
+            )
+        )
+        data["proxy_server_request"] = _proxy_server_request
+
+    # Strip internal/admin slots only after both metadata variants have been
+    # decoded. Otherwise JSON-string multipart metadata can bypass isinstance
+    # checks and later be trusted by guardrails, routing, or audit consumers.
+    for _meta_key in ("metadata", "litellm_metadata"):
+        _user_meta = data.get(_meta_key)
+        if isinstance(_user_meta, dict):
+            _user_meta.pop("_pipeline_managed_guardrails", None)
+            _user_meta.pop("user_api_key_metadata", None)
+            _user_meta.pop("user_api_key_team_metadata", None)
+
+    # Caller tags affect tag routing and budget attribution. Only preserve
+    # them when the key or team explicitly opts in from admin-owned metadata.
+    _admin_allow_client_tags = False
+    for _admin_meta in (
+        user_api_key_dict.metadata,
+        user_api_key_dict.team_metadata,
+    ):
+        if (
+            isinstance(_admin_meta, dict)
+            and _admin_meta.get("allow_client_tags") is True
+        ):
+            _admin_allow_client_tags = True
+            break
+    if not _admin_allow_client_tags:
+        _stripped_from: List[str] = []
+        for _meta_key in ("metadata", "litellm_metadata"):
+            _user_meta = data.get(_meta_key)
+            if isinstance(_user_meta, dict) and "tags" in _user_meta:
+                _user_meta.pop("tags", None)
+                _stripped_from.append(_meta_key)
+        if _stripped_from:
+            verbose_proxy_logger.warning(
+                "Stripped caller-supplied tags from %s: this key/team does "
+                "not have `allow_client_tags: true` in its metadata.",
+                ", ".join(_stripped_from),
+            )
+
+    # Snapshot only sanitized requester metadata so removed internal fields do
+    # not survive in a secondary copy consumed by guardrails or audit hooks.
+    if "metadata" in data and isinstance(data["metadata"], dict):
+        data[_metadata_variable_name]["requester_metadata"] = copy.deepcopy(
+            data["metadata"]
+        )
+
+    # Merge only after sanitization, preventing the alternate metadata field
+    # from contaminating the proxy-authoritative metadata container.
+    if "litellm_metadata" in data and isinstance(data["litellm_metadata"], dict):
+        for key, value in data["litellm_metadata"].items():
+            if key not in data[_metadata_variable_name]:
+                data[_metadata_variable_name][key] = value
 
     data = LiteLLMProxyRequestSetup.add_user_api_key_auth_to_request_metadata(
         data=data,
@@ -1572,8 +1779,13 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
         data=data,
     )
 
-    if tags is not None:
+    if tags is not None and _admin_allow_client_tags:
         data[_metadata_variable_name]["tags"] = tags
+    elif tags is not None:
+        verbose_proxy_logger.warning(
+            "Ignored caller-supplied tags from header/root body: this "
+            "key/team does not have `allow_client_tags: true` in its metadata."
+        )
 
     # Team Callbacks controls
     callback_settings_obj = _get_dynamic_logging_metadata(

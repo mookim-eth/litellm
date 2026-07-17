@@ -427,7 +427,7 @@ async def test_add_litellm_data_to_request_audio_transcription_multipart():
 
     user_api_key_dict = UserAPIKeyAuth(
         api_key="hashed-key",
-        metadata={},
+        metadata={"allow_client_tags": True},
         team_metadata={},
         spend=0.0,
         max_budget=100.0,
@@ -889,7 +889,7 @@ def test_get_dynamic_logging_metadata_ignores_env_reference_from_key_metadata(
     assert result is None
 
 
-def test_get_dynamic_logging_metadata_keeps_bare_env_name_unresolved(monkeypatch):
+def test_get_dynamic_logging_metadata_rejects_disabled_langsmith_callback(monkeypatch):
     monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-should-not-leak")
     user_api_key_dict = UserAPIKeyAuth(
         api_key="test-key",
@@ -913,9 +913,7 @@ def test_get_dynamic_logging_metadata_keeps_bare_env_name_unresolved(monkeypatch
         user_api_key_dict=user_api_key_dict, proxy_config=MagicMock()
     )
 
-    assert result is not None
-    assert result.callback_vars["langsmith_api_key"] == "LITELLM_MASTER_KEY"
-    assert "sk-should-not-leak" not in result.callback_vars.values()
+    assert result is None
 
 
 def test_get_num_retries_from_request():
@@ -1305,7 +1303,8 @@ async def test_add_litellm_metadata_from_request_headers():
         mock_user_api_key_dict = UserAPIKeyAuth(
             api_key="test-key",
             user_id="test-user",
-            org_id="test-org"
+            org_id="test-org",
+            metadata={"allow_client_mock_response": True},
         )
 
         # Create mock proxy logging object
