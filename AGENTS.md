@@ -238,6 +238,47 @@ advisory filter for future upstream syncs. If a future upstream sync contains
 newer commits for one of the advisories above, compare behavior and regression
 tests before dropping local coverage.
 
+### Local proxy authorization invariants
+
+The following controls are intentional security boundaries. Preserve them
+during upstream syncs and when adding new key-management routes:
+
+- Non-`proxy_admin` callers must not set virtual-key `metadata`, including
+  explicit `null` or empty mappings. Presence is security-significant because
+  update/regenerate paths can use empty values to clear an existing policy.
+  This applies to every key write path, including `/key/generate`,
+  `/key/service-account/generate`, `/key/update`, `/key/regenerate`, and bulk
+  or indirect helpers. Only omitted metadata is valid.
+- Non-`proxy_admin` callers must not set the key control fields
+  `allowed_routes`, `allowed_passthrough_routes`, `config`, `aliases`,
+  `router_settings`, `access_group_ids`, `permissions`, `object_permission`,
+  `tags`, `guardrails`, `policies`, `prompts`, or `blocked`, and must not mint
+  `key_type=management`. These fields can affect route/model authorization,
+  fallbacks, delegated object access, policy enforcement, or management access.
+- Authentication builders may return through many JWT, OAuth2, master-key,
+  pass-through, custom-header, and DB-fallback paths. All non-exempt paths must
+  converge on `_run_centralized_common_checks`; never add a wrapper return that
+  bypasses it. DB-unavailable fallback identities must remain restricted
+  internal users, never proxy admins.
+- `metadata.allowed_passthrough_routes` is never a general route grant. The
+  RBAC fallback may honor it only after confirming that the requested path is
+  an operator-registered passthrough endpoint. Keep this runtime check even if
+  management endpoints also reject new non-admin values, because existing DB
+  rows and future write paths must fail closed.
+- Do not relax these restrictions to a reserved-key denylist without tracing
+  every metadata consumer. Key metadata has historically been interpreted as
+  callback, guardrail, rate-limit, and route-control configuration.
+- Before changing these controls, run at least:
+
+  ```bash
+  .venv/bin/pytest tests/test_litellm/proxy/auth/test_route_checks.py -q
+  .venv/bin/pytest tests/test_litellm/proxy/management_endpoints/test_key_management_endpoints.py -q
+  ```
+
+  Also verify end to end that a normal internal user can create a key, set a
+  budget within its delegation ceiling, and use the key, while non-empty
+  metadata and the restricted control fields receive HTTP 403.
+
 ## ENTERPRISE FEATURES
 
 - Some features are enterprise-only
@@ -377,7 +418,8 @@ When asked to ship the current repo changes to the local LiteLLM deployment:
 
    Notes:
    - `deploy-litellm.sh` does not build images; pass the exact image tag built in the previous step after `--image`.
-   - The script starts the inactive `litellm_blue`/`litellm_green` service, waits for `/health/readiness`, rewrites Traefik `ai-svc` to the new backend port, waits `DRAIN_SECONDS` (default `600`), then stops the old compose service itself.
+   - The script starts the inactive `litellm_blue`/`litellm_green` service, waits for `/health/readiness`, rewrites Traefik `ai-svc` to the new backend port, then drains established TCP connections on the old backend before stopping it.
+   - Drain defaults are `DRAIN_TIMEOUT=120` seconds and `DRAIN_IDLE_SECONDS=5` continuous seconds with zero established connections. `DRAIN_SECONDS` is retained as a backward-compatible default for `DRAIN_TIMEOUT`; `DRAIN_TIMEOUT=0` waits indefinitely.
    - Only set `STOP_OLD=0` if explicitly asked to keep the old backend running.
 
 6. Verify the active backend and readiness after the switch:
