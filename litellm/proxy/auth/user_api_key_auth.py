@@ -1620,6 +1620,25 @@ async def _none_auth_context() -> None:
     return None
 
 
+async def _get_team_auth_context(
+    token: UserAPIKeyAuth,
+    prisma_client: Optional[PrismaClient],
+    user_api_key_cache: DualCache,
+    parent_otel_span: Optional[Span],
+    proxy_logging_obj: ProxyLogging,
+) -> LiteLLM_TeamTableCachedObj:
+    try:
+        return await get_team_object(
+            team_id=token.team_id,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            parent_otel_span=parent_otel_span,
+            proxy_logging_obj=proxy_logging_obj,
+        )
+    except HTTPException:
+        return _team_obj_from_auth_token(token)
+
+
 def _team_obj_from_auth_token(
     token: UserAPIKeyAuth,
 ) -> LiteLLM_TeamTableCachedObj:
@@ -1678,8 +1697,8 @@ async def _run_centralized_common_checks(
     )
 
     team_fetch = (
-        get_team_object(
-            team_id=user_api_key_auth_obj.team_id,
+        _get_team_auth_context(
+            token=user_api_key_auth_obj,
             prisma_client=prisma_client,
             user_api_key_cache=user_api_key_cache,
             parent_otel_span=parent_span,

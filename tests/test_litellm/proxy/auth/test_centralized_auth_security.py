@@ -3,7 +3,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from starlette.requests import Request
 
-from litellm.proxy._types import UserAPIKeyAuth
+from fastapi import HTTPException
+
+from litellm.proxy._types import (
+    LiteLLM_UserTable,
+    LitellmUserRoles,
+    UserAPIKeyAuth,
+)
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.auth.user_api_key_auth import _run_centralized_common_checks
 
@@ -76,3 +82,54 @@ async def test_every_builder_return_runs_centralized_common_checks():
 
     assert result is token
     centralized.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_missing_virtual_team_preserves_dashboard_session_user():
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "POST",
+            "path": "/key/generate",
+            "headers": [],
+        }
+    )
+    token = UserAPIKeyAuth(
+        token="hashed-token",
+        team_id="litellm-dashboard",
+        user_id="internal-user",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+    )
+    user = LiteLLM_UserTable(
+        user_id="internal-user",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+    )
+
+    with (
+        patch(
+            "litellm.proxy.auth.user_api_key_auth.get_team_object",
+            new=AsyncMock(side_effect=HTTPException(status_code=404)),
+        ),
+        patch(
+            "litellm.proxy.auth.user_api_key_auth.get_user_object",
+            new=AsyncMock(return_value=user),
+        ),
+        patch(
+            "litellm.proxy.auth.user_api_key_auth.get_global_proxy_spend",
+            new=AsyncMock(return_value=0.0),
+        ),
+        patch(
+            "litellm.proxy.auth.user_api_key_auth.common_checks",
+            new=AsyncMock(),
+        ) as common,
+        patch("litellm.proxy.proxy_server.master_key", "test-master-key"),
+    ):
+        await _run_centralized_common_checks(
+            user_api_key_auth_obj=token,
+            request=request,
+            request_data={},
+            route="/key/generate",
+        )
+
+    assert common.await_args.kwargs["user_object"] is user
+    assert common.await_args.kwargs["team_object"].team_id == "litellm-dashboard"
