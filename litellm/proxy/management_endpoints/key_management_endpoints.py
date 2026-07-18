@@ -595,6 +595,9 @@ async def _enforce_delegated_model_ceiling(
 
     if not requested_models:
         if caller_models and "*" not in caller_models:
+            if inherit_when_omitted:
+                data.models = list(caller_models)
+                return
             raise HTTPException(
                 status_code=403,
                 detail={
