@@ -9319,8 +9319,8 @@ class TestDelegatedKeyExpiryCeiling:
         inherited_seconds = int(data.duration.removesuffix("s"))
         assert 3500 <= inherited_seconds <= 3600
 
-    @pytest.mark.parametrize("duration", [None, "-1", "2h"])
-    def test_finite_caller_cannot_delegate_longer_or_unbounded_expiry(self, duration):
+    @pytest.mark.parametrize("duration", [None, "-1"])
+    def test_finite_caller_can_explicitly_create_non_expiring_key(self, duration):
         caller = UserAPIKeyAuth(
             user_id="internal-user-123",
             user_role=LitellmUserRoles.INTERNAL_USER,
@@ -9328,11 +9328,44 @@ class TestDelegatedKeyExpiryCeiling:
         )
         data = GenerateKeyRequest(duration=duration)
 
+        _enforce_delegated_expiry_ceiling(
+            data=data,
+            user_api_key_dict=caller,
+            inherit_when_omitted=True,
+        )
+
+        assert data.duration == duration
+
+    def test_finite_caller_cannot_delegate_longer_finite_expiry(self):
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            expires=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        data = GenerateKeyRequest(duration="2h")
+
         with pytest.raises(HTTPException) as exc_info:
             _enforce_delegated_expiry_ceiling(
                 data=data,
                 user_api_key_dict=caller,
                 inherit_when_omitted=True,
+            )
+
+        assert exc_info.value.status_code == 403
+
+    def test_finite_caller_cannot_clear_existing_key_expiry(self):
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            expires=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        data = UpdateKeyRequest(key="sk-test", duration=None)
+
+        with pytest.raises(HTTPException) as exc_info:
+            _enforce_delegated_expiry_ceiling(
+                data=data,
+                user_api_key_dict=caller,
+                inherit_when_omitted=False,
             )
 
         assert exc_info.value.status_code == 403

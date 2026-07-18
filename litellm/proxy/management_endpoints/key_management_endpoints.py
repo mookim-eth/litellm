@@ -636,7 +636,7 @@ def _enforce_delegated_expiry_ceiling(
     *,
     inherit_when_omitted: bool,
 ) -> None:
-    """Prevent a finite-lived caller from minting or extending longer-lived keys."""
+    """Enforce finite expiry ceilings while allowing explicit permanent key creation."""
     if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
         return
 
@@ -660,10 +660,12 @@ def _enforce_delegated_expiry_ceiling(
 
     requested_duration = data.duration
     if requested_duration is None or requested_duration == "-1":
+        if isinstance(data, GenerateKeyRequest):
+            return
         raise HTTPException(
             status_code=403,
             detail={
-                "error": "A finite-lived caller cannot create a non-expiring key."
+                "error": "A finite-lived caller cannot make an existing key non-expiring."
             },
         )
 
