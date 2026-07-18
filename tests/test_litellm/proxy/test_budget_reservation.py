@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -54,6 +55,44 @@ def _request_body() -> dict:
         "messages": [{"role": "user", "content": "hello"}],
         "max_tokens": 10,
     }
+
+
+@pytest.mark.asyncio
+async def test_should_seed_cold_spend_counter_once_under_concurrency(
+    spend_counter_state,
+):
+    counter_cache, key_cache = spend_counter_state
+    await key_cache.async_set_cache(
+        key="key-cold-seed-race",
+        value=UserAPIKeyAuth(
+            token="key-cold-seed-race",
+            spend=587.5,
+            max_budget=1000.0,
+        ),
+    )
+
+    from litellm.proxy.proxy_server import _ensure_spend_counter_initialized
+
+    # Model the cold-start race where every waiter observes the initial miss
+    # before any of them seeds the shared counter.
+    with patch.object(
+        counter_cache,
+        "async_get_cache",
+        new=AsyncMock(return_value=None),
+    ):
+        await asyncio.gather(
+            *(
+                _ensure_spend_counter_initialized(
+                    counter_key="spend:key:key-cold-seed-race",
+                    source_cache_key="key-cold-seed-race",
+                )
+                for _ in range(20)
+            )
+        )
+
+    assert counter_cache.in_memory_cache.get_cache(
+        key="spend:key:key-cold-seed-race"
+    ) == pytest.approx(587.5)
 
 
 def test_should_not_serialize_budget_reservation_on_user_api_key_auth():

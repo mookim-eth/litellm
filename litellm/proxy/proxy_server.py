@@ -2179,15 +2179,12 @@ async def _init_and_increment_spend_counter(
     Initialize counter from cached object's DB-loaded spend if not yet set,
     then atomically increment in both in-memory and Redis.
 
-    On first access per pod:
-    1. Check spend_counter_cache (in-memory -> Redis via DualCache for init check)
-    2. If not found anywhere, read base spend from user_api_key_cache (DB-loaded object)
-    3. Seed counter via async_increment_cache (not async_set_cache) to avoid a
-       check-then-set race: if two pods cold-start simultaneously, both may see
-       the counter as absent and seed it. Using increment instead of set means
-       the worst case is over-counting (conservative — blocks slightly early)
-       rather than under-counting (would allow overspend).
-    4. Increment atomically (both in-memory + Redis)
+    On first access:
+    1. Serialize same-process initialization with the counter's singleflight lock.
+    2. Re-check Redis (or the in-memory cache) while holding the lock.
+    3. Read the DB-loaded base spend from user_api_key_cache.
+    4. Seed Redis with SET NX, or set the in-memory value exactly once.
+    5. Increment the request cost atomically after initialization returns.
     """
     await _ensure_spend_counter_initialized(
         counter_key=counter_key,
@@ -2217,8 +2214,20 @@ async def _ensure_spend_counter_initialized(
     counter_key: str,
     source_cache_key: Union[str, List[str]],
 ):
-    current = await spend_counter_cache.async_get_cache(key=counter_key)
-    if current is None:
+    lock = await SpendCounterReseed._get_lock(counter_key)
+    async with lock:
+        # Re-check while holding the per-counter lock. Multiple requests can
+        # reach this path together after a cold start; incrementing the DB base
+        # once per waiter double-counts spend and can immediately block a key.
+        if spend_counter_cache.redis_cache is not None:
+            current = await spend_counter_cache.redis_cache.async_get_cache(
+                key=counter_key
+            )
+        else:
+            current = spend_counter_cache.in_memory_cache.get_cache(key=counter_key)
+        if current is not None:
+            return
+
         source = None
         for cache_key in (
             source_cache_key if isinstance(source_cache_key, list) else [source_cache_key]
@@ -2232,9 +2241,37 @@ async def _ensure_spend_counter_initialized(
                 base_spend = source.get("spend", 0.0) or 0.0
             else:
                 base_spend = getattr(source, "spend", 0.0) or 0.0
-        if base_spend > 0:
-            await spend_counter_cache.async_increment_cache(
-                key=counter_key, value=base_spend
+        if spend_counter_cache.redis_cache is not None:
+            seeded = await spend_counter_cache.redis_cache.async_set_cache(
+                key=counter_key,
+                value=base_spend,
+                nx=True,
+            )
+            if seeded:
+                current_value = base_spend
+            else:
+                current_value = (
+                    await spend_counter_cache.redis_cache.async_get_cache(
+                        key=counter_key
+                    )
+                )
+                if current_value is None:
+                    # The winner's key may have expired between SET NX and GET.
+                    # Retry through the same atomic initialization path.
+                    current_value = base_spend
+                    await spend_counter_cache.redis_cache.async_set_cache(
+                        key=counter_key,
+                        value=current_value,
+                        nx=True,
+                    )
+            spend_counter_cache.in_memory_cache.set_cache(
+                key=counter_key,
+                value=current_value,
+            )
+        else:
+            spend_counter_cache.in_memory_cache.set_cache(
+                key=counter_key,
+                value=base_spend,
             )
 
 

@@ -161,21 +161,35 @@ class SpendCounterReseed:
             if db_spend is None:
                 return None
             # Warm even when 0 so subsequent reads hit cache, not DB.
+            current_value = db_spend
             try:
-                if require_cache_warm and spend_counter_cache.redis_cache is not None:
-                    current_value = (
-                        await spend_counter_cache.redis_cache.async_increment(
-                            key=counter_key,
-                            value=db_spend,
-                        )
+                if spend_counter_cache.redis_cache is not None:
+                    seeded = await spend_counter_cache.redis_cache.async_set_cache(
+                        key=counter_key,
+                        value=db_spend,
+                        nx=True,
                     )
+                    if seeded:
+                        current_value = db_spend
+                    else:
+                        cached_value = (
+                            await spend_counter_cache.redis_cache.async_get_cache(
+                                key=counter_key
+                            )
+                        )
+                        current_value = (
+                            float(cached_value)
+                            if cached_value is not None
+                            else db_spend
+                        )
                     spend_counter_cache.in_memory_cache.set_cache(
                         key=counter_key,
                         value=current_value,
                     )
                 else:
-                    await spend_counter_cache.async_increment_cache(
-                        key=counter_key, value=db_spend
+                    spend_counter_cache.in_memory_cache.set_cache(
+                        key=counter_key,
+                        value=db_spend,
                     )
             except Exception:
                 verbose_proxy_logger.exception(
@@ -184,7 +198,7 @@ class SpendCounterReseed:
                 )
                 if require_cache_warm:
                     raise
-            return db_spend
+            return current_value
 
     @staticmethod
     async def window_from_spend_logs(
