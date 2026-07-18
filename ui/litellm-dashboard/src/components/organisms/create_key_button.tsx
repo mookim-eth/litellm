@@ -12,7 +12,7 @@ import { Accordion, AccordionBody, AccordionHeader, Button, Col, Grid, Text, Tex
 import { Button as Button2, Form, Input, Modal, Radio, Select, Switch, Tag, Tooltip } from "antd";
 import debounce from "lodash/debounce";
 import React, { useCallback, useEffect, useState } from "react";
-import { rolesWithWriteAccess } from "../../utils/roles";
+import { isProxyAdminRole, rolesWithWriteAccess } from "../../utils/roles";
 import AgentSelector from "../agent_management/AgentSelector";
 import { mapDisplayToInternalNames } from "../callback_info_helpers";
 import AccessGroupSelector from "../common_components/AccessGroupSelector";
@@ -83,6 +83,51 @@ interface UserOption {
   value: string;
   user: User;
 }
+
+// Keep aligned with _NON_ADMIN_RESTRICTED_KEY_CONTROL_FIELDS in
+// key_management_endpoints.py. UI-only fields are transformed into metadata
+// or object_permission before submission.
+const NON_ADMIN_RESTRICTED_KEY_FIELDS = [
+  "agent_id",
+  "allowed_routes",
+  "allowed_passthrough_routes",
+  "allowed_cache_controls",
+  "allowed_vector_store_indexes",
+  "config",
+  "aliases",
+  "router_settings",
+  "access_group_ids",
+  "permissions",
+  "object_permission",
+  "tags",
+  "guardrails",
+  "disable_global_guardrails",
+  "policies",
+  "prompts",
+  "blocked",
+  "budget_id",
+  "budget_duration",
+  "enforced_params",
+  "grace_period",
+  "max_parallel_requests",
+  "model_max_budget",
+  "model_rpm_limit",
+  "model_tpm_limit",
+  "project_id",
+  "rpm_limit",
+  "rpm_limit_type",
+  "spend",
+  "temp_budget_expiry",
+  "temp_budget_increase",
+  "tpm_limit",
+  "tpm_limit_type",
+  "metadata",
+  "allowed_vector_store_ids",
+  "allowed_mcp_servers_and_groups",
+  "allowed_mcp_access_groups",
+  "mcp_tool_permissions",
+  "allowed_agents_and_groups",
+] as const;
 
 const getPredefinedTags = (data: any[] | null) => {
   let allTags = [];
@@ -162,6 +207,7 @@ export const fetchUserModels = async (
  */
 const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOpenCreate, prefillData }) => {
   const { accessToken, userId: userID, userRole, premiumUser } = useAuthorized();
+  const isProxyAdmin = userRole != null && isProxyAdminRole(userRole);
   const canEditGuardrails = premiumUser || (userRole != null && rolesWithWriteAccess.includes(userRole));
   const { data: organizations, isLoading: isOrganizationsLoading } = useOrganizations();
   const { data: projects, isLoading: isProjectsLoading } = useProjects();
@@ -389,6 +435,16 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
         formValues.agent_id = selectedAgentId;
       }
 
+      // Hide these controls below and also strip stale/prefilled form state.
+      if (!isProxyAdmin) {
+        for (const field of NON_ADMIN_RESTRICTED_KEY_FIELDS) {
+          delete formValues[field];
+        }
+        if (formValues.key_type === "management") {
+          formValues.key_type = "llm_api";
+        }
+      }
+
       // Handle metadata for all key types
       let metadata: Record<string, any> = {};
       try {
@@ -432,7 +488,11 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
       }
 
       // Update the formValues with the final metadata
-      formValues.metadata = JSON.stringify(metadata);
+      if (isProxyAdmin) {
+        formValues.metadata = JSON.stringify(metadata);
+      } else {
+        delete formValues.metadata;
+      }
 
       // Transform allowed_vector_store_ids and allowed_mcp_servers_and_groups into object_permission format
       if (formValues.allowed_vector_store_ids && formValues.allowed_vector_store_ids.length > 0) {
@@ -504,12 +564,12 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
       }
 
       // Add model_aliases if any are defined
-      if (Object.keys(modelAliases).length > 0) {
+      if (isProxyAdmin && Object.keys(modelAliases).length > 0) {
         formValues.aliases = JSON.stringify(modelAliases);
       }
 
       // Add router_settings if any are defined
-      if (routerSettings?.router_settings) {
+      if (isProxyAdmin && routerSettings?.router_settings) {
         // Only include router_settings if it has at least one non-null value
         const hasValues = Object.values(routerSettings.router_settings).some(
           (value) => value !== null && value !== undefined && value !== "",
@@ -688,11 +748,13 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
             >
               <Radio.Group onChange={(e) => setKeyOwner(e.target.value)} value={keyOwner}>
                 <Radio value="you">You</Radio>
-                <Radio value="service_account">Service Account</Radio>
-                {userRole === "Admin" && <Radio value="another_user">Another User</Radio>}
-                <Radio value="agent">
-                  Agent <Tag color="purple">New</Tag>
-                </Radio>
+                {isProxyAdmin && <Radio value="service_account">Service Account</Radio>}
+                {isProxyAdmin && <Radio value="another_user">Another User</Radio>}
+                {isProxyAdmin && (
+                  <Radio value="agent">
+                    Agent <Tag color="purple">New</Tag>
+                  </Radio>
+                )}
               </Radio.Group>
             </Form.Item>
 
@@ -827,7 +889,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                 }}
               />
             </Form.Item>
-            {enableProjectsUI && (
+            {isProxyAdmin && enableProjectsUI && (
               <Form.Item
                 label={
                   <span>
@@ -983,14 +1045,16 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                       </div>
                     </div>
                   </Option>
-                  <Option value="management" label="Management">
-                    <div style={{ padding: "4px 0" }}>
-                      <div style={{ fontWeight: 500 }}>Management</div>
-                      <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "2px" }}>
-                        Can call only management routes (user/team/key management)
+                  {isProxyAdmin && (
+                    <Option value="management" label="Management">
+                      <div style={{ padding: "4px 0" }}>
+                        <div style={{ fontWeight: 500 }}>Management</div>
+                        <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "2px" }}>
+                          Can call only management routes (user/team/key management)
+                        </div>
                       </div>
-                    </div>
-                  </Option>
+                    </Option>
+                  )}
                 </Select>
               </Form.Item>
             </div>
@@ -1030,6 +1094,8 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                   >
                     <NumericalInput step={0.01} precision={2} width={200} />
                   </Form.Item>
+                  {isProxyAdmin && (
+                    <>
                   <Form.Item
                     className="mt-4"
                     label={
@@ -1519,6 +1585,8 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                       </div>
                     </AccordionBody>
                   </Accordion>
+                    </>
+                  )}
 
                   <Accordion className="mt-4 mb-4">
                     <AccordionHeader>
@@ -1540,10 +1608,11 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                       <Input />
                     </Form.Item>
                   </Accordion>
-                  <Accordion className="mt-4 mb-4">
-                    <AccordionHeader>
-                      <div className="flex items-center gap-2">
-                        <b>Advanced Settings</b>
+                  {isProxyAdmin && (
+                    <Accordion className="mt-4 mb-4">
+                      <AccordionHeader>
+                        <div className="flex items-center gap-2">
+                          <b>Advanced Settings</b>
                         <Tooltip
                           title={
                             <span>
@@ -1565,10 +1634,10 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                         >
                           <InfoCircleOutlined className="text-gray-400 hover:text-gray-300 cursor-help" />
                         </Tooltip>
-                      </div>
-                    </AccordionHeader>
-                    <AccordionBody>
-                      <SchemaFormFields
+                        </div>
+                      </AccordionHeader>
+                      <AccordionBody>
+                        <SchemaFormFields
                         schemaComponent="GenerateKeyRequest"
                         form={form}
                         excludedFields={[
@@ -1586,9 +1655,10 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                           "rpm_limit",
                           ...(disableCustomApiKeys ? ["key"] : []),
                         ]}
-                      />
-                    </AccordionBody>
-                  </Accordion>
+                        />
+                      </AccordionBody>
+                    </Accordion>
+                  )}
                 </AccordionBody>
               </Accordion>
             </div>

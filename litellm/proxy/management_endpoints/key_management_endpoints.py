@@ -498,14 +498,19 @@ def _check_non_admin_key_control_fields(
 
     fields_set = getattr(data, "model_fields_set", set())
 
-    # Presence matters on update/regenerate: an explicit empty mapping can
-    # clear an existing policy-bearing value just as effectively as replacing
-    # it. Defaults that the caller omitted are not included in model_fields_set.
     if "metadata" in fields_set:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"error": "Only proxy admins can set `metadata` on a key."},
-        )
+        # An empty value is harmless during generation and keeps older clients
+        # that always send metadata={} compatible. On update/regenerate,
+        # presence still matters because an empty mapping can clear existing
+        # admin-managed metadata.
+        is_empty_generate_metadata = isinstance(
+            data, GenerateKeyRequest
+        ) and not bool(getattr(data, "metadata", None))
+        if not is_empty_generate_metadata:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": "Only proxy admins can set `metadata` on a key."},
+            )
 
     if (
         "key_type" in fields_set

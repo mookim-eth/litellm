@@ -336,6 +336,44 @@ describe("CreateKey", () => {
     expect(screen.getByRole("button", { name: /create new key/i })).toBeInTheDocument();
   });
 
+  it("should hide and strip proxy-admin-only key fields for internal users", async () => {
+    authorizedState = { ...defaultAuthorizedState, userRole: "Internal User" };
+    renderWithProviders(<CreateKey {...defaultProps} />);
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+    });
+
+    expect(screen.queryByPlaceholderText("Enter metadata as JSON")).not.toBeInTheDocument();
+    expect(screen.queryByText("Service Account")).not.toBeInTheDocument();
+    expect(screen.queryByText("Agent")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("access-group-selector")).not.toBeInTheDocument();
+
+    act(() => {
+      formMock.setFieldsValue({
+        key_alias: "Internal User Key",
+        metadata: '{"app":"forbidden"}',
+        tags: ["production"],
+        guardrails: ["guardrail-a"],
+        budget_duration: "1d",
+        tpm_limit: 1000,
+        object_permission: { vector_stores: ["vs-1"] },
+        key_type: "management",
+      });
+      fireEvent.click(screen.getByRole("button", { name: /create key/i }));
+    });
+
+    await waitFor(() => expect(mockKeyCreateCall).toHaveBeenCalled());
+    const payload = mockKeyCreateCall.mock.calls[0][2];
+    expect(payload).not.toHaveProperty("metadata");
+    expect(payload).not.toHaveProperty("tags");
+    expect(payload).not.toHaveProperty("guardrails");
+    expect(payload).not.toHaveProperty("budget_duration");
+    expect(payload).not.toHaveProperty("tpm_limit");
+    expect(payload).not.toHaveProperty("object_permission");
+    expect(payload.key_type).toBe("llm_api");
+  });
+
   it("should display 'AI APIs' label for the llm_api key type option", async () => {
     renderWithProviders(<CreateKey {...defaultProps} />);
 

@@ -9130,8 +9130,18 @@ class TestNonAdminKeyControlFields:
         assert field_name in str(exc_info.value.detail)
 
     @pytest.mark.parametrize("metadata", [None, {}])
-    def test_non_admin_explicit_empty_metadata_rejected(self, metadata):
+    def test_non_admin_explicit_empty_metadata_allowed(self, metadata):
         data = GenerateKeyRequest(metadata=metadata)
+        caller = UserAPIKeyAuth(
+            user_id="internal-user-123",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+
+        _check_non_admin_key_control_fields(data=data, user_api_key_dict=caller)
+
+    @pytest.mark.parametrize("metadata", [None, {}])
+    def test_non_admin_update_empty_metadata_rejected(self, metadata):
+        data = UpdateKeyRequest(key="sk-test", metadata=metadata)
         caller = UserAPIKeyAuth(
             user_id="internal-user-123",
             user_role=LitellmUserRoles.INTERNAL_USER,
