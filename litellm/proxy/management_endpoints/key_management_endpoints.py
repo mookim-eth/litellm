@@ -636,8 +636,14 @@ def _enforce_delegated_expiry_ceiling(
     *,
     inherit_when_omitted: bool,
 ) -> None:
-    """Enforce finite expiry ceilings while allowing explicit permanent key creation."""
+    """Prevent finite-lived callers from extending existing keys past their expiry."""
     if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+
+    # Key generation is intentionally independent of the caller key's expiry.
+    # A dashboard session authenticates the request at creation time but does
+    # not cap the lifetime of the newly-created virtual key.
+    if isinstance(data, GenerateKeyRequest):
         return
 
     caller_expires = _caller_expiry(user_api_key_dict)
@@ -660,8 +666,6 @@ def _enforce_delegated_expiry_ceiling(
 
     requested_duration = data.duration
     if requested_duration is None or requested_duration == "-1":
-        if isinstance(data, GenerateKeyRequest):
-            return
         raise HTTPException(
             status_code=403,
             detail={

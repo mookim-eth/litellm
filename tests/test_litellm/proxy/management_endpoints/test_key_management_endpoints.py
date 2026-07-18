@@ -9301,7 +9301,7 @@ class TestNonAdminKeyControlFields:
 
 
 class TestDelegatedKeyExpiryCeiling:
-    def test_generate_inherits_finite_caller_expiry_when_duration_omitted(self):
+    def test_generate_omitted_duration_is_independent_of_finite_caller(self):
         caller = UserAPIKeyAuth(
             user_id="internal-user-123",
             user_role=LitellmUserRoles.INTERNAL_USER,
@@ -9315,9 +9315,7 @@ class TestDelegatedKeyExpiryCeiling:
             inherit_when_omitted=True,
         )
 
-        assert data.duration is not None
-        inherited_seconds = int(data.duration.removesuffix("s"))
-        assert 3500 <= inherited_seconds <= 3600
+        assert data.duration is None
 
     @pytest.mark.parametrize("duration", [None, "-1"])
     def test_finite_caller_can_explicitly_create_non_expiring_key(self, duration):
@@ -9336,7 +9334,7 @@ class TestDelegatedKeyExpiryCeiling:
 
         assert data.duration == duration
 
-    def test_finite_caller_cannot_delegate_longer_finite_expiry(self):
+    def test_finite_caller_can_delegate_longer_finite_expiry(self):
         caller = UserAPIKeyAuth(
             user_id="internal-user-123",
             user_role=LitellmUserRoles.INTERNAL_USER,
@@ -9344,14 +9342,13 @@ class TestDelegatedKeyExpiryCeiling:
         )
         data = GenerateKeyRequest(duration="2h")
 
-        with pytest.raises(HTTPException) as exc_info:
-            _enforce_delegated_expiry_ceiling(
-                data=data,
-                user_api_key_dict=caller,
-                inherit_when_omitted=True,
-            )
+        _enforce_delegated_expiry_ceiling(
+            data=data,
+            user_api_key_dict=caller,
+            inherit_when_omitted=True,
+        )
 
-        assert exc_info.value.status_code == 403
+        assert data.duration == "2h"
 
     def test_finite_caller_cannot_clear_existing_key_expiry(self):
         caller = UserAPIKeyAuth(
