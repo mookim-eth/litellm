@@ -155,6 +155,27 @@ def test_get_key_models_does_not_mutate_input():
     assert user_api_key_dict.models == original_models
 
 
+def test_get_key_models_teamless_all_team_models_is_unrestricted():
+    """Legacy teamless all-team-models resolves to [] (all proxy models)."""
+    from litellm.proxy._types import UserAPIKeyAuth
+    from litellm.proxy.auth.model_checks import get_key_models
+
+    user_api_key_dict = UserAPIKeyAuth(
+        models=["all-team-models"],
+        team_id=None,
+        team_models=[],
+        api_key="test-key",
+    )
+
+    result = get_key_models(
+        user_api_key_dict=user_api_key_dict,
+        proxy_model_list=["gpt-5.4-mini", "gpt-5.6-sol"],
+        model_access_groups={},
+    )
+
+    assert result == []
+
+
 @pytest.mark.parametrize(
     "key_models,team_models,proxy_model_list,model_list,expected",
     [

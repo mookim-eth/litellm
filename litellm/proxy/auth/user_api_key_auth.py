@@ -2134,7 +2134,6 @@ async def _enforce_key_and_fallback_model_access(
     """
     if (
         isinstance(valid_token.models, list) and "all-team-models" in valid_token.models
-        and valid_token.team_id is not None
     ):
         pass
     else:
