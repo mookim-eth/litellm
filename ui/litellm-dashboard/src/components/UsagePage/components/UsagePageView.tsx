@@ -146,7 +146,7 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
   const [topModelsLimit, setTopModelsLimit] = useState<number>(5);
   const [showTokenBreakdown, setShowTokenBreakdown] = useState(false);
   const getAllTags = async () => {
-    if (!accessToken) {
+    if (!accessToken || !isAdmin) {
       return;
     }
     const tags = await tagListCall(accessToken);
@@ -160,7 +160,7 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
 
   useEffect(() => {
     getAllTags();
-  }, [accessToken]);
+  }, [accessToken, isAdmin]);
 
   // Sync selectedUserId when auth state settles (isAdmin/userID may be null on initial render)
   useEffect(() => {

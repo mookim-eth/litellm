@@ -3,6 +3,7 @@ import { createQueryKeys } from "../common/queryKeysFactory";
 import { tagListCall } from "@/components/networking";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import { TagListResponse } from "@/components/tag_management/types";
+import { isAdminRole } from "@/utils/roles";
 
 const tagKeys = createQueryKeys("tags");
 
@@ -11,6 +12,6 @@ export const useTags = (): UseQueryResult<TagListResponse> => {
   return useQuery<TagListResponse>({
     queryKey: tagKeys.list({}),
     queryFn: async () => await tagListCall(accessToken!),
-    enabled: Boolean(accessToken && userId && userRole),
+    enabled: Boolean(accessToken && userId && userRole && isAdminRole(userRole)),
   });
 };

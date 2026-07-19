@@ -1761,6 +1761,50 @@ async def test_get_user_daily_activity_non_admin_cannot_view_other_users(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_get_user_daily_activity_aggregated_scopes_non_admin_to_self(
+    monkeypatch,
+):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from fastapi import HTTPException
+
+    from litellm.proxy.management_endpoints.internal_user_endpoints import (
+        get_user_daily_activity_aggregated,
+    )
+
+    mock_prisma_client = MagicMock()
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mock_get_daily_agg = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.get_daily_activity_aggregated",
+        mock_get_daily_agg,
+    )
+    non_admin_key_dict = UserAPIKeyAuth(
+        user_id="regular-user",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_user_daily_activity_aggregated(
+            start_date="2025-01-01",
+            end_date="2025-01-31",
+            user_id="other-user",
+            user_api_key_dict=non_admin_key_dict,
+        )
+
+    assert exc_info.value.status_code == 403
+    mock_get_daily_agg.assert_not_called()
+
+    await get_user_daily_activity_aggregated(
+        start_date="2025-01-01",
+        end_date="2025-01-31",
+        user_id=None,
+        user_api_key_dict=non_admin_key_dict,
+    )
+    assert mock_get_daily_agg.call_args.kwargs["entity_id"] == "regular-user"
+
+
+@pytest.mark.asyncio
 async def test_get_user_daily_activity_aggregated_admin_global_view(monkeypatch):
     """
     Test that admin users can call the aggregated endpoint without a user_id

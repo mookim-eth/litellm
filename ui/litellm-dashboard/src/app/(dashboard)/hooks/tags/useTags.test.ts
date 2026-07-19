@@ -208,6 +208,24 @@ describe("useTags", () => {
     expect(tagListCall).not.toHaveBeenCalled();
   });
 
+  it("should not execute query for an internal user", async () => {
+    mockUseAuthorized.mockReturnValue({
+      accessToken: "test-access-token",
+      userId: "test-user-id",
+      userRole: "Internal User",
+      token: "test-token",
+      userEmail: "test@example.com",
+      premiumUser: false,
+      disabledPersonalKeyCreation: null,
+      showSSOBanner: false,
+    });
+
+    const { result } = renderHook(() => useTags(), { wrapper });
+
+    expect(result.current.isFetching).toBe(false);
+    expect(tagListCall).not.toHaveBeenCalled();
+  });
+
   it("should not execute query when all auth values are missing", async () => {
     // Mock all auth values missing
     mockUseAuthorized.mockReturnValue({

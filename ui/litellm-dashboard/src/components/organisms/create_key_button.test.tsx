@@ -1,6 +1,7 @@
 import { act, fireEvent } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders, screen, waitFor } from "../../../tests/test-utils";
+import { getGuardrailsList, getPoliciesList, getPromptsList } from "../networking";
 import CreateKey from "./create_key_button";
 
 const { formMock, setFieldsValueMock, radioGroupValueRef, formStateRef, mockKeyCreateCall } = vi.hoisted(() => {
@@ -372,6 +373,18 @@ describe("CreateKey", () => {
     expect(payload).not.toHaveProperty("tpm_limit");
     expect(payload).not.toHaveProperty("object_permission");
     expect(payload.key_type).toBe("llm_api");
+  });
+
+  it("should not fetch proxy-admin-only key options for internal users", async () => {
+    authorizedState = { ...defaultAuthorizedState, userRole: "Internal User" };
+
+    renderWithProviders(<CreateKey {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(getGuardrailsList).not.toHaveBeenCalled();
+      expect(getPoliciesList).not.toHaveBeenCalled();
+      expect(getPromptsList).not.toHaveBeenCalled();
+    });
   });
 
   it("should display 'AI APIs' label for the llm_api key type option", async () => {

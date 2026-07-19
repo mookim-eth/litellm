@@ -860,6 +860,8 @@ describe("UsagePage", () => {
           "user-123",
         );
       });
+
+      expect(mockTagListCall).not.toHaveBeenCalled();
     });
   });
 

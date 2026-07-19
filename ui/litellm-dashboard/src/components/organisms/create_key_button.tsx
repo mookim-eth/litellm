@@ -299,6 +299,10 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
   }, [accessToken]);
 
   useEffect(() => {
+    if (!isProxyAdmin) {
+      return;
+    }
+
     const fetchGuardrails = async () => {
       try {
         const response = await getGuardrailsList(accessToken);
@@ -331,7 +335,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
     fetchGuardrails();
     fetchPolicies();
     fetchPrompts();
-  }, [accessToken]);
+  }, [accessToken, isProxyAdmin]);
 
   // Fetch possible user roles when component mounts
   useEffect(() => {

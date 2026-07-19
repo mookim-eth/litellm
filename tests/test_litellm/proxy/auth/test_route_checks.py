@@ -1381,6 +1381,36 @@ def test_available_roles_accessible_to_non_admin_users(user_role):
     )
 
 
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/user/daily/activity/aggregated",
+        "/in_product_nudges",
+    ],
+)
+def test_self_managed_dashboard_routes_accessible_to_internal_users(route):
+    user_obj = LiteLLM_UserTable(
+        user_id="test_user",
+        user_email="test@example.com",
+        user_role=LitellmUserRoles.INTERNAL_USER.value,
+    )
+    valid_token = UserAPIKeyAuth(
+        user_id="test_user",
+        user_role=LitellmUserRoles.INTERNAL_USER.value,
+    )
+    request = MagicMock(spec=Request)
+    request.query_params = {}
+
+    RouteChecks.non_proxy_admin_allowed_routes_check(
+        user_obj=user_obj,
+        _user_role=LitellmUserRoles.INTERNAL_USER.value,
+        route=route,
+        request=request,
+        valid_token=valid_token,
+        request_data={},
+    )
+
+
 # ── _user_is_org_admin tests ──────────────────────────────────────────────────
 
 from datetime import datetime
