@@ -230,6 +230,45 @@ async def test_auth_failure_logging_includes_request_ip_and_user_agent_context()
 
 
 @pytest.mark.asyncio
+async def test_malformed_key_http_400_does_not_log_exception_traceback():
+    handler = UserAPIKeyAuthExceptionHandler()
+    mock_request = MagicMock()
+    mock_request.headers = {}
+    mock_request.client.host = "203.0.113.5"
+    mock_request.method = "POST"
+    mock_request.url = "http://testserver/v1/responses"
+    mock_request.state = MagicMock()
+
+    with patch(
+        "litellm.proxy.proxy_server.general_settings",
+        {"allow_requests_on_db_unavailable": False},
+    ), patch(
+        "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
+        new_callable=AsyncMock,
+        return_value=None,
+    ), patch.object(verbose_proxy_logger, "exception") as mock_exception:
+        with pytest.raises(ProxyException) as exc_info:
+            await handler._handle_authentication_error(
+                HTTPException(
+                    status_code=400,
+                    detail=(
+                        "LiteLLM Virtual Key expected. Received=tid=****fa4c, "
+                        "expected to start with 'sk-'."
+                    ),
+                ),
+                mock_request,
+                {},
+                "/v1/responses",
+                None,
+                "tid=masked",
+            )
+
+    assert exc_info.value.code == "400"
+    assert "tid=****fa4c" in exc_info.value.message
+    mock_exception.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_route_passed_to_post_call_failure_hook():
     """
     This route is used by proxy track_cost_callback's async_post_call_failure_hook to check if the route is an LLM route

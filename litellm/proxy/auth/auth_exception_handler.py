@@ -227,13 +227,19 @@ class UserAPIKeyAuthExceptionHandler:
                 request_data=request_data,
                 general_settings=general_settings,
             )
-            verbose_proxy_logger.exception(
-                "litellm.proxy.proxy_server.user_api_key_auth(): Exception occured - {}\nRequester IP Address:{}".format(
-                    str(e),
-                    requester_ip,
-                ),
-                extra={"requester_ip": requester_ip},
-            )
+            # HTTP 400 is an expected malformed-client-input response, not an
+            # application exception. Avoid emitting an ERROR traceback for it.
+            if not (
+                isinstance(e, HTTPException)
+                and e.status_code == status.HTTP_400_BAD_REQUEST
+            ):
+                verbose_proxy_logger.exception(
+                    "litellm.proxy.proxy_server.user_api_key_auth(): Exception occured - {}\nRequester IP Address:{}".format(
+                        str(e),
+                        requester_ip,
+                    ),
+                    extra={"requester_ip": requester_ip},
+                )
 
             # Log this exception to OTEL, Datadog etc
             user_api_key_dict = UserAPIKeyAuth(

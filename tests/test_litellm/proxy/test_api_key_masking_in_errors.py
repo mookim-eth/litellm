@@ -13,9 +13,9 @@ import pytest
 class TestKeyMaskingInAuthErrors:
     """Test that user_api_key_auth masks keys in validation error messages."""
 
-    def test_assert_message_masks_key_without_sk_prefix(self):
+    def test_validation_message_masks_key_without_sk_prefix(self):
         """
-        When a key doesn't start with 'sk-', the AssertionError message
+        When a key doesn't start with 'sk-', the HTTP 400 message
         should contain a masked version, not the full key.
         """
         from litellm.proxy.auth.auth_utils import abbreviate_api_key
@@ -33,7 +33,7 @@ class TestKeyMaskingInAuthErrors:
         # Should show first 4 and last 4 chars
         assert _masked_key == "my-s****cdef"
 
-    def test_assert_message_masks_key_with_leading_space(self):
+    def test_validation_message_masks_key_with_leading_space(self):
         """
         Reported case: key with leading space like ' sk-abc123...'
         """
@@ -59,11 +59,8 @@ class TestKeyMaskingInAuthErrors:
 
     def test_key_not_starting_with_sk_raises_masked_error(self):
         """
-        Verify the assert message format contains masked key, not the original.
-
-        Note: Python's AssertionError str(e) includes the expression + message,
-        but the *message* part (which is what gets passed to ProxyException)
-        should only contain the masked key.
+        Verify the HTTP 400 message format contains the masked key, not the
+        original.
         """
         api_key = "bad-key-format-1234567890abcdefghijklmnop"
         _masked_key = (
