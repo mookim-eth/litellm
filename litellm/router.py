@@ -5523,8 +5523,6 @@ class Router:
                     verbose_router_logger.info(
                         f"No fallback model group found for original model_group={model_group}. Fallbacks={fallbacks}"
                     )
-                    if hasattr(original_exception, "message"):
-                        original_exception.message += f"No fallback model group found for original model_group={model_group}. Fallbacks={fallbacks}"  # type: ignore
                     raise original_exception
 
                 input_kwargs.update(

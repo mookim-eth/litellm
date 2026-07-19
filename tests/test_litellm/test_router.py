@@ -1720,6 +1720,38 @@ async def test_async_function_with_fallbacks_common_utils():
         )
 
 
+@pytest.mark.asyncio
+async def test_no_matching_fallback_does_not_modify_user_error_message():
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-3.5-turbo",
+                "litellm_params": {"model": "gpt-3.5-turbo"},
+            }
+        ]
+    )
+    original_exception = litellm.BadRequestError(
+        message="Original provider error",
+        model="gpt-3.5-turbo",
+        llm_provider="openai",
+    )
+
+    with pytest.raises(litellm.BadRequestError) as exc_info:
+        await router.async_function_with_fallbacks_common_utils(
+            e=original_exception,
+            disable_fallbacks=False,
+            fallbacks=[{"another-model-group": ["fallback-model-group"]}],
+            context_window_fallbacks=None,
+            content_policy_fallbacks=None,
+            model_group="gpt-3.5-turbo",
+            args=(),
+            kwargs={"model": "gpt-3.5-turbo"},
+        )
+
+    assert "Original provider error" in exc_info.value.message
+    assert "No fallback model group found" not in exc_info.value.message
+
+
 def test_should_include_deployment():
     """Test that Router.should_include_deployment returns the correct response"""
     router = litellm.Router(
