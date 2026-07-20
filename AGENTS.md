@@ -472,6 +472,69 @@ When asked to ship the current repo changes to the local LiteLLM deployment:
    curl -fsS http://127.0.0.1:<active-port>/health/readiness
    ```
 
+### Offline Docker system base images
+
+The local Docker daemon retains two prebuilt system stages so routine LiteLLM
+builds do not depend on the Chainguard Wolfi APK index being available:
+
+- `litellm-internal-builder-base:20260720-c61ac6919b81`
+  - Image ID: `sha256:0d01ff91e06f54f962b5fe2c86a93bf960895db25cf511265d8e3fbcdba01db6`
+  - Contains Python 3.13.14, gcc 16.1.0, OpenSSL 3.6.3, Python development
+    headers, and `build==1.4.2`.
+- `litellm-internal-runtime-base:20260720-c61ac6919b81`
+  - Image ID: `sha256:51cdc04e9eece1bf5ed81c9819d195ac70b7b4ff71a2f3e887461a07e32b4f2e`
+  - Contains Python 3.13.14, Node 26.5.0, npm 11.12.1, OpenSSL 3.6.3,
+    `libsndfile`, and the Dockerfile's npm dependency hardening.
+
+The date in each tag records when the rolling Wolfi packages were resolved;
+`c61ac6919b81` is the pinned Wolfi image digest prefix. These images are local
+only. Push them to an internal registry or save them outside the Docker data
+root before expecting them to be usable on another host or after Docker data
+loss.
+
+For a build that must not contact Chainguard or rerun the system npm setup, use
+both retained images and explicitly enable the prebuilt mode:
+
+```bash
+COMMIT_TAG="$(git rev-parse --short=12 HEAD)"
+docker build \
+  --build-arg LITELLM_BUILD_IMAGE=litellm-internal-builder-base:20260720-c61ac6919b81 \
+  --build-arg LITELLM_PREBUILT_BUILD_BASE=true \
+  --build-arg LITELLM_RUNTIME_IMAGE=litellm-internal-runtime-base:20260720-c61ac6919b81 \
+  --build-arg LITELLM_PREBUILT_RUNTIME_BASE=true \
+  -t "litellm:${COMMIT_TAG}" \
+  .
+```
+
+The two no-network paths were verified with `docker build --network=none`.
+Do not set a `LITELLM_PREBUILT_*_BASE` flag unless its corresponding image was
+built from the matching `builder-system-base` or `runtime-system-base` target;
+the flag intentionally turns the APK/pip-build/npm preparation commands into
+no-ops.
+
+To refresh the retained bases while Chainguard and PyPI/npm are healthy:
+
+```bash
+docker build --no-cache --target builder-system-base \
+  --build-arg BUILDKIT_INLINE_CACHE=1 \
+  -t litellm-internal-builder-base:<date>-<wolfi-digest-prefix> .
+
+docker build --no-cache --target runtime-system-base \
+  --build-arg BUILDKIT_INLINE_CACHE=1 \
+  -t litellm-internal-runtime-base:<date>-<wolfi-digest-prefix> .
+```
+
+Rebuild both bases after changing the pinned Wolfi image, system packages,
+`build` version, Node/npm versions, or npm hardening commands. These images do
+not contain the complete `requirements.txt` wheelhouse or every later PyPI
+step; those remain separate BuildKit cache layers.
+
+The host's `cleanup-litellm-images.sh` scans only the exact repositories
+`litellm` and `mookim/litellm`, so it ignores the two
+`litellm-internal-*-base` repositories. Normal `docker system prune` retains
+tagged images, but `docker system prune -a` can delete these bases when no
+container references them.
+
 ### Container hotpatching
 
 When using `docker cp` to hotpatch LiteLLM Python files in the running containers, copy the file to both code locations inside each container:
