@@ -45,7 +45,10 @@ from litellm.proxy.auth.auth_checks import (
     get_user_object,
     is_valid_fallback_model,
 )
-from litellm.proxy.auth.auth_exception_handler import UserAPIKeyAuthExceptionHandler
+from litellm.proxy.auth.auth_exception_handler import (
+    MissingAPIKeyError,
+    UserAPIKeyAuthExceptionHandler,
+)
 from litellm.proxy.auth.auth_utils import (
     abbreviate_api_key,
     get_end_user_id_from_request_body,
@@ -975,7 +978,7 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                     parent_otel_span=parent_otel_span,
                 )
         elif api_key is None:  # only require api key if master key is set
-            raise Exception("No api key passed in.")
+            raise MissingAPIKeyError("No api key passed in.")
         elif api_key == "":
             # missing 'Bearer ' prefix
             raise Exception(

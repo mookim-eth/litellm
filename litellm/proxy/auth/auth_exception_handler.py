@@ -30,6 +30,10 @@ else:
     Span = Any
 
 
+class MissingAPIKeyError(Exception):
+    """Expected client authentication failure when no API key is supplied."""
+
+
 class UserAPIKeyAuthExceptionHandler:
     @staticmethod
     def _get_header_value(headers: Dict[str, Any], header_name: str) -> Optional[Any]:
@@ -227,12 +231,14 @@ class UserAPIKeyAuthExceptionHandler:
                 request_data=request_data,
                 general_settings=general_settings,
             )
-            # HTTP 400 is an expected malformed-client-input response, not an
-            # application exception. Avoid emitting an ERROR traceback for it.
-            if not (
+            # Expected client-input failures are still reported through the
+            # normal failure hooks and HTTP response, but are not application
+            # exceptions and should not emit ERROR tracebacks.
+            is_expected_client_error = isinstance(e, MissingAPIKeyError) or (
                 isinstance(e, HTTPException)
                 and e.status_code == status.HTTP_400_BAD_REQUEST
-            ):
+            )
+            if not is_expected_client_error:
                 verbose_proxy_logger.exception(
                     "litellm.proxy.proxy_server.user_api_key_auth(): Exception occured - {}\nRequester IP Address:{}".format(
                         str(e),
