@@ -213,6 +213,14 @@ already covered here:
     passthrough only when every explicitly resolved target MCP server is
     operator-configured with `auth_type=oauth2`; unresolved, empty, mixed, and
     non-OAuth2 targets fail closed.
+- `CVE-2026-42208` — `semantic-router` dependency-confusion credential theft.
+  - Versions `0.1.11` and `0.1.12` were yanked because their unbounded LiteLLM
+    dependency could resolve the malicious `litellm==1.82.8` wheel. Upstream
+    fixed this in `5e2d75d75d` by requiring `semantic-router>=0.1.15`.
+  - This branch pins `semantic-router==0.1.15` consistently in
+    `docker/install_auto_router.sh`, `pyproject.toml`, and `poetry.lock`. The
+    Docker install intentionally retains `--no-deps`; do not remove it without
+    reviewing the complete resolved dependency graph and supply-chain impact.
 - RCEliteLLM chain (LiteLLM ≤ 1.83.14 RCE via master-key leak + Jinja2 SSTI).
   - Upstream fixed in `1.84.0-rc.1` / commits:
     - `f2f1e3a0ba` / `22c01adeb2` / `1ebb192cbe` (PR #26851): remove
