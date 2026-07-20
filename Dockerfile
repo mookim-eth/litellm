@@ -4,18 +4,34 @@ ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:c61ac6919b811ea53c4
 # Runtime image
 ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:c61ac6919b811ea53c4782d69f1fe05218ba3c25d53f01b6ab7892e621bd4370
 
-# Builder stage
-FROM $LITELLM_BUILD_IMAGE AS builder
+# Builder system base. Build and retain this target to keep routine LiteLLM
+# builds independent from the Wolfi package index:
+#   docker build --target builder-system-base -t <internal-builder-image> .
+FROM $LITELLM_BUILD_IMAGE AS builder-system-base
 
 # Set the working directory to /app
 WORKDIR /app
 
 USER root
 
-# Install build dependencies
-RUN apk add --no-cache bash gcc py3-pip python3 python3-dev openssl openssl-dev
+# Set this only when LITELLM_BUILD_IMAGE already points at a retained
+# builder-system-base image produced from this Dockerfile.
+ARG LITELLM_PREBUILT_BUILD_BASE=false
 
-RUN python -m pip install build==1.4.2
+# Install build dependencies
+RUN if [ "$LITELLM_PREBUILT_BUILD_BASE" = "true" ]; then \
+        echo "Using prebuilt builder system base"; \
+        exit 0; \
+    fi; \
+    apk add --no-cache bash gcc py3-pip python3 python3-dev openssl openssl-dev
+
+RUN if [ "$LITELLM_PREBUILT_BUILD_BASE" = "true" ]; then \
+        exit 0; \
+    fi; \
+    python -m pip install build==1.4.2
+
+# Builder stage
+FROM builder-system-base AS builder
 
 # Build dependency wheels before copying the full source tree.  This keeps the
 # expensive dependency-resolution/download layer reusable when only LiteLLM
@@ -44,13 +60,24 @@ RUN rm -rf dist/* && python -m build
 RUN ls -1 dist/*.whl | head -1
 
 # Runtime stage
-FROM $LITELLM_RUNTIME_IMAGE AS runtime
+# Runtime system base. This target captures the Wolfi and npm packages plus
+# their security hardening before any application-specific files are copied:
+#   docker build --target runtime-system-base -t <internal-runtime-image> .
+FROM $LITELLM_RUNTIME_IMAGE AS runtime-system-base
 
 # Ensure runtime stage runs as root
 USER root
 
+# Set this only when LITELLM_RUNTIME_IMAGE already points at a retained
+# runtime-system-base image produced from this Dockerfile.
+ARG LITELLM_PREBUILT_RUNTIME_BASE=false
+
 # Install runtime dependencies (libsndfile needed for audio processing on ARM64)
-RUN apk add --no-cache bash openssl tzdata nodejs npm python3 py3-pip libsndfile && \
+RUN if [ "$LITELLM_PREBUILT_RUNTIME_BASE" = "true" ]; then \
+        echo "Using prebuilt runtime system base"; \
+        exit 0; \
+    fi; \
+    apk add --no-cache bash openssl tzdata nodejs npm python3 py3-pip libsndfile && \
     npm install -g npm@11.12.1 tar@7.5.11 glob@11.1.0 @isaacs/brace-expansion@5.0.1 minimatch@10.2.4 diff@8.0.3 && \
     # SECURITY FIX: npm bundles tar, glob, and brace-expansion at multiple nested
     # levels inside its dependency tree. `npm install -g <pkg>` only creates a
@@ -81,6 +108,11 @@ RUN apk add --no-cache bash openssl tzdata nodejs npm python3 py3-pip libsndfile
     # no longer visible to image scanners.  The globally installed npm@latest
     # at /usr/local/lib/node_modules/npm/ remains fully functional.
     { apk del --no-cache npm 2>/dev/null || true; }
+
+# Runtime stage
+FROM runtime-system-base AS runtime
+
+USER root
 
 WORKDIR /app
 
