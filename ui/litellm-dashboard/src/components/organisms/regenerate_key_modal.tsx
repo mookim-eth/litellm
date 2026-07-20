@@ -4,6 +4,7 @@ import { Form, InputNumber, Modal } from "antd";
 import { add } from "date-fns";
 import { useEffect, useState } from "react";
 import { CopyToClipboard } from "react-copy-to-clipboard";
+import { isProxyAdminRole } from "../../utils/roles";
 import { KeyResponse } from "../key_team_helpers/key_list";
 import NotificationManager from "../molecules/notifications_manager";
 import { regenerateKeyCall } from "../networking";
@@ -16,7 +17,8 @@ interface RegenerateKeyModalProps {
 }
 
 export function RegenerateKeyModal({ selectedToken, visible, onClose, onKeyUpdate }: RegenerateKeyModalProps) {
-  const { accessToken } = useAuthorized();
+  const { accessToken, userRole } = useAuthorized();
+  const isProxyAdmin = userRole != null && isProxyAdminRole(userRole);
   const [form] = Form.useForm();
   const [regeneratedKey, setRegeneratedKey] = useState<string | null>(null);
   const [regenerateFormData, setRegenerateFormData] = useState<any>(null);
@@ -97,12 +99,25 @@ export function RegenerateKeyModal({ selectedToken, visible, onClose, onKeyUpdat
     setIsRegenerating(true);
     try {
       const formValues = await form.validateFields();
+      const requestValues = { ...formValues };
+
+      // These fields are proxy-admin controls. Non-admins may regenerate keys,
+      // but must not echo the existing limits back as requested updates.
+      if (!isProxyAdmin) {
+        delete requestValues.tpm_limit;
+        delete requestValues.rpm_limit;
+        delete requestValues.grace_period;
+      } else if (!requestValues.grace_period) {
+        // An empty grace period means immediate revocation and is equivalent to
+        // omitting the field. Avoid sending an explicit restricted empty value.
+        delete requestValues.grace_period;
+      }
 
       // Use the current access token for the API call
       const response = await regenerateKeyCall(
         currentAccessToken,
         selectedToken.token || selectedToken.token_id,
-        formValues,
+        requestValues,
       );
       setRegeneratedKey(response.key);
       NotificationManager.success("Virtual Key regenerated successfully");
@@ -211,12 +226,16 @@ export function RegenerateKeyModal({ selectedToken, visible, onClose, onKeyUpdat
           <Form.Item name="max_budget" label="Max Budget (USD)">
             <InputNumber step={0.01} precision={2} style={{ width: "100%" }} />
           </Form.Item>
-          <Form.Item name="tpm_limit" label="TPM Limit">
-            <InputNumber style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item name="rpm_limit" label="RPM Limit">
-            <InputNumber style={{ width: "100%" }} />
-          </Form.Item>
+          {isProxyAdmin && (
+            <>
+              <Form.Item name="tpm_limit" label="TPM Limit">
+                <InputNumber style={{ width: "100%" }} />
+              </Form.Item>
+              <Form.Item name="rpm_limit" label="RPM Limit">
+                <InputNumber style={{ width: "100%" }} />
+              </Form.Item>
+            </>
+          )}
           <Form.Item name="duration" label="Expire Key (eg: 30s, 30h, 30d)" className="mt-8">
             <TextInput placeholder="" />
           </Form.Item>
@@ -224,23 +243,27 @@ export function RegenerateKeyModal({ selectedToken, visible, onClose, onKeyUpdat
             Current expiry: {selectedToken?.expires ? new Date(selectedToken.expires).toLocaleString() : "Never"}
           </div>
           {newExpiryTime && <div className="mt-2 text-sm text-green-600">New expiry: {newExpiryTime}</div>}
-          <Form.Item
-            name="grace_period"
-            label="Grace Period (eg: 24h, 2d)"
-            tooltip="Keep the old key valid for this duration after rotation. Both keys work during this period for seamless cutover. Empty = immediate revoke."
-            className="mt-8"
-            rules={[
-              {
-                pattern: /^(\d+(s|m|h|d|w|mo))?$/,
-                message: "Must be a duration like 30s, 30m, 24h, 2d, 1w, or 1mo",
-              },
-            ]}
-          >
-            <TextInput placeholder="e.g. 24h, 2d (empty = immediate revoke)" />
-          </Form.Item>
-          <div className="mt-2 text-sm text-gray-500">
-            Recommended: 24h to 72h for production keys to allow seamless client migration.
-          </div>
+          {isProxyAdmin && (
+            <>
+              <Form.Item
+                name="grace_period"
+                label="Grace Period (eg: 24h, 2d)"
+                tooltip="Keep the old key valid for this duration after rotation. Both keys work during this period for seamless cutover. Empty = immediate revoke."
+                className="mt-8"
+                rules={[
+                  {
+                    pattern: /^(\d+(s|m|h|d|w|mo))?$/,
+                    message: "Must be a duration like 30s, 30m, 24h, 2d, 1w, or 1mo",
+                  },
+                ]}
+              >
+                <TextInput placeholder="e.g. 24h, 2d (empty = immediate revoke)" />
+              </Form.Item>
+              <div className="mt-2 text-sm text-gray-500">
+                Recommended: 24h to 72h for production keys to allow seamless client migration.
+              </div>
+            </>
+          )}
         </Form>
       )}
     </Modal>
