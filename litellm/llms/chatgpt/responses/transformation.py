@@ -563,6 +563,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             "tools",
             "tool_choice",
             "reasoning",
+            "text",
             "prompt_cache_key",
             "previous_response_id",
             "parallel_tool_calls",
