@@ -157,6 +157,33 @@ class TestChatGPTResponsesAPITransformation:
         assert request["parallel_tool_calls"] is False
         assert "instructions" not in request
 
+    def test_chatgpt_preserves_structured_output_text_for_codex_auto_review(self):
+        config = ChatGPTResponsesAPIConfig()
+        text = {
+            "format": {
+                "type": "json_schema",
+                "name": "codex_output_schema",
+                "strict": False,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "outcome": {"type": "string", "enum": ["allow", "deny"]}
+                    },
+                    "required": ["outcome"],
+                },
+            }
+        }
+
+        request = config.transform_responses_api_request(
+            model="chatgpt/codex-auto-review",
+            input="Review this approval request",
+            response_api_optional_request_params={"text": text},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert request["text"] == text
+
     def test_chatgpt_responses_extracts_system_and_developer_input_to_instructions(self):
         config = ChatGPTResponsesAPIConfig()
         request = config.transform_responses_api_request(
