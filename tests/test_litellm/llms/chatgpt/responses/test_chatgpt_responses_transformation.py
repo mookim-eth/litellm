@@ -157,22 +157,33 @@ class TestChatGPTResponsesAPITransformation:
         assert request["parallel_tool_calls"] is False
         assert "instructions" not in request
 
-    def test_chatgpt_preserves_structured_output_text_for_codex_auto_review(self):
-        config = ChatGPTResponsesAPIConfig()
-        text = {
-            "format": {
-                "type": "json_schema",
-                "name": "codex_output_schema",
-                "strict": False,
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "outcome": {"type": "string", "enum": ["allow", "deny"]}
+    @pytest.mark.parametrize(
+        "text",
+        [
+            {
+                "format": {
+                    "type": "json_schema",
+                    "name": "codex_output_schema",
+                    "strict": False,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "outcome": {
+                                "type": "string",
+                                "enum": ["allow", "deny"],
+                            }
+                        },
+                        "required": ["outcome"],
                     },
-                    "required": ["outcome"],
-                },
-            }
-        }
+                }
+            },
+            {"format": {"type": "json_object"}},
+            {"format": {"type": "text"}},
+        ],
+        ids=["json_schema", "json_object", "text"],
+    )
+    def test_chatgpt_preserves_responses_text_param(self, text):
+        config = ChatGPTResponsesAPIConfig()
 
         request = config.transform_responses_api_request(
             model="chatgpt/codex-auto-review",
@@ -183,6 +194,18 @@ class TestChatGPTResponsesAPITransformation:
         )
 
         assert request["text"] == text
+
+    def test_chatgpt_preserves_parallel_tool_calls_for_non_lite_requests(self):
+        config = ChatGPTResponsesAPIConfig()
+        request = config.transform_responses_api_request(
+            model="chatgpt/gpt-5.3-codex",
+            input="hi",
+            response_api_optional_request_params={"parallel_tool_calls": True},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert request["parallel_tool_calls"] is True
 
     def test_chatgpt_responses_extracts_system_and_developer_input_to_instructions(self):
         config = ChatGPTResponsesAPIConfig()
@@ -436,7 +459,9 @@ class TestChatGPTResponsesAPITransformation:
                 # supported and should be preserved
                 "truncation": "auto",
                 "previous_response_id": "resp_123",
+                "parallel_tool_calls": False,
                 "reasoning": {"effort": "medium"},
+                "text": {"format": {"type": "json_object"}},
                 "tools": [{"type": "function", "function": {"name": "hello"}}],
                 "tool_choice": {"type": "function", "function": {"name": "hello"}},
             },
@@ -454,7 +479,9 @@ class TestChatGPTResponsesAPITransformation:
 
         assert request["truncation"] == "auto"
         assert request["previous_response_id"] == "resp_123"
+        assert request["parallel_tool_calls"] is False
         assert request["reasoning"] == {"effort": "medium"}
+        assert request["text"] == {"format": {"type": "json_object"}}
         assert request["tools"] == [{"type": "function", "function": {"name": "hello"}}]
         assert request["tool_choice"] == {"type": "function", "function": {"name": "hello"}}
 
