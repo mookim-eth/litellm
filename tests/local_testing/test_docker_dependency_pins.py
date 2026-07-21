@@ -23,9 +23,9 @@ def test_semantic_router_security_version_is_consistent() -> None:
     _assert_safe_version(script_match.group(1), "docker/install_auto_router.sh")
 
     pyproject = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text())
-    pyproject_version = pyproject["tool"]["poetry"]["dependencies"][
-        "semantic-router"
-    ]["version"]
+    pyproject_version = pyproject["tool"]["poetry"]["dependencies"]["semantic-router"][
+        "version"
+    ]
     _assert_safe_version(pyproject_version, "pyproject.toml")
 
     lock_content = (REPOSITORY_ROOT / "poetry.lock").read_text()
@@ -35,3 +35,9 @@ def test_semantic_router_security_version_is_consistent() -> None:
     )
     assert lock_match is not None
     _assert_safe_version(lock_match.group(1), "poetry.lock")
+
+    non_root_dockerfile = (REPOSITORY_ROOT / "docker/Dockerfile.non_root").read_text()
+    non_root_versions = re.findall(r"semantic_router==([0-9.]+)", non_root_dockerfile)
+    assert non_root_versions
+    for version in non_root_versions:
+        _assert_safe_version(version, "docker/Dockerfile.non_root")
