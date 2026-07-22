@@ -38,6 +38,75 @@ class _RoutingRequest:
 
 
 @pytest.mark.asyncio
+async def test_empty_bearer_token_does_not_log_exception_traceback():
+    from fastapi import Request
+    from starlette.datastructures import URL
+
+    from litellm._logging import verbose_proxy_logger
+    from litellm.proxy.auth.user_api_key_auth import _user_api_key_auth_builder
+
+    proxy_server = litellm.proxy.proxy_server
+    mock_proxy_logging_obj = MagicMock()
+    mock_proxy_logging_obj.post_call_failure_hook = AsyncMock(return_value=None)
+    replacements = {
+        "prisma_client": MagicMock(),
+        "user_api_key_cache": AsyncMock(),
+        "proxy_logging_obj": mock_proxy_logging_obj,
+        "master_key": "sk-master-key",
+        "general_settings": {},
+        "llm_model_list": [],
+        "llm_router": None,
+        "open_telemetry_logger": None,
+        "model_max_budget_limiter": MagicMock(),
+        "user_custom_auth": None,
+        "jwt_handler": None,
+        "litellm_proxy_admin_name": "admin",
+    }
+    originals = {name: getattr(proxy_server, name, None) for name in replacements}
+
+    try:
+        for name, value in replacements.items():
+            setattr(proxy_server, name, value)
+
+        request = Request(
+            scope={
+                "type": "http",
+                "method": "GET",
+                "path": "/v1/models",
+                "headers": [(b"authorization", b"Bearer")],
+                "client": ("127.0.0.1", 12345),
+                "server": ("testserver", 80),
+                "scheme": "http",
+                "query_string": b"",
+            }
+        )
+        request._url = URL(url="http://testserver/v1/models")
+
+        with patch.object(
+            verbose_proxy_logger, "exception"
+        ) as mock_exception, pytest.raises(ProxyException) as exc_info:
+            await _user_api_key_auth_builder(
+                request=request,
+                api_key="Bearer",
+                azure_api_key_header="",
+                anthropic_api_key_header=None,
+                google_ai_studio_api_key_header=None,
+                azure_apim_header=None,
+                request_data={},
+            )
+
+        assert exc_info.value.code == "401"
+        assert (
+            exc_info.value.message
+            == "Authentication Error, Malformed API Key passed in. Ensure Key has `Bearer ` prefix."
+        )
+        mock_exception.assert_not_called()
+    finally:
+        for name, value in originals.items():
+            setattr(proxy_server, name, value)
+
+
+@pytest.mark.asyncio
 async def test_scim_deactivated_user_key_is_rejected():
     from fastapi import Request
     from starlette.datastructures import URL

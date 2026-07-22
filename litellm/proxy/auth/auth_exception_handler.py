@@ -34,6 +34,10 @@ class MissingAPIKeyError(Exception):
     """Expected client authentication failure when no API key is supplied."""
 
 
+class MalformedAPIKeyError(Exception):
+    """Expected client authentication failure for a malformed API key."""
+
+
 class UserAPIKeyAuthExceptionHandler:
     @staticmethod
     def _get_header_value(headers: Dict[str, Any], header_name: str) -> Optional[Any]:
@@ -235,7 +239,7 @@ class UserAPIKeyAuthExceptionHandler:
             # normal failure hooks and HTTP response, but are not application
             # exceptions and should not emit ERROR tracebacks.
             is_expected_client_error = (
-                isinstance(e, MissingAPIKeyError)
+                isinstance(e, (MissingAPIKeyError, MalformedAPIKeyError))
                 or (
                     isinstance(e, HTTPException)
                     and e.status_code

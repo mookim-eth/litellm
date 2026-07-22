@@ -46,6 +46,7 @@ from litellm.proxy.auth.auth_checks import (
     is_valid_fallback_model,
 )
 from litellm.proxy.auth.auth_exception_handler import (
+    MalformedAPIKeyError,
     MissingAPIKeyError,
     UserAPIKeyAuthExceptionHandler,
 )
@@ -981,7 +982,7 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
             raise MissingAPIKeyError("No api key passed in.")
         elif api_key == "":
             # missing 'Bearer ' prefix
-            raise Exception(
+            raise MalformedAPIKeyError(
                 "Malformed API Key passed in. Ensure Key has `Bearer ` prefix."
             )
 

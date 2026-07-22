@@ -1,12 +1,9 @@
-import asyncio
-import json
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException, Request, status
-from prisma import errors as prisma_errors
+from fastapi import HTTPException, status
 from prisma.errors import (
     ClientNotConnectedError,
     DataError,
@@ -27,6 +24,7 @@ sys.path.insert(
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import ProxyErrorTypes, ProxyException
 from litellm.proxy.auth.auth_exception_handler import (
+    MalformedAPIKeyError,
     MissingAPIKeyError,
     UserAPIKeyAuthExceptionHandler,
 )
@@ -329,7 +327,25 @@ async def test_unauthorized_client_error_does_not_log_exception_traceback(
 
 
 @pytest.mark.asyncio
-async def test_missing_api_key_does_not_log_exception_traceback():
+@pytest.mark.parametrize(
+    ("auth_error", "expected_message"),
+    [
+        (
+            MissingAPIKeyError("No api key passed in."),
+            "Authentication Error, No api key passed in.",
+        ),
+        (
+            MalformedAPIKeyError(
+                "Malformed API Key passed in. Ensure Key has `Bearer ` prefix."
+            ),
+            "Authentication Error, Malformed API Key passed in. Ensure Key has `Bearer ` prefix.",
+        ),
+    ],
+    ids=["missing", "malformed"],
+)
+async def test_expected_api_key_error_does_not_log_exception_traceback(
+    auth_error, expected_message
+):
     handler = UserAPIKeyAuthExceptionHandler()
     mock_request = MagicMock()
     mock_request.headers = {}
@@ -348,7 +364,7 @@ async def test_missing_api_key_does_not_log_exception_traceback():
     ), patch.object(verbose_proxy_logger, "exception") as mock_exception:
         with pytest.raises(ProxyException) as exc_info:
             await handler._handle_authentication_error(
-                MissingAPIKeyError("No api key passed in."),
+                auth_error,
                 mock_request,
                 {},
                 "/v1/responses",
@@ -357,7 +373,7 @@ async def test_missing_api_key_does_not_log_exception_traceback():
             )
 
     assert exc_info.value.code == "401"
-    assert exc_info.value.message == "Authentication Error, No api key passed in."
+    assert exc_info.value.message == expected_message
     mock_exception.assert_not_called()
 
 
@@ -385,7 +401,7 @@ async def test_route_passed_to_post_call_failure_hook():
             "litellm.proxy.proxy_server.general_settings",
             {"allow_requests_on_db_unavailable": False},
         ):
-            try:
+            with pytest.raises(ProxyException):
                 await handler._handle_authentication_error(
                     PrismaError(),
                     mock_request,
@@ -394,9 +410,6 @@ async def test_route_passed_to_post_call_failure_hook():
                     mock_span,
                     mock_api_key,
                 )
-            except Exception as e:
-                pass
-            asyncio.sleep(1)
             # Verify post_call_failure_hook was called with the correct route
             mock_post_call_failure_hook.assert_called_once()
             call_args = mock_post_call_failure_hook.call_args[1]
