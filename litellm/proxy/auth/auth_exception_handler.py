@@ -234,9 +234,17 @@ class UserAPIKeyAuthExceptionHandler:
             # Expected client-input failures are still reported through the
             # normal failure hooks and HTTP response, but are not application
             # exceptions and should not emit ERROR tracebacks.
-            is_expected_client_error = isinstance(e, MissingAPIKeyError) or (
-                isinstance(e, HTTPException)
-                and e.status_code == status.HTTP_400_BAD_REQUEST
+            is_expected_client_error = (
+                isinstance(e, MissingAPIKeyError)
+                or (
+                    isinstance(e, HTTPException)
+                    and e.status_code
+                    in (status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED)
+                )
+                or (
+                    isinstance(e, ProxyException)
+                    and e.code == str(status.HTTP_401_UNAUTHORIZED)
+                )
             )
             if not is_expected_client_error:
                 verbose_proxy_logger.exception(

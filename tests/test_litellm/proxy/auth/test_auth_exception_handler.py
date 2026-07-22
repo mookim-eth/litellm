@@ -155,7 +155,9 @@ async def test_handle_authentication_error_db_transport_error_returns_503_not_40
     ), patch(
         "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
         new_callable=AsyncMock,
-    ) as mock_post_call_failure_hook:
+    ) as mock_post_call_failure_hook, patch.object(
+        verbose_proxy_logger, "exception"
+    ) as mock_exception:
         mock_post_call_failure_hook.return_value = None
 
         with pytest.raises(ProxyException) as exc_info:
@@ -172,6 +174,7 @@ async def test_handle_authentication_error_db_transport_error_returns_503_not_40
     assert exc_info.value.code == str(status.HTTP_503_SERVICE_UNAVAILABLE)
     assert "Authentication Error" not in exc_info.value.message
     assert "Database connection error during authentication" in exc_info.value.message
+    mock_exception.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -268,6 +271,60 @@ async def test_malformed_key_http_400_does_not_log_exception_traceback():
 
     assert exc_info.value.code == "400"
     assert "tid=****fa4c" in exc_info.value.message
+    mock_exception.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("auth_error", "expected_message"),
+    [
+        (
+            HTTPException(status_code=401, detail="Invalid API key"),
+            "Invalid API key",
+        ),
+        (
+            ProxyException(
+                message="Authentication Error, Invalid proxy server token passed.",
+                type=ProxyErrorTypes.token_not_found_in_db,
+                param="key",
+                code=status.HTTP_401_UNAUTHORIZED,
+            ),
+            "Authentication Error, Invalid proxy server token passed.",
+        ),
+    ],
+    ids=["http_exception", "proxy_exception"],
+)
+async def test_unauthorized_client_error_does_not_log_exception_traceback(
+    auth_error, expected_message
+):
+    handler = UserAPIKeyAuthExceptionHandler()
+    mock_request = MagicMock()
+    mock_request.headers = {}
+    mock_request.client.host = "203.0.113.5"
+    mock_request.method = "POST"
+    mock_request.url = "http://testserver/v1/responses"
+    mock_request.state = MagicMock()
+
+    with patch(
+        "litellm.proxy.proxy_server.general_settings",
+        {"allow_requests_on_db_unavailable": False},
+    ), patch(
+        "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
+        new_callable=AsyncMock,
+        return_value=None,
+    ), patch.object(verbose_proxy_logger, "exception") as mock_exception:
+        with pytest.raises(ProxyException) as exc_info:
+            await handler._handle_authentication_error(
+                auth_error,
+                mock_request,
+                {},
+                "/v1/responses",
+                None,
+                "test-key",
+            )
+
+    assert exc_info.value.code == "401"
+    assert exc_info.value.message == expected_message
     mock_exception.assert_not_called()
 
 
