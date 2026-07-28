@@ -146,6 +146,14 @@ export default function KeyInfoView({
         delete formValues.prompts;
       }
 
+      const currentDisableGlobalGuardrails = currentKeyData.metadata?.disable_global_guardrails ?? false;
+      const disableGlobalGuardrailsChanged =
+        typeof formValues.disable_global_guardrails === "boolean" &&
+        formValues.disable_global_guardrails !== currentDisableGlobalGuardrails;
+      if (!canEditGuardrails || !disableGlobalGuardrailsChanged) {
+        delete formValues.disable_global_guardrails;
+      }
+
       if (!isProxyAdminRole(userRole || "")) {
         delete formValues.allowed_routes;
       }

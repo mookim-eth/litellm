@@ -312,7 +312,7 @@ const baseKeyData = {
   next_rotation_at: null as any,
 };
 
-const renderView = (premiumUser: boolean) => {
+const renderView = (premiumUser: boolean, keyData: Record<string, any> = baseKeyData) => {
   // Configure the mock for this test
   mockUseAuthorized.mockReturnValue({
     accessToken: "access_abc",
@@ -326,13 +326,7 @@ const renderView = (premiumUser: boolean) => {
   });
 
   return render(
-    <KeyInfoView
-      keyId="tok_123"
-      onClose={() => {}}
-      keyData={baseKeyData as any}
-      onKeyDataUpdate={() => {}}
-      teams={[]}
-    />,
+    <KeyInfoView keyId="tok_123" onClose={() => {}} keyData={keyData as any} onKeyDataUpdate={() => {}} teams={[]} />,
   );
 };
 
@@ -343,6 +337,46 @@ beforeEach(() => {
 
 // ---- Tests ----
 describe("KeyInfoView handleKeyUpdate guardrails guard", () => {
+  it("should omit an unchanged default disable_global_guardrails value", async () => {
+    renderView(false);
+
+    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("Edit Settings"));
+    (globalThis as any).__TEST_FORM_VALUES = {
+      token: "tok_123",
+      disable_global_guardrails: false,
+      metadata: "{}",
+    };
+
+    fireEvent.click(screen.getByText("Mock Submit"));
+
+    await waitFor(() => expect(keyUpdateCallMock).toHaveBeenCalled());
+    const [, sentPayload] = keyUpdateCallMock.mock.calls[0];
+    expect(sentPayload).not.toHaveProperty("disable_global_guardrails");
+  });
+
+  it("should preserve an intentional disable_global_guardrails change", async () => {
+    renderView(false, {
+      ...baseKeyData,
+      metadata: { disable_global_guardrails: true },
+    });
+
+    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("Edit Settings"));
+    (globalThis as any).__TEST_FORM_VALUES = {
+      token: "tok_123",
+      disable_global_guardrails: false,
+      metadata: { disable_global_guardrails: true },
+    };
+
+    fireEvent.click(screen.getByText("Mock Submit"));
+
+    await waitFor(() => expect(keyUpdateCallMock).toHaveBeenCalled());
+    const [, sentPayload] = keyUpdateCallMock.mock.calls[0];
+    expect(sentPayload.disable_global_guardrails).toBe(false);
+    expect(sentPayload.metadata.disable_global_guardrails).toBe(true);
+  });
+
   it("should remove guardrails & prompts for non-premium key owner without write access role", async () => {
     const keyDataWithOwner = { ...baseKeyData, user_id: "user_1" };
     mockUseAuthorized.mockReturnValue({
