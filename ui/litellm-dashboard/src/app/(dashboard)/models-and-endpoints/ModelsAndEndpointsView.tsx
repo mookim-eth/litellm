@@ -69,10 +69,14 @@ const ModelsAndEndpointsView: React.FC<ModelDashboardProps> = ({ premiumUser, te
     return true;
   });
 
+  const isProxyAdmin = Boolean(userRole && isProxyAdminRole(userRole));
+  const isInternalUser = userRole && internalUserRoles.includes(userRole);
+  const isUserTeamAdmin = userID && isUserTeamAdminForAnyTeam(teams, userID);
+
   const queryClient = useQueryClient();
   const { data: modelDataResponse, isLoading: isLoadingModels, refetch: refetchModels } = useModelsInfo();
   const { data: modelCostMapData, isLoading: isLoadingModelCostMap } = useModelCostMap();
-  const { data: credentialsResponse, isLoading: isLoadingCredentials } = useCredentials();
+  const { data: credentialsResponse, isLoading: isLoadingCredentials } = useCredentials(isProxyAdmin);
   const credentialsList = credentialsResponse?.credentials || [];
   const { data: uiSettings, isLoading: isLoadingUISettings } = useUISettings();
 
@@ -125,9 +129,6 @@ const ModelsAndEndpointsView: React.FC<ModelDashboardProps> = ({ premiumUser, te
     return transformModelData(modelDataResponse, getProviderFromModel);
   }, [modelDataResponse?.data, getProviderFromModel]);
 
-  const isProxyAdmin = userRole && isProxyAdminRole(userRole);
-  const isInternalUser = userRole && internalUserRoles.includes(userRole);
-  const isUserTeamAdmin = userID && isUserTeamAdminForAnyTeam(teams, userID);
   const addModelDisabledForInternalUsers =
     isInternalUser && uiSettings?.values?.disable_model_add_for_internal_users === true;
   // Hide tab if user is NOT a proxy admin AND (internal user with setting enabled OR not a team admin)
@@ -200,7 +201,7 @@ const ModelsAndEndpointsView: React.FC<ModelDashboardProps> = ({ premiumUser, te
   };
 
   useEffect(() => {
-    if (!accessToken || !token || !userRole || !userID || !modelDataResponse) {
+    if (!accessToken || !token || !userRole || !userID || !modelDataResponse || !isProxyAdmin) {
       return;
     }
     const fetchData = async () => {
@@ -225,7 +226,7 @@ const ModelsAndEndpointsView: React.FC<ModelDashboardProps> = ({ premiumUser, te
     if (accessToken && token && userRole && userID && modelDataResponse) {
       fetchData();
     }
-  }, [accessToken, token, userRole, userID, modelDataResponse]);
+  }, [accessToken, token, userRole, userID, modelDataResponse, isProxyAdmin]);
 
   const isLoading = isLoadingModels || isLoadingModelCostMap || isLoadingCredentials || isLoadingUISettings;
 
@@ -378,12 +379,12 @@ const ModelsAndEndpointsView: React.FC<ModelDashboardProps> = ({ premiumUser, te
                 <div className="flex">
                   {all_admin_roles.includes(userRole) ? <Tab>All Models</Tab> : <Tab>Your Models</Tab>}
                   {!shouldHideAddModelTab && <Tab>Add Model</Tab>}
-                  {all_admin_roles.includes(userRole) && <Tab>LLM Credentials</Tab>}
-                  {all_admin_roles.includes(userRole) && <Tab>Pass-Through Endpoints</Tab>}
-                  {all_admin_roles.includes(userRole) && <Tab>Health Status</Tab>}
-                  {all_admin_roles.includes(userRole) && <Tab>Model Retry Settings</Tab>}
-                  {all_admin_roles.includes(userRole) && <Tab>Model Group Alias</Tab>}
-                  {all_admin_roles.includes(userRole) && <Tab>Price Data Reload</Tab>}
+                  {isProxyAdmin && <Tab>LLM Credentials</Tab>}
+                  {isProxyAdmin && <Tab>Pass-Through Endpoints</Tab>}
+                  {isProxyAdmin && <Tab>Health Status</Tab>}
+                  {isProxyAdmin && <Tab>Model Retry Settings</Tab>}
+                  {isProxyAdmin && <Tab>Model Group Alias</Tab>}
+                  {isProxyAdmin && <Tab>Price Data Reload</Tab>}
                 </div>
 
                 <div className="flex items-center space-x-2 self-center">
@@ -426,47 +427,51 @@ const ModelsAndEndpointsView: React.FC<ModelDashboardProps> = ({ premiumUser, te
                     />
                   </TabPanel>
                 )}
-                <TabPanel>
-                  <CredentialsPanel uploadProps={uploadProps} />
-                </TabPanel>
-                <TabPanel>
-                  <PassThroughSettings
-                    accessToken={accessToken}
-                    userRole={userRole}
-                    userID={userID}
-                    modelData={processedModelData}
-                    premiumUser={premiumUser}
-                  />
-                </TabPanel>
-                <TabPanel>
-                  <HealthCheckComponent
-                    accessToken={accessToken}
-                    modelData={processedModelData}
-                    all_models_on_proxy={allModelIdsOnProxy}
-                    getDisplayModelName={getDisplayModelName}
-                    setSelectedModelId={setSelectedModelId}
-                    teams={teams}
-                  />
-                </TabPanel>
-                <ModelRetrySettingsTab
-                  selectedModelGroup={selectedModelGroup}
-                  setSelectedModelGroup={setSelectedModelGroup}
-                  availableModelGroups={availableModelGroups}
-                  globalRetryPolicy={globalRetryPolicy}
-                  setGlobalRetryPolicy={setGlobalRetryPolicy}
-                  defaultRetry={defaultRetry}
-                  modelGroupRetryPolicy={modelGroupRetryPolicy}
-                  setModelGroupRetryPolicy={setModelGroupRetryPolicy}
-                  handleSaveRetrySettings={handleSaveRetrySettings}
-                />
-                <TabPanel>
-                  <ModelGroupAliasSettings
-                    accessToken={accessToken}
-                    initialModelGroupAlias={modelGroupAlias}
-                    onAliasUpdate={setModelGroupAlias}
-                  />
-                </TabPanel>
-                <PriceDataManagementTab />
+                {isProxyAdmin && (
+                  <>
+                    <TabPanel>
+                      <CredentialsPanel uploadProps={uploadProps} />
+                    </TabPanel>
+                    <TabPanel>
+                      <PassThroughSettings
+                        accessToken={accessToken}
+                        userRole={userRole}
+                        userID={userID}
+                        modelData={processedModelData}
+                        premiumUser={premiumUser}
+                      />
+                    </TabPanel>
+                    <TabPanel>
+                      <HealthCheckComponent
+                        accessToken={accessToken}
+                        modelData={processedModelData}
+                        all_models_on_proxy={allModelIdsOnProxy}
+                        getDisplayModelName={getDisplayModelName}
+                        setSelectedModelId={setSelectedModelId}
+                        teams={teams}
+                      />
+                    </TabPanel>
+                    <ModelRetrySettingsTab
+                      selectedModelGroup={selectedModelGroup}
+                      setSelectedModelGroup={setSelectedModelGroup}
+                      availableModelGroups={availableModelGroups}
+                      globalRetryPolicy={globalRetryPolicy}
+                      setGlobalRetryPolicy={setGlobalRetryPolicy}
+                      defaultRetry={defaultRetry}
+                      modelGroupRetryPolicy={modelGroupRetryPolicy}
+                      setModelGroupRetryPolicy={setModelGroupRetryPolicy}
+                      handleSaveRetrySettings={handleSaveRetrySettings}
+                    />
+                    <TabPanel>
+                      <ModelGroupAliasSettings
+                        accessToken={accessToken}
+                        initialModelGroupAlias={modelGroupAlias}
+                        onAliasUpdate={setModelGroupAlias}
+                      />
+                    </TabPanel>
+                    <PriceDataManagementTab />
+                  </>
+                )}
               </TabPanels>
             </TabGroup>
           )}

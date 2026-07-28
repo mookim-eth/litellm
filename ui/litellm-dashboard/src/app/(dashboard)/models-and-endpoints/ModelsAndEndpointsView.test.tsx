@@ -1,7 +1,13 @@
 /* @vitest-environment jsdom */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  credentialListCall,
+  getCallbacksCall,
+  getPassThroughEndpointsCall,
+  latestHealthChecksCall,
+} from "@/components/networking";
 import ModelsAndEndpointsView from "./ModelsAndEndpointsView";
 
 // Mock localStorage
@@ -89,6 +95,7 @@ const createQueryClient = () =>
 
 describe("ModelsAndEndpointsView", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     mockUseModelsInfo.mockReturnValue({
       data: { data: [] },
       isLoading: false,
@@ -209,6 +216,40 @@ describe("ModelsAndEndpointsView", () => {
     const requestProviderLinks = document.querySelectorAll('a[href="https://models.litellm.ai/?request=true"]');
     // There should be a compact button when banner is hidden
     expect(requestProviderLinks.length).toBeGreaterThan(0);
+  });
+
+  it("should not mount admin-only panels or fetch admin-only settings for internal users", async () => {
+    mockUseAuthorized.mockReturnValue({
+      accessToken: "123",
+      token: "123",
+      userRole: "Internal User",
+      userId: "123",
+    });
+
+    const queryClient = createQueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ModelsAndEndpointsView
+          token="123"
+          modelData={{ data: [] }}
+          keys={[]}
+          setModelData={() => {}}
+          premiumUser={false}
+          teams={[]}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("Model Management", {}, { timeout: 10000 })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "LLM Credentials" })).not.toBeInTheDocument();
+    expect(mockHealthCheckComponent).not.toHaveBeenCalled();
+
+    await waitFor(() => {
+      expect(credentialListCall).not.toHaveBeenCalled();
+      expect(getCallbacksCall).not.toHaveBeenCalled();
+      expect(getPassThroughEndpointsCall).not.toHaveBeenCalled();
+      expect(latestHealthChecksCall).not.toHaveBeenCalled();
+    });
   });
 
   it("should pass model IDs (not model names) to HealthCheckComponent as all_models_on_proxy", async () => {
