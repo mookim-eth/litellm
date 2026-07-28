@@ -145,7 +145,7 @@ export const deleteProxyConfigFieldCall = async (
  * @param configType - The type of config to fetch (from ConfigType enum)
  * @returns React Query result with the config list data
  */
-export const useProxyConfig = (configType: ConfigType) => {
+export const useProxyConfig = (configType: ConfigType, enabled = true) => {
   const { accessToken } = useAuthorized();
   return useQuery<ProxyConfigResponse>({
     queryKey: proxyConfigKeys.list({
@@ -154,7 +154,7 @@ export const useProxyConfig = (configType: ConfigType) => {
       },
     }),
     queryFn: async () => await getProxyConfigCall(accessToken!, configType),
-    enabled: Boolean(accessToken),
+    enabled: enabled && Boolean(accessToken),
   });
 };
 

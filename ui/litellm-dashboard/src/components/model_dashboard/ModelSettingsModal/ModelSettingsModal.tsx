@@ -16,7 +16,10 @@ interface ModelSettingsModalProps {
 const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({ isVisible, onCancel, onSuccess }) => {
   const [form] = Form.useForm();
   const { mutateAsync, isPending } = useStoreModelInDB();
-  const { data: proxyConfigData, isLoading: isLoadingConfig, refetch } = useProxyConfig(ConfigType.GENERAL_SETTINGS);
+  const { data: proxyConfigData, isLoading: isLoadingConfig, refetch } = useProxyConfig(
+    ConfigType.GENERAL_SETTINGS,
+    isVisible,
+  );
 
   // Refetch config when modal opens to ensure we have the latest values
   useEffect(() => {

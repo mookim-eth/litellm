@@ -1232,6 +1232,7 @@ async def test_jwt_non_admin_team_route_access(monkeypatch):
             )
         except ProxyException as e:
             print("e", e)
+            assert e.code == "403"
             assert "Only proxy admin can be used to generate" in str(e.message)
 
 

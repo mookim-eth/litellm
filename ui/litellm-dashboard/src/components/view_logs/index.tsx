@@ -8,7 +8,7 @@ import { SettingOutlined, SyncOutlined } from "@ant-design/icons";
 import { Row } from "@tanstack/react-table";
 import { Switch, Tab, TabGroup, TabList, TabPanel, TabPanels } from "@tremor/react";
 import { Button, Tag, Tooltip } from "antd";
-import { internalUserRoles } from "../../utils/roles";
+import { internalUserRoles, isProxyAdminRole } from "../../utils/roles";
 import DeletedKeysPage from "../DeletedKeysPage/DeletedKeysPage";
 import DeletedTeamsPage from "../DeletedTeamsPage/DeletedTeamsPage";
 import { KeyResponse, Team } from "../key_team_helpers/key_list";
@@ -87,6 +87,7 @@ export default function SpendLogsTable({
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [isSpendLogsSettingsModalVisible, setIsSpendLogsSettingsModalVisible] = useState(false);
+  const isProxyAdmin = isProxyAdminRole(userRole || "");
 
   const [sortBy, setSortBy] = useState<LogsSortField>("startTime");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
@@ -446,11 +447,13 @@ export default function SpendLogsTable({
           <TabPanel>
             <div className="flex items-center justify-between mb-4">
               <h1 className="text-xl font-semibold">Request Logs</h1>
-              <Button
-                icon={<SettingOutlined />}
-                onClick={() => setIsSpendLogsSettingsModalVisible(true)}
-                title="Spend Logs Settings"
-              />
+              {isProxyAdmin && (
+                <Button
+                  icon={<SettingOutlined />}
+                  onClick={() => setIsSpendLogsSettingsModalVisible(true)}
+                  title="Spend Logs Settings"
+                />
+              )}
             </div>
             {selectedKeyInfo && selectedKeyIdInfoView && selectedKeyInfo.api_key === selectedKeyIdInfoView ? (
               <KeyInfoView
@@ -467,11 +470,13 @@ export default function SpendLogsTable({
                   onApplyFilters={handleFilterChange}
                   onResetFilters={handleFilterReset}
                 />
-                <SpendLogsSettingsModal
-                  isVisible={isSpendLogsSettingsModalVisible}
-                  onCancel={() => setIsSpendLogsSettingsModalVisible(false)}
-                  onSuccess={() => setIsSpendLogsSettingsModalVisible(false)}
-                />
+                {isProxyAdmin && (
+                  <SpendLogsSettingsModal
+                    isVisible={isSpendLogsSettingsModalVisible}
+                    onCancel={() => setIsSpendLogsSettingsModalVisible(false)}
+                    onSuccess={() => setIsSpendLogsSettingsModalVisible(false)}
+                  />
+                )}
                 <div className="bg-white rounded-lg shadow w-full max-w-full box-border">
                   <div className="border-b px-6 py-4 w-full max-w-full box-border">
                     <div className="flex flex-col md:flex-row items-start md:items-center justify-between space-y-4 md:space-y-0 w-full max-w-full box-border">

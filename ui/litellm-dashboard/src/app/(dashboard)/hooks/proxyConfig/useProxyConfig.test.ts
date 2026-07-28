@@ -229,6 +229,14 @@ describe("useProxyConfig", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("should not execute query when disabled", () => {
+    const { result } = renderHook(() => useProxyConfig(ConfigType.GENERAL_SETTINGS, false), { wrapper });
+
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.isFetched).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("should use correct query key with config type filter", async () => {
     (fetchSpy as any).mockResolvedValue({
       ok: true,

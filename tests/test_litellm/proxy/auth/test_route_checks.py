@@ -34,7 +34,7 @@ def test_non_admin_config_update_route_rejected():
     request.query_params = {}
 
     # Test that calling /config/update route raises HTTPException with 403 status
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(HTTPException) as exc_info:
         RouteChecks.non_proxy_admin_allowed_routes_check(
             user_obj=user_obj,
             _user_role=LitellmUserRoles.INTERNAL_USER.value,
@@ -44,13 +44,14 @@ def test_non_admin_config_update_route_rejected():
             request_data={},
         )
 
-    # Verify the exception is raised with the correct message
+    # Verify the exception is raised with the correct status and message
+    assert exc_info.value.status_code == 403
     assert (
         "Only proxy admin can be used to generate, delete, update info for new keys/users/teams"
-        in str(exc_info.value)
+        in str(exc_info.value.detail)
     )
-    assert "Route=/config/update" in str(exc_info.value)
-    assert "Your role=internal_user" in str(exc_info.value)
+    assert "Route=/config/update" in str(exc_info.value.detail)
+    assert "Your role=internal_user" in str(exc_info.value.detail)
 
 
 def test_proxy_admin_viewer_config_update_route_rejected():
@@ -586,7 +587,7 @@ def test_passthrough_metadata_cannot_grant_admin_route_access():
 
     with patch.object(
         RouteChecks, "_is_registered_pass_through_route", return_value=False
-    ), pytest.raises(Exception):
+    ), pytest.raises(HTTPException) as exc_info:
         RouteChecks.non_proxy_admin_allowed_routes_check(
             user_obj=user_obj,
             _user_role=LitellmUserRoles.INTERNAL_USER,
@@ -595,6 +596,7 @@ def test_passthrough_metadata_cannot_grant_admin_route_access():
             valid_token=valid_token,
             request_data={},
         )
+    assert exc_info.value.status_code == 403
 
 
 def test_registered_passthrough_metadata_still_grants_passthrough_access():
@@ -1034,7 +1036,7 @@ def test_non_proxy_admin_allowed_routes_do_not_grant_admin_routes():
     request = MagicMock(spec=Request)
     request.query_params = {}
 
-    with pytest.raises(Exception, match="Only proxy admin"):
+    with pytest.raises(HTTPException) as exc_info:
         RouteChecks.non_proxy_admin_allowed_routes_check(
             user_obj=user_obj,
             _user_role=LitellmUserRoles.INTERNAL_USER.value,
@@ -1043,6 +1045,8 @@ def test_non_proxy_admin_allowed_routes_do_not_grant_admin_routes():
             valid_token=valid_token,
             request_data={},
         )
+    assert exc_info.value.status_code == 403
+    assert "Only proxy admin" in str(exc_info.value.detail)
 
 
 def test_proxy_admin_viewer_can_access_global_spend_tags():
@@ -1331,7 +1335,7 @@ def test_non_admin_non_team_admin_cannot_access_config_update_but_can_attempt_re
     )
 
     # /config/update is still blocked
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(HTTPException) as exc_info:
         RouteChecks.non_proxy_admin_allowed_routes_check(
             user_obj=user_obj,
             _user_role=LitellmUserRoles.INTERNAL_USER.value,
@@ -1340,7 +1344,8 @@ def test_non_admin_non_team_admin_cannot_access_config_update_but_can_attempt_re
             valid_token=valid_token,
             request_data={},
         )
-    assert "Only proxy admin can be used to generate" in str(exc_info.value)
+    assert exc_info.value.status_code == 403
+    assert "Only proxy admin can be used to generate" in str(exc_info.value.detail)
 
 
 @pytest.mark.parametrize(

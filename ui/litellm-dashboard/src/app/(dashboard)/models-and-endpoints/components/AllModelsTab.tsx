@@ -14,6 +14,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Grid, TabPanel } from "@tremor/react";
 import { Badge, Button, Select, Skeleton, Space, Typography } from "antd";
 import ModelSettingsModal from "@/components/model_dashboard/ModelSettingsModal/ModelSettingsModal";
+import { isProxyAdminRole } from "@/utils/roles";
 import debounce from "lodash/debounce";
 import { useEffect, useMemo, useState } from "react";
 import { useModelsInfo } from "../../hooks/models/useModels";
@@ -40,6 +41,7 @@ const AllModelsTab = ({
 }: AllModelsTabProps) => {
   const { data: modelCostMapData, isLoading: isLoadingModelCostMap } = useModelCostMap();
   const { accessToken, userId, userRole, premiumUser } = useAuthorized();
+  const isProxyAdmin = isProxyAdminRole(userRole || "");
   const { data: teams, isLoading: isLoadingTeams } = useTeams();
   const queryClient = useQueryClient();
 
@@ -418,11 +420,13 @@ const AllModelsTab = ({
                   </div>
 
                   {/* Model Settings Button */}
-                  <Button
-                    icon={<SettingOutlined />}
-                    onClick={() => setIsModelSettingsModalVisible(true)}
-                    title="Model Settings"
-                  />
+                  {isProxyAdmin && (
+                    <Button
+                      icon={<SettingOutlined />}
+                      onClick={() => setIsModelSettingsModalVisible(true)}
+                      title="Model Settings"
+                    />
+                  )}
                 </div>
 
                 {/* Additional Filters */}
@@ -577,11 +581,13 @@ const AllModelsTab = ({
         onOk={handleDeleteModel}
         confirmLoading={deleteLoading}
       />
-      <ModelSettingsModal
-        isVisible={isModelSettingsModalVisible}
-        onCancel={() => setIsModelSettingsModalVisible(false)}
-        onSuccess={() => setIsModelSettingsModalVisible(false)}
-      />
+      {isProxyAdmin && (
+        <ModelSettingsModal
+          isVisible={isModelSettingsModalVisible}
+          onCancel={() => setIsModelSettingsModalVisible(false)}
+          onSuccess={() => setIsModelSettingsModalVisible(false)}
+        />
+      )}
     </TabPanel>
   );
 };

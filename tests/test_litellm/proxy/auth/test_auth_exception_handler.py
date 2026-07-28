@@ -327,6 +327,39 @@ async def test_unauthorized_client_error_does_not_log_exception_traceback(
 
 
 @pytest.mark.asyncio
+async def test_forbidden_auth_error_does_not_log_exception_traceback():
+    handler = UserAPIKeyAuthExceptionHandler()
+    mock_request = MagicMock()
+    mock_request.headers = {}
+    mock_request.client.host = "203.0.113.5"
+    mock_request.method = "GET"
+    mock_request.url = "http://testserver/config/list"
+    mock_request.state = MagicMock()
+
+    with patch(
+        "litellm.proxy.proxy_server.general_settings",
+        {"allow_requests_on_db_unavailable": False},
+    ), patch(
+        "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
+        new_callable=AsyncMock,
+        return_value=None,
+    ), patch.object(verbose_proxy_logger, "exception") as mock_exception:
+        with pytest.raises(ProxyException) as exc_info:
+            await handler._handle_authentication_error(
+                HTTPException(status_code=403, detail="forbidden route"),
+                mock_request,
+                {},
+                "/config/list",
+                None,
+                "test-key",
+            )
+
+    assert exc_info.value.code == "403"
+    assert exc_info.value.message == "forbidden route"
+    mock_exception.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("auth_error", "expected_message"),
     [

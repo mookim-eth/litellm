@@ -147,6 +147,17 @@ describe("AllModelsTab", () => {
     expect(screen.getByText("Current Team:")).toBeInTheDocument();
   });
 
+  it("should not render model settings for internal users", () => {
+    vi.spyOn(useAuthorizedModule, "default").mockReturnValue({
+      ...mockUseAuthorized,
+      userRole: "Internal User",
+    });
+
+    renderWithProviders(<AllModelsTab {...defaultProps} />);
+
+    expect(screen.queryByTitle("Model Settings")).not.toBeInTheDocument();
+  });
+
   it("should filter models by direct team access when current team is selected", async () => {
     const mockTeams = [
       {

@@ -213,6 +213,12 @@ describe("SpendLogsTable", () => {
     });
   });
 
+  it("should not render spend logs settings for internal users", () => {
+    renderWithProviders(<SpendLogsTable {...defaultProps} userRole="Internal User" />);
+
+    expect(screen.queryByTitle("Spend Logs Settings")).not.toBeInTheDocument();
+  });
+
   it("should reset custom date range to default when Reset Filters is clicked", async () => {
     const user = userEvent.setup();
     renderWithProviders(<SpendLogsTable {...defaultProps} />);

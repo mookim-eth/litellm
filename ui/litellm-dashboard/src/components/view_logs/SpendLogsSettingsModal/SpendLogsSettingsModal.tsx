@@ -18,7 +18,10 @@ const SpendLogsSettingsModal: React.FC<SpendLogsSettingsModalProps> = ({ isVisib
   const [form] = Form.useForm();
   const { mutateAsync, isPending } = useStoreRequestInSpendLogs();
   const { mutateAsync: deleteField, isPending: isDeletingField } = useDeleteProxyConfigField();
-  const { data: proxyConfigData, isLoading: isLoadingConfig, refetch } = useProxyConfig(ConfigType.GENERAL_SETTINGS);
+  const { data: proxyConfigData, isLoading: isLoadingConfig, refetch } = useProxyConfig(
+    ConfigType.GENERAL_SETTINGS,
+    isVisible,
+  );
   const storePromptsValue = Form.useWatch('store_prompts_in_spend_logs', form);
 
   // Refetch config when modal opens to ensure we have the latest values

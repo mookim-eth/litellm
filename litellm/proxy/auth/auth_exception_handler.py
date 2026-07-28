@@ -243,7 +243,11 @@ class UserAPIKeyAuthExceptionHandler:
                 or (
                     isinstance(e, HTTPException)
                     and e.status_code
-                    in (status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED)
+                    in (
+                        status.HTTP_400_BAD_REQUEST,
+                        status.HTTP_401_UNAUTHORIZED,
+                        status.HTTP_403_FORBIDDEN,
+                    )
                 )
                 or (
                     isinstance(e, ProxyException)
