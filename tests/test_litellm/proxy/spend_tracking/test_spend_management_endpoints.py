@@ -2157,7 +2157,9 @@ async def test_provider_budget_provider_budgets(disable_budget_sync):
     )
 
     with patch("litellm.proxy.proxy_server.llm_router", router):
-        response = await spend_management_endpoints.provider_budgets()
+        response = await spend_management_endpoints.provider_budgets(
+            user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN)
+        )
         provider_budget_response = response.providers[provider]
         assert provider_budget_response.budget_limit == max_budget
         assert provider_budget_response.time_period == budget_duration

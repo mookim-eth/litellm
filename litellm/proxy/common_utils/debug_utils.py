@@ -13,10 +13,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from litellm import get_secret_str
 from litellm._logging import verbose_proxy_logger
 from litellm.constants import PYTHON_GC_THRESHOLD
-from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 
 router = APIRouter()
+
+
+def _require_debug_admin(user_api_key_dict: UserAPIKeyAuth) -> None:
+    role = getattr(user_api_key_dict.user_role, "value", user_api_key_dict.user_role)
+    if role not in {
+        LitellmUserRoles.PROXY_ADMIN.value,
+        LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+    }:
+        raise HTTPException(status_code=403, detail="Only proxy admins can access debug endpoints")
 
 
 # Configure garbage collection thresholds from environment variables
@@ -51,12 +60,15 @@ configure_gc_thresholds()
 
 
 @router.get("/debug/asyncio-tasks")
-async def get_active_tasks_stats():
+async def get_active_tasks_stats(
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
     """
     Returns:
       total_active_tasks: int
       by_name: { coroutine_name: count }
     """
+    _require_debug_admin(user_api_key_dict)
     MAX_TASKS_TO_CHECK = 5000
     # Gather all tasks in this event loop (including this endpoint’s own task).
     all_tasks = asyncio.all_tasks()
@@ -104,7 +116,10 @@ if os.environ.get("LITELLM_PROFILE", "false").lower() == "true":
     tracemalloc.start(10)
 
     @router.get("/memory-usage", include_in_schema=False)
-    async def memory_usage():
+    async def memory_usage(
+        user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+    ):
+        _require_debug_admin(user_api_key_dict)
         # Take a snapshot of the current memory usage
         snapshot = tracemalloc.take_snapshot()
         top_stats = snapshot.statistics("lineno")
@@ -704,8 +719,12 @@ async def configure_gc_thresholds_endpoint(
 
 
 @router.get("/otel-spans", include_in_schema=False)
-async def get_otel_spans():
+async def get_otel_spans(
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
     from litellm.proxy.proxy_server import open_telemetry_logger
+
+    _require_debug_admin(user_api_key_dict)
 
     if open_telemetry_logger is None:
         return {

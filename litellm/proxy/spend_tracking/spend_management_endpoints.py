@@ -31,6 +31,21 @@ else:
 router = APIRouter()
 
 
+def _role_value(role: Any) -> Any:
+    return getattr(role, "value", role)
+
+
+def _require_proxy_admin_view(user_api_key_dict: UserAPIKeyAuth) -> None:
+    if _role_value(user_api_key_dict.user_role) not in {
+        LitellmUserRoles.PROXY_ADMIN.value,
+        LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "Only proxy admins can access this endpoint."},
+        )
+
+
 @router.get(
     "/spend/keys",
     tags=["Budget & Spend Tracking"],
@@ -3080,8 +3095,14 @@ async def global_spend_models(
     return response
 
 
-@router.get("/provider/budgets", response_model=ProviderBudgetResponse)
-async def provider_budgets() -> ProviderBudgetResponse:
+@router.get(
+    "/provider/budgets",
+    response_model=ProviderBudgetResponse,
+    dependencies=[Depends(user_api_key_auth)],
+)
+async def provider_budgets(
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+) -> ProviderBudgetResponse:
     """
     Provider Budget Routing - Get Budget, Spend Details https://docs.litellm.ai/docs/proxy/provider_budget_routing
 
@@ -3132,6 +3153,7 @@ async def provider_budgets() -> ProviderBudgetResponse:
     from litellm.proxy.proxy_server import llm_router
 
     try:
+        _require_proxy_admin_view(user_api_key_dict)
         if llm_router is None:
             raise HTTPException(
                 status_code=500, detail={"error": "No llm_router found"}
@@ -3171,6 +3193,8 @@ async def provider_budgets() -> ProviderBudgetResponse:
             )
             provider_budget_response_dict[_provider] = provider_budget_response_object
         return ProviderBudgetResponse(providers=provider_budget_response_dict)
+    except HTTPException:
+        raise
     except Exception as e:
         verbose_proxy_logger.exception(
             "/provider/budgets: Exception occured - {}".format(str(e))
