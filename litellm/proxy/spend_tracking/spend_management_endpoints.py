@@ -1342,7 +1342,10 @@ async def get_global_spend_report(
         200: {"model": List[LiteLLM_SpendLogs]},
     },
 )
-async def global_get_all_tag_names():
+async def global_get_all_tag_names(
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    _require_proxy_admin_view(user_api_key_dict)
     try:
         from litellm.proxy.proxy_server import prisma_client
 
@@ -1406,6 +1409,7 @@ async def global_view_spend_tags(
         default=None,
         description="comman separated tags to filter on",
     ),
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
     LiteLLM Enterprise - View Spend Per Request Tag. Used by LiteLLM UI
@@ -1427,6 +1431,7 @@ async def global_view_spend_tags(
     from litellm.proxy.proxy_server import prisma_client
 
     try:
+        _require_proxy_admin_view(user_api_key_dict)
         if prisma_client is None:
             raise Exception(
                 "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
@@ -2719,7 +2724,9 @@ async def global_spend_logs(
     dependencies=[Depends(user_api_key_auth)],
     include_in_schema=False,
 )
-async def global_spend():
+async def global_spend(
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
     """
     [BETA] This is a beta endpoint. It will change.
 
@@ -2730,6 +2737,7 @@ async def global_spend():
     from litellm.proxy.proxy_server import prisma_client
 
     try:
+        _require_proxy_admin_view(user_api_key_dict)
         total_spend = 0.0
 
         if prisma_client is None:
@@ -2863,13 +2871,17 @@ async def global_spend_keys(
     dependencies=[Depends(user_api_key_auth)],
     include_in_schema=False,
 )
-async def global_spend_per_team():
+async def global_spend_per_team(
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
     """
     [BETA] This is a beta endpoint. It will change.
 
     Use this to get daily spend, grouped by `team_id` and `date`
     """
     from litellm.proxy.proxy_server import prisma_client
+
+    _require_proxy_admin_view(user_api_key_dict)
 
     if prisma_client is None:
         raise HTTPException(status_code=500, detail={"error": "No db connected"})
@@ -2956,13 +2968,17 @@ async def global_spend_per_team():
     dependencies=[Depends(user_api_key_auth)],
     include_in_schema=False,
 )
-async def global_view_all_end_users():
+async def global_view_all_end_users(
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
     """
     [BETA] This is a beta endpoint. It will change.
 
     Use this to just get all the unique `end_users`
     """
     from litellm.proxy.proxy_server import prisma_client
+
+    _require_proxy_admin_view(user_api_key_dict)
 
     if prisma_client is None:
         raise HTTPException(status_code=500, detail={"error": "No db connected"})
@@ -2988,13 +3004,18 @@ async def global_view_all_end_users():
     dependencies=[Depends(user_api_key_auth)],
     include_in_schema=False,
 )
-async def global_spend_end_users(data: Optional[GlobalEndUsersSpend] = None):
+async def global_spend_end_users(
+    data: Optional[GlobalEndUsersSpend] = None,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
     """
     [BETA] This is a beta endpoint. It will change.
 
     Use this to get the top 'n' keys with the highest spend, ordered by spend.
     """
     from litellm.proxy.proxy_server import prisma_client
+
+    _require_proxy_admin_view(user_api_key_dict)
 
     if prisma_client is None:
         raise HTTPException(status_code=500, detail={"error": "No db connected"})
