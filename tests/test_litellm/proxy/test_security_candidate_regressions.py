@@ -86,3 +86,33 @@ def test_vector_store_access_check_includes_rag_retrieval_config_id():
     assert registry.get_vector_store_ids_to_run(
         {"retrieval_config": {"vector_store_id": "vs-private"}}
     ) == ["vs-private"]
+
+@pytest.mark.asyncio
+async def test_vector_store_files_enforce_managed_store_access(monkeypatch):
+    import litellm
+    import litellm.proxy.proxy_server as proxy_server
+    from litellm.proxy.vector_store_files_endpoints.endpoints import (
+        _check_managed_vector_store_access,
+    )
+
+    class Row:
+        def model_dump(self):
+            return {
+                "vector_store_id": "vs-private",
+                "custom_llm_provider": "openai",
+                "team_id": "team-owner",
+            }
+
+    fake_prisma = MagicMock()
+    fake_prisma.db.litellm_managedvectorstorestable.find_unique = AsyncMock(
+        return_value=Row()
+    )
+    monkeypatch.setattr(proxy_server, "prisma_client", fake_prisma)
+    monkeypatch.setattr(litellm, "vector_store_registry", None)
+
+    with pytest.raises(HTTPException) as exc:
+        await _check_managed_vector_store_access(
+            "vs-private", _auth(user_id="u2", team_id="team-other")
+        )
+
+    assert exc.value.status_code == 403

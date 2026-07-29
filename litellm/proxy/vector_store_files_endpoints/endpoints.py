@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, Dict, Optional
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import ORJSONResponse
 
 import litellm
@@ -329,6 +329,45 @@ def _maybe_check_permissions(
     )
 
 
+async def _check_managed_vector_store_access(
+    vector_store_id: str, user_api_key_dict: UserAPIKeyAuth
+) -> None:
+    from litellm.proxy.proxy_server import prisma_client
+    from litellm.proxy.vector_store_endpoints.management_endpoints import (
+        _check_vector_store_access,
+    )
+    from litellm.types.vector_stores import LiteLLM_ManagedVectorStore
+
+    vector_store = None
+    if litellm.vector_store_registry is not None:
+        vector_store = (
+            litellm.vector_store_registry.get_litellm_managed_vector_store_from_registry(
+                vector_store_id=vector_store_id
+            )
+        )
+
+    if vector_store is None and prisma_client is not None:
+        db_vector_store = (
+            await prisma_client.db.litellm_managedvectorstorestable.find_unique(
+                where={"vector_store_id": vector_store_id}
+            )
+        )
+        if db_vector_store is not None:
+            vector_store = LiteLLM_ManagedVectorStore(**db_vector_store.model_dump())
+
+    # Provider-native vector-store IDs are not represented in LiteLLM's managed
+    # registry/table; leave those to provider/model routing and existing
+    # explicit vector-store permission metadata.
+    if vector_store is None:
+        return
+
+    if not _check_vector_store_access(vector_store, user_api_key_dict):
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: You do not have permission to access this vector store",
+        )
+
+
 @router.post(
     "/v1/vector_stores/{vector_store_id}/files",
     dependencies=[Depends(user_api_key_auth)],
@@ -380,6 +419,10 @@ async def vector_store_file_create(
 
     provider_enum = await _resolve_provider(data=data, request=request)
 
+    await _check_managed_vector_store_access(
+        vector_store_id=vector_store_id,
+        user_api_key_dict=user_api_key_dict,
+    )
     _maybe_check_permissions(
         provider=provider_enum,
         vector_store_id=vector_store_id,
@@ -466,6 +509,10 @@ async def vector_store_file_list(
 
     provider_enum = await _resolve_provider(data=data, request=request)
 
+    await _check_managed_vector_store_access(
+        vector_store_id=vector_store_id,
+        user_api_key_dict=user_api_key_dict,
+    )
     _maybe_check_permissions(
         provider=provider_enum,
         vector_store_id=vector_store_id,
@@ -554,6 +601,10 @@ async def vector_store_file_retrieve(
 
     provider_enum = await _resolve_provider(data=data, request=request)
 
+    await _check_managed_vector_store_access(
+        vector_store_id=vector_store_id,
+        user_api_key_dict=user_api_key_dict,
+    )
     _maybe_check_permissions(
         provider=provider_enum,
         vector_store_id=vector_store_id,
@@ -648,6 +699,10 @@ async def vector_store_file_content(
 
     provider_enum = await _resolve_provider(data=data, request=request)
 
+    await _check_managed_vector_store_access(
+        vector_store_id=vector_store_id,
+        user_api_key_dict=user_api_key_dict,
+    )
     _maybe_check_permissions(
         provider=provider_enum,
         vector_store_id=vector_store_id,
@@ -742,6 +797,10 @@ async def vector_store_file_update(
 
     provider_enum = await _resolve_provider(data=data, request=request)
 
+    await _check_managed_vector_store_access(
+        vector_store_id=vector_store_id,
+        user_api_key_dict=user_api_key_dict,
+    )
     _maybe_check_permissions(
         provider=provider_enum,
         vector_store_id=vector_store_id,
@@ -836,6 +895,10 @@ async def vector_store_file_delete(
 
     provider_enum = await _resolve_provider(data=data, request=request)
 
+    await _check_managed_vector_store_access(
+        vector_store_id=vector_store_id,
+        user_api_key_dict=user_api_key_dict,
+    )
     _maybe_check_permissions(
         provider=provider_enum,
         vector_store_id=vector_store_id,
