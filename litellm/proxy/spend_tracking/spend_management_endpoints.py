@@ -35,6 +35,14 @@ def _role_value(role: Any) -> Any:
     return getattr(role, "value", role)
 
 
+def _require_proxy_admin(user_api_key_dict: UserAPIKeyAuth) -> None:
+    if _role_value(user_api_key_dict.user_role) != LitellmUserRoles.PROXY_ADMIN.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "Only proxy admins can access this endpoint."},
+        )
+
+
 def _require_proxy_admin_view(user_api_key_dict: UserAPIKeyAuth) -> None:
     if _role_value(user_api_key_dict.user_role) not in {
         LitellmUserRoles.PROXY_ADMIN.value,
@@ -2459,7 +2467,9 @@ async def view_spend_logs(  # noqa: PLR0915
     tags=["Budget & Spend Tracking"],
     dependencies=[Depends(user_api_key_auth)],
 )
-async def global_spend_reset():
+async def global_spend_reset(
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
     """
     ADMIN ONLY / MASTER KEY Only Endpoint
 
@@ -2471,6 +2481,8 @@ async def global_spend_reset():
 
     """
     from litellm.proxy.proxy_server import prisma_client
+
+    _require_proxy_admin(user_api_key_dict)
 
     if prisma_client is None:
         raise ProxyException(

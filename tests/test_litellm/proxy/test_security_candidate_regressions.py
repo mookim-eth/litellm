@@ -15,6 +15,13 @@ def _auth(role=LitellmUserRoles.INTERNAL_USER, user_id="user-1", team_id=None):
 
 
 @pytest.mark.asyncio
+async def test_global_spend_reset_requires_proxy_admin():
+    with pytest.raises(HTTPException) as exc:
+        await spend_management_endpoints.global_spend_reset(user_api_key_dict=_auth())
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_provider_budgets_requires_admin_view():
     with pytest.raises(HTTPException) as exc:
         await spend_management_endpoints.provider_budgets(user_api_key_dict=_auth())
