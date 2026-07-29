@@ -786,6 +786,27 @@ async def update_vector_store(
         update_data = data.model_dump(exclude_unset=True)
         vector_store_id = update_data.pop("vector_store_id")
 
+        existing_vector_store = (
+            await prisma_client.db.litellm_managedvectorstorestable.find_unique(
+                where={"vector_store_id": vector_store_id}
+            )
+        )
+        if existing_vector_store is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Vector store with ID {vector_store_id} not found",
+            )
+        existing_vector_store_typed = LiteLLM_ManagedVectorStore(
+            **existing_vector_store.model_dump()
+        )
+        if not _check_vector_store_access(
+            existing_vector_store_typed, user_api_key_dict
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied: You do not have permission to update this vector store",
+            )
+
         # Handle metadata serialization
         if update_data.get("vector_store_metadata") is not None:
             update_data["vector_store_metadata"] = safe_dumps(
