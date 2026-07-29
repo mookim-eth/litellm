@@ -1347,44 +1347,44 @@ async def convert_prompt_file_to_json(
     global general_settings
     from litellm.integrations.dotprompt.prompt_manager import PromptManager
 
-    # Validate file extension
+    # Validate file extension and keep uploaded names confined to the temp dir.
+    # Non-browser clients can send path components in Content-Disposition
+    # filenames; never join those directly into filesystem paths.
     if not file.filename or not file.filename.endswith(".prompt"):
         raise HTTPException(status_code=400, detail="File must have .prompt extension")
+    if (
+        Path(file.filename).is_absolute()
+        or "/" in file.filename
+        or "\\" in file.filename
+        or Path(file.filename).name != file.filename
+    ):
+        raise HTTPException(status_code=400, detail="Invalid prompt filename")
 
     temp_file_path = None
     try:
         # Read file content
         file_content = await file.read()
 
-        # Create temporary file
-        temp_file_path = Path(tempfile.mkdtemp()) / file.filename
-        temp_file_path.write_bytes(file_content)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Create temporary file under the newly-created temporary directory.
+            temp_file_path = Path(temp_dir) / file.filename
+            temp_file_path.write_bytes(file_content)
 
-        # Create a PromptManager instance just for conversion
-        prompt_manager = PromptManager()
+            # Create a PromptManager instance just for conversion
+            prompt_manager = PromptManager()
 
-        # Convert to JSON
-        json_data = prompt_manager.prompt_file_to_json(temp_file_path)
+            # Convert to JSON
+            json_data = prompt_manager.prompt_file_to_json(temp_file_path)
 
-        # Extract prompt ID from filename
-        prompt_id = temp_file_path.stem
+            # Extract prompt ID from filename
+            prompt_id = temp_file_path.stem
 
-        return {
-            "prompt_id": prompt_id,
-            "json_data": json_data,
-        }
+            return {
+                "prompt_id": prompt_id,
+                "json_data": json_data,
+            }
 
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error converting prompt file: {str(e)}"
         )
-
-    finally:
-        # Clean up temp file
-        if temp_file_path and temp_file_path.exists():
-            temp_file_path.unlink()
-            # Also try to remove the temp directory if it's empty
-            try:
-                temp_file_path.parent.rmdir()
-            except OSError:
-                pass  # Directory not empty or other error
