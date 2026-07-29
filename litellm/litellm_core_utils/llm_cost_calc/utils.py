@@ -573,31 +573,39 @@ def _calculate_input_cost(
         audio_cost_key = _get_service_tier_cost_key(
             "input_cost_per_audio_token", service_tier
         )
-        prompt_cost += calculate_cost_component(
-            model_info, audio_cost_key, prompt_tokens_details["audio_tokens"]
-        )
+        if model_info.get("input_cost_per_audio_token") is None:
+            prompt_cost += prompt_tokens_details["audio_tokens"] * prompt_base_cost
+        else:
+            prompt_cost += calculate_cost_component(
+                model_info, audio_cost_key, prompt_tokens_details["audio_tokens"]
+            )
 
     ### IMAGE TOKEN COST
     if prompt_tokens_details["image_tokens"]:
         # For image token costs:
         # First check if input_cost_per_image_token is available. If not, default to generic input_cost_per_token.
-        image_token_cost_key = "input_cost_per_image_token"
-        if model_info.get(image_token_cost_key) is None:
-            image_token_cost_key = "input_cost_per_token"
-        prompt_cost += calculate_cost_component(
-            model_info, image_token_cost_key, prompt_tokens_details["image_tokens"]
-        )
+        if model_info.get("input_cost_per_image_token") is None:
+            prompt_cost += prompt_tokens_details["image_tokens"] * prompt_base_cost
+        else:
+            prompt_cost += calculate_cost_component(
+                model_info,
+                "input_cost_per_image_token",
+                prompt_tokens_details["image_tokens"],
+            )
 
     ### VIDEO TOKEN COST
     if prompt_tokens_details["video_tokens"]:
         # Most multimodal models charge video input tokens at the generic input
         # token rate. A provider-specific rate can override that default.
-        video_token_cost_key = "input_cost_per_video_token"
-        if model_info.get(video_token_cost_key) is None:
-            video_token_cost_key = "input_cost_per_token"
-        prompt_cost += calculate_cost_component(
-            model_info, video_token_cost_key, prompt_tokens_details["video_tokens"]
+        video_cost_key = _get_service_tier_cost_key(
+            "input_cost_per_video_token", service_tier
         )
+        if model_info.get("input_cost_per_video_token") is None:
+            prompt_cost += prompt_tokens_details["video_tokens"] * prompt_base_cost
+        else:
+            prompt_cost += calculate_cost_component(
+                model_info, video_cost_key, prompt_tokens_details["video_tokens"]
+            )
 
     ### CACHE WRITING COST - Now uses tiered pricing
     if (
