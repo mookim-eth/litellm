@@ -1,12 +1,12 @@
 from io import BytesIO
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException, UploadFile
 
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.common_utils import debug_utils
-from litellm.proxy.management_endpoints import team_endpoints
+from litellm.proxy.management_endpoints import internal_user_endpoints, team_endpoints
 from litellm.proxy.prompts.prompt_endpoints import convert_prompt_file_to_json
 from litellm.proxy.spend_tracking import spend_management_endpoints
 from litellm.vector_stores.vector_store_registry import VectorStoreRegistry
@@ -45,6 +45,29 @@ async def test_team_filter_ui_requires_admin_view(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         await team_endpoints.ui_view_teams(user_api_key_dict=_auth())
     assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_user_filter_ui_defaults_to_self_for_non_admin(monkeypatch):
+    import litellm.proxy.proxy_server as proxy_server
+
+    fake_prisma = MagicMock()
+    fake_prisma.db.litellm_usertable.find_many = AsyncMock()
+    monkeypatch.setattr(proxy_server, "prisma_client", fake_prisma)
+    monkeypatch.setattr(proxy_server, "user_api_key_cache", MagicMock())
+    monkeypatch.setattr(proxy_server, "proxy_logging_obj", MagicMock())
+    monkeypatch.setattr(
+        internal_user_endpoints,
+        "_resolve_org_filter_for_user_search",
+        AsyncMock(return_value=None),
+    )
+
+    result = await internal_user_endpoints.ui_view_users(
+        user_id="other-user", page=1, page_size=50, user_api_key_dict=_auth(user_id="caller-user")
+    )
+
+    assert result == []
+    fake_prisma.db.litellm_usertable.find_many.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -2485,11 +2485,19 @@ async def ui_view_users(
                 "mode": "insensitive",  # Case-insensitive search
             }
 
-        # Apply org filter when scope_user_search_to_org is ON and caller is not proxy admin
+        # Apply org filter when scope_user_search_to_org is ON and caller is not proxy admin.
+        # When the flag is OFF, fail closed for non-admin callers by limiting the
+        # default UI search endpoint to the caller's own user record instead of
+        # allowing cross-organization directory enumeration.
         if org_filter_ids is not None:
             where_conditions["organization_memberships"] = {
                 "some": {"organization_id": {"in": org_filter_ids}}
             }
+        elif not _is_admin_user_role(user_api_key_dict.user_role):
+            caller_user_id = require_caller_user_id_for_non_admin(user_api_key_dict)
+            if user_id is not None and user_id != caller_user_id:
+                return []
+            where_conditions["user_id"] = caller_user_id
 
         # Query users with pagination and filters
         users: Optional[List[BaseModel]] = (
