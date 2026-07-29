@@ -2442,7 +2442,8 @@ async def ui_view_users(
     Behaviour depends on the ``scope_user_search_to_org`` UI-setting flag
     (stored in the ``litellm_uisettings`` table):
 
-    * **Flag OFF (default):** any authenticated user can search all users.
+    * **Flag OFF (default):** proxy admins see all users; non-admin callers are
+      restricted to their own user record.
     * **Flag ON:**
       - Proxy admins see all users.
       - Org admins see only users in their org(s).
