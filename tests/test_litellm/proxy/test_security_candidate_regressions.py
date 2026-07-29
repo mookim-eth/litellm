@@ -7,6 +7,7 @@ from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.common_utils import debug_utils
 from litellm.proxy.prompts.prompt_endpoints import convert_prompt_file_to_json
 from litellm.proxy.spend_tracking import spend_management_endpoints
+from litellm.vector_stores.vector_store_registry import VectorStoreRegistry
 
 
 def _auth(role=LitellmUserRoles.INTERNAL_USER, user_id="user-1", team_id=None):
@@ -35,3 +36,11 @@ async def test_dotprompt_converter_rejects_path_filenames():
         await convert_prompt_file_to_json(file=upload, user_api_key_dict=_auth())
 
     assert exc.value.status_code == 400
+
+
+def test_vector_store_access_check_includes_rag_retrieval_config_id():
+    registry = VectorStoreRegistry()
+
+    assert registry.get_vector_store_ids_to_run(
+        {"retrieval_config": {"vector_store_id": "vs-private"}}
+    ) == ["vs-private"]

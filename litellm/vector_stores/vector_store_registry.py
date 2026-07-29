@@ -141,6 +141,16 @@ class VectorStoreRegistry:
         if isinstance(vector_store_ids_param, list):
             vector_store_ids.extend(vector_store_ids_param)
 
+        # RAG query requests carry a single vector store id under
+        # retrieval_config.vector_store_id. Include it in the centralized access
+        # check so managed vector stores cannot be queried cross-team by nesting
+        # the id outside the OpenAI-compatible vector_store_ids fields.
+        retrieval_config = non_default_params.get("retrieval_config")
+        if isinstance(retrieval_config, dict):
+            retrieval_vector_store_id = retrieval_config.get("vector_store_id")
+            if isinstance(retrieval_vector_store_id, str):
+                vector_store_ids.append(retrieval_vector_store_id)
+
         # 2. check if vector_store_ids is provided as a tool in the request
         vector_store_ids = self._get_vector_store_ids_from_tool_calls(
             tools=tools, vector_store_ids=vector_store_ids
