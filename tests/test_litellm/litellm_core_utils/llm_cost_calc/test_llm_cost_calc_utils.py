@@ -129,6 +129,45 @@ def test_reasoning_tokens_gemini():
     )
 
 
+@pytest.mark.parametrize(
+    ("model", "input_rate", "output_rate"),
+    [
+        ("gemini-3.1-pro-preview", 2e-06, 1.2e-05),
+        ("gemini-3.6-flash", 1.5e-06, 7.5e-06),
+        ("gemini-3.5-flash-lite", 3e-07, 2.5e-06),
+    ],
+)
+def test_vertex_gemini_3_multimodal_pricing(model, input_rate, output_rate):
+    """All Gemini 3 input modalities and reasoning output must be billed."""
+    os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    litellm.model_cost = litellm.get_model_cost_map(url="")
+
+    usage = Usage(
+        prompt_tokens=1000,
+        completion_tokens=200,
+        total_tokens=1200,
+        prompt_tokens_details=PromptTokensDetailsWrapper(
+            text_tokens=250,
+            image_tokens=250,
+            audio_tokens=250,
+            video_tokens=250,
+        ),
+        completion_tokens_details=CompletionTokensDetailsWrapper(
+            text_tokens=25,
+            reasoning_tokens=175,
+        ),
+    )
+
+    prompt_cost, completion_cost = generic_cost_per_token(
+        model=model,
+        usage=usage,
+        custom_llm_provider="vertex_ai",
+    )
+
+    assert prompt_cost == pytest.approx(1000 * input_rate)
+    assert completion_cost == pytest.approx(200 * output_rate)
+
+
 def test_reasoning_tokens_gemini_3_1_flash_lite():
     """Test cost calculation for gemini-3.1-flash-lite-preview with reasoning tokens"""
     model = "gemini-3.1-flash-lite-preview"
@@ -697,6 +736,7 @@ def test_cache_writing_cost_with_zero_creation_tokens_and_ephemeral_details():
         "text_tokens": 0,
         "audio_tokens": 0,
         "image_tokens": 0,
+        "video_tokens": 0,
         "character_count": 0,
         "image_count": 0,
         "video_length_seconds": 0.0,

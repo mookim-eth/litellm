@@ -433,6 +433,7 @@ class PromptTokensDetailsResult(TypedDict):
     text_tokens: int
     audio_tokens: int
     image_tokens: int
+    video_tokens: int
     character_count: int
     image_count: int
     video_length_seconds: float
@@ -469,6 +470,10 @@ def _parse_prompt_tokens_details(usage: Usage) -> PromptTokensDetailsResult:
         cast(Optional[int], getattr(usage.prompt_tokens_details, "image_tokens", 0))
         or 0
     )
+    video_tokens = (
+        cast(Optional[int], getattr(usage.prompt_tokens_details, "video_tokens", 0))
+        or 0
+    )
     character_count = (
         cast(
             Optional[int],
@@ -494,6 +499,7 @@ def _parse_prompt_tokens_details(usage: Usage) -> PromptTokensDetailsResult:
         text_tokens=text_tokens,
         audio_tokens=audio_tokens,
         image_tokens=image_tokens,
+        video_tokens=video_tokens,
         character_count=character_count,
         image_count=image_count,
         video_length_seconds=float(video_length_seconds),
@@ -582,6 +588,17 @@ def _calculate_input_cost(
             model_info, image_token_cost_key, prompt_tokens_details["image_tokens"]
         )
 
+    ### VIDEO TOKEN COST
+    if prompt_tokens_details["video_tokens"]:
+        # Most multimodal models charge video input tokens at the generic input
+        # token rate. A provider-specific rate can override that default.
+        video_token_cost_key = "input_cost_per_video_token"
+        if model_info.get(video_token_cost_key) is None:
+            video_token_cost_key = "input_cost_per_token"
+        prompt_cost += calculate_cost_component(
+            model_info, video_token_cost_key, prompt_tokens_details["video_tokens"]
+        )
+
     ### CACHE WRITING COST - Now uses tiered pricing
     if (
         prompt_tokens_details["cache_creation_tokens"]
@@ -654,6 +671,7 @@ def generic_cost_per_token(  # noqa: PLR0915
         text_tokens=usage.prompt_tokens,
         audio_tokens=0,
         image_tokens=0,
+        video_tokens=0,
         character_count=0,
         image_count=0,
         video_length_seconds=0.0,
@@ -671,10 +689,16 @@ def generic_cost_per_token(  # noqa: PLR0915
     audio_tokens = prompt_tokens_details["audio_tokens"]
     cache_creation = prompt_tokens_details["cache_creation_tokens"]
     image_tokens = prompt_tokens_details["image_tokens"]
+    video_tokens = prompt_tokens_details["video_tokens"]
 
     # Check for double-counting: sum of details > prompt_tokens means overlap
     total_details = (
-        text_tokens + cache_hit + audio_tokens + cache_creation + image_tokens
+        text_tokens
+        + cache_hit
+        + audio_tokens
+        + cache_creation
+        + image_tokens
+        + video_tokens
     )
     has_double_counting = cache_hit > 0 and total_details > usage.prompt_tokens
 
@@ -687,6 +711,7 @@ def generic_cost_per_token(  # noqa: PLR0915
             - audio_tokens
             - cache_creation
             - image_tokens
+            - video_tokens
         )
         prompt_tokens_details["text_tokens"] = text_tokens
 
