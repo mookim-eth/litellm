@@ -1,10 +1,12 @@
 from io import BytesIO
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException, UploadFile
 
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.common_utils import debug_utils
+from litellm.proxy.management_endpoints import team_endpoints
 from litellm.proxy.prompts.prompt_endpoints import convert_prompt_file_to_json
 from litellm.proxy.spend_tracking import spend_management_endpoints
 from litellm.vector_stores.vector_store_registry import VectorStoreRegistry
@@ -32,6 +34,16 @@ async def test_provider_budgets_requires_admin_view():
 async def test_debug_asyncio_tasks_requires_admin_view():
     with pytest.raises(HTTPException) as exc:
         await debug_utils.get_active_tasks_stats(user_api_key_dict=_auth())
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_team_filter_ui_requires_admin_view(monkeypatch):
+    import litellm.proxy.proxy_server as proxy_server
+
+    monkeypatch.setattr(proxy_server, "prisma_client", MagicMock())
+    with pytest.raises(HTTPException) as exc:
+        await team_endpoints.ui_view_teams(user_api_key_dict=_auth())
     assert exc.value.status_code == 403
 
 

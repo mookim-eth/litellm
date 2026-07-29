@@ -4056,6 +4056,14 @@ async def ui_view_teams(
         raise HTTPException(status_code=500, detail={"error": "No db connected"})
 
     try:
+        if not _user_has_admin_view(user_api_key_dict):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "Only proxy admins can search all teams from the UI."
+                },
+            )
+
         # Calculate offset for pagination
         skip = (page - 1) * page_size
 
@@ -4087,6 +4095,8 @@ async def ui_view_teams(
 
         return teams
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error searching teams: {str(e)}")
 
