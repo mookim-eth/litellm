@@ -374,7 +374,7 @@ describe("KeyInfoView handleKeyUpdate guardrails guard", () => {
     await waitFor(() => expect(keyUpdateCallMock).toHaveBeenCalled());
     const [, sentPayload] = keyUpdateCallMock.mock.calls[0];
     expect(sentPayload.disable_global_guardrails).toBe(false);
-    expect(sentPayload.metadata.disable_global_guardrails).toBe(true);
+    expect(sentPayload).not.toHaveProperty("metadata");
   });
 
   it("should remove guardrails & prompts for non-premium key owner without write access role", async () => {
@@ -509,6 +509,7 @@ describe("KeyInfoView handleKeyUpdate non-admin field guard", () => {
       object_permission: {},
       vector_stores: [],
       logging_settings: [],
+      models: [],
       max_budget: 25,
       key_alias: "updated alias",
     };
@@ -520,7 +521,6 @@ describe("KeyInfoView handleKeyUpdate non-admin field guard", () => {
     const [, sentPayload] = keyUpdateCallMock.mock.calls[0];
     expect(sentPayload).toMatchObject({
       key: "tok_123",
-      token: "tok_123",
       max_budget: 25,
       key_alias: "updated alias",
     });
@@ -535,6 +535,7 @@ describe("KeyInfoView handleKeyUpdate non-admin field guard", () => {
       "object_permission",
       "vector_stores",
       "logging_settings",
+      "models",
     ]) {
       expect(sentPayload).not.toHaveProperty(field);
     }
@@ -544,7 +545,7 @@ describe("KeyInfoView handleKeyUpdate non-admin field guard", () => {
 describe("KeyInfoView handleKeyUpdate empty strings", () => {
   ["tpm_limit", "rpm_limit", "max_parallel_requests", "max_budget"].forEach((limit) => {
     it(`maps empty strings to null for ${limit}`, async () => {
-      renderView(true); // premiumUser = true
+      renderView(true, { ...baseKeyData, [limit]: 100 }); // premiumUser = true
 
       fireEvent.click(screen.getByText("Settings"));
       fireEvent.click(screen.getByText("Edit Settings"));

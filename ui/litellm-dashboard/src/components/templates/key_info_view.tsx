@@ -3,7 +3,11 @@ import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 import { useUISettings } from "@/app/(dashboard)/hooks/uiSettings/useUISettings";
 import useTeams from "@/app/(dashboard)/hooks/useTeams";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
-import { mapEmptyStringToNull, sanitizeNonAdminKeyPayload } from "@/utils/keyUpdateUtils";
+import {
+  mapEmptyStringToNull,
+  omitUnchangedKeyFields,
+  sanitizeNonAdminKeyPayload,
+} from "@/utils/keyUpdateUtils";
 import { ArrowLeftIcon } from "@heroicons/react/outline";
 import { Badge, Button, Card, Grid, Tab, TabGroup, TabList, TabPanel, TabPanels, Text, Title } from "@tremor/react";
 import { Form, Modal, Tag } from "antd";
@@ -270,9 +274,10 @@ export default function KeyInfoView({
       // The edit form contains existing values for fields that non-admins are
       // not authorized to change. Omit those fields entirely: even metadata={}
       // is security-significant on update because it can clear admin policy.
+      const changedPayload = omitUnchangedKeyFields(formValues, currentKeyData);
       const updatePayload = isProxyAdminRole(userRole || "")
-        ? formValues
-        : sanitizeNonAdminKeyPayload(formValues);
+        ? changedPayload
+        : sanitizeNonAdminKeyPayload(changedPayload);
       const newKeyValues = await keyUpdateCall(accessToken, updatePayload);
 
       // Update local state

@@ -63,3 +63,65 @@ export function sanitizeNonAdminKeyPayload(payload: Record<string, any>): Record
   }
   return sanitizedPayload;
 }
+
+function keyUpdateValuesEqual(left: any, right: any): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+  if (left == null && right == null) {
+    return true;
+  }
+  if (
+    (right == null && Array.isArray(left) && left.length === 0) ||
+    (left == null && Array.isArray(right) && right.length === 0)
+  ) {
+    return true;
+  }
+  if (
+    (right == null && left && typeof left === "object" && Object.keys(left).length === 0) ||
+    (left == null && right && typeof right === "object" && Object.keys(right).length === 0)
+  ) {
+    return true;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => keyUpdateValuesEqual(value, right[index]))
+    );
+  }
+  if (left && right && typeof left === "object" && typeof right === "object") {
+    const leftKeys = Object.keys(left).sort();
+    const rightKeys = Object.keys(right).sort();
+    return (
+      keyUpdateValuesEqual(leftKeys, rightKeys) &&
+      leftKeys.every((key) => keyUpdateValuesEqual(left[key], right[key]))
+    );
+  }
+  return false;
+}
+
+export function omitUnchangedKeyFields(
+  payload: Record<string, any>,
+  currentKey: Record<string, any>,
+): Record<string, any> {
+  const changedPayload: Record<string, any> = {};
+  for (const [field, value] of Object.entries(payload)) {
+    if (field === "key") {
+      changedPayload[field] = value;
+      continue;
+    }
+    if (field === "token" || value === undefined) {
+      continue;
+    }
+
+    const currentValue = ["guardrails", "policies", "prompts"].includes(field)
+      ? currentKey.metadata?.[field]
+      : currentKey[field];
+    if (!keyUpdateValuesEqual(value, currentValue)) {
+      changedPayload[field] = value;
+    }
+  }
+  return changedPayload;
+}
