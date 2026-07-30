@@ -12,6 +12,7 @@ import { Accordion, AccordionBody, AccordionHeader, Button, Col, Grid, Text, Tex
 import { Button as Button2, Form, Input, Modal, Radio, Select, Switch, Tag, Tooltip } from "antd";
 import debounce from "lodash/debounce";
 import React, { useCallback, useEffect, useState } from "react";
+import { NON_ADMIN_RESTRICTED_KEY_FIELDS } from "@/utils/keyUpdateUtils";
 import { isProxyAdminRole, rolesWithWriteAccess } from "../../utils/roles";
 import AgentSelector from "../agent_management/AgentSelector";
 import { mapDisplayToInternalNames } from "../callback_info_helpers";
@@ -83,51 +84,6 @@ interface UserOption {
   value: string;
   user: User;
 }
-
-// Keep aligned with _NON_ADMIN_RESTRICTED_KEY_CONTROL_FIELDS in
-// key_management_endpoints.py. UI-only fields are transformed into metadata
-// or object_permission before submission.
-const NON_ADMIN_RESTRICTED_KEY_FIELDS = [
-  "agent_id",
-  "allowed_routes",
-  "allowed_passthrough_routes",
-  "allowed_cache_controls",
-  "allowed_vector_store_indexes",
-  "config",
-  "aliases",
-  "router_settings",
-  "access_group_ids",
-  "permissions",
-  "object_permission",
-  "tags",
-  "guardrails",
-  "disable_global_guardrails",
-  "policies",
-  "prompts",
-  "blocked",
-  "budget_id",
-  "budget_duration",
-  "enforced_params",
-  "grace_period",
-  "max_parallel_requests",
-  "model_max_budget",
-  "model_rpm_limit",
-  "model_tpm_limit",
-  "project_id",
-  "rpm_limit",
-  "rpm_limit_type",
-  "spend",
-  "temp_budget_expiry",
-  "temp_budget_increase",
-  "tpm_limit",
-  "tpm_limit_type",
-  "metadata",
-  "allowed_vector_store_ids",
-  "allowed_mcp_servers_and_groups",
-  "allowed_mcp_access_groups",
-  "mcp_tool_permissions",
-  "allowed_agents_and_groups",
-] as const;
 
 const getPredefinedTags = (data: any[] | null) => {
   let allTags = [];

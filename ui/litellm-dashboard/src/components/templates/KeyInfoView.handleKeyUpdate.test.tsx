@@ -471,8 +471,8 @@ describe("KeyInfoView handleKeyUpdate guardrails guard", () => {
   });
 });
 
-describe("KeyInfoView handleKeyUpdate allowed_routes guard", () => {
-  it("should remove allowed_routes for non-proxy-admin key owners", async () => {
+describe("KeyInfoView handleKeyUpdate non-admin field guard", () => {
+  it("should remove all restricted fields for non-proxy-admin key owners", async () => {
     const keyDataWithOwner = { ...baseKeyData, user_id: "user_1" };
     mockUseAuthorized.mockReturnValue({
       accessToken: "access_abc",
@@ -500,7 +500,17 @@ describe("KeyInfoView handleKeyUpdate allowed_routes guard", () => {
     (globalThis as any).__TEST_FORM_VALUES = {
       token: "tok_123",
       allowed_routes: ["llm_api_routes"],
+      metadata: {},
+      tags: [],
+      policies: [],
       tpm_limit: 100,
+      rpm_limit: 50,
+      budget_duration: "monthly",
+      object_permission: {},
+      vector_stores: [],
+      logging_settings: [],
+      max_budget: 25,
+      key_alias: "updated alias",
     };
 
     fireEvent.click(screen.getByText("Mock Submit"));
@@ -508,8 +518,26 @@ describe("KeyInfoView handleKeyUpdate allowed_routes guard", () => {
     await waitFor(() => expect(keyUpdateCallMock).toHaveBeenCalled());
 
     const [, sentPayload] = keyUpdateCallMock.mock.calls[0];
-    expect(sentPayload.tpm_limit).toBe(100);
-    expect(sentPayload).not.toHaveProperty("allowed_routes");
+    expect(sentPayload).toMatchObject({
+      key: "tok_123",
+      token: "tok_123",
+      max_budget: 25,
+      key_alias: "updated alias",
+    });
+    for (const field of [
+      "allowed_routes",
+      "metadata",
+      "tags",
+      "policies",
+      "tpm_limit",
+      "rpm_limit",
+      "budget_duration",
+      "object_permission",
+      "vector_stores",
+      "logging_settings",
+    ]) {
+      expect(sentPayload).not.toHaveProperty(field);
+    }
   });
 });
 
