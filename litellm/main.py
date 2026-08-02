@@ -1321,6 +1321,14 @@ def completion(  # type: ignore # noqa: PLR0915
     )
     ######## end of unpacking kwargs ###########
     non_default_params = get_non_default_completion_params(kwargs=kwargs)
+    from litellm.responses.provider_headers_timeout import (
+        RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG,
+    )
+
+    # This is a proxy-controlled timeout for Responses streams, not an
+    # upstream Chat Completions parameter. Keep it in kwargs so the Responses
+    # bridge can consume it below, but do not forward it to chat providers.
+    non_default_params.pop(RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG, None)
     litellm_params = {}  # used to prevent unbound var errors
     ## PROMPT MANAGEMENT HOOKS ##
 
@@ -1644,9 +1652,6 @@ def completion(  # type: ignore # noqa: PLR0915
 
         if responses_api_model_info.get("mode") == "responses":
             from litellm.completion_extras import responses_api_bridge
-            from litellm.responses.provider_headers_timeout import (
-                RESPONSES_PROVIDER_SSE_EVENT_TIMEOUT_KWARG,
-            )
 
             if isinstance(reasoning_effort, dict) and "summary" in reasoning_effort:
                 optional_params = dict(optional_params)

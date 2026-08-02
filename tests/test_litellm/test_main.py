@@ -791,6 +791,49 @@ def test_gpt_5_4_responses_bridge_preserves_reasoning_summary_dict(
     }
 
 
+@patch("litellm.main.openai_chat_completions.completion")
+def test_chat_completion_does_not_forward_responses_sse_timeout(
+    mock_chat_completion,
+):
+    """The proxy-controlled Responses timeout is not an upstream chat param."""
+    timeout_key = "_responses_provider_sse_event_timeout_seconds"
+    mock_chat_completion.return_value = {}
+
+    litellm.completion(
+        model="custom_openai/test-model",
+        messages=[{"role": "user", "content": "Ping"}],
+        api_base="https://example.com/v1",
+        api_key="fake-key",
+        **{timeout_key: 300.0},
+    )
+
+    optional_params = mock_chat_completion.call_args.kwargs["optional_params"]
+    assert timeout_key not in optional_params
+
+
+@patch("litellm.completion_extras.responses_api_bridge.completion")
+def test_responses_bridge_preserves_provider_sse_timeout(
+    mock_responses_completion,
+):
+    """Responses-native chat bridging retains the proxy-controlled timeout."""
+    timeout_key = "_responses_provider_sse_event_timeout_seconds"
+    mock_responses_completion.return_value = MagicMock()
+
+    litellm.completion(
+        model="responses/test-model",
+        custom_llm_provider="custom_openai",
+        messages=[{"role": "user", "content": "Ping"}],
+        api_base="https://example.com/v1",
+        api_key="fake-key",
+        **{timeout_key: 300.0},
+    )
+
+    assert (
+        mock_responses_completion.call_args.kwargs["litellm_params"][timeout_key]
+        == 300.0
+    )
+
+
 def test_responses_api_bridge_check_handles_exception():
     """Test that responses_api_bridge_check handles exceptions and still processes responses/ models."""
     from litellm.main import responses_api_bridge_check
