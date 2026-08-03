@@ -239,7 +239,14 @@ class UserAPIKeyAuthExceptionHandler:
             # normal failure hooks and HTTP response, but are not application
             # exceptions and should not emit ERROR tracebacks.
             is_expected_client_error = (
-                isinstance(e, (MissingAPIKeyError, MalformedAPIKeyError))
+                isinstance(
+                    e,
+                    (
+                        litellm.BudgetExceededError,
+                        MissingAPIKeyError,
+                        MalformedAPIKeyError,
+                    ),
+                )
                 or (
                     isinstance(e, HTTPException)
                     and e.status_code

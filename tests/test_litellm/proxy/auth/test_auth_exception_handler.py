@@ -115,22 +115,25 @@ async def test_handle_authentication_error_budget_exceeded():
     mock_api_key = "test-key"
 
     # Test with budget exceeded error
-    with pytest.raises(ProxyException) as exc_info:
+    with patch.object(verbose_proxy_logger, "exception") as mock_exception:
         from litellm.exceptions import BudgetExceededError
 
         budget_error = BudgetExceededError(
             message="Budget exceeded", current_cost=100, max_budget=100
         )
-        await handler._handle_authentication_error(
-            budget_error,
-            mock_request,
-            mock_request_data,
-            mock_route,
-            mock_span,
-            mock_api_key,
-        )
+        with pytest.raises(ProxyException) as exc_info:
+            await handler._handle_authentication_error(
+                budget_error,
+                mock_request,
+                mock_request_data,
+                mock_route,
+                mock_span,
+                mock_api_key,
+            )
 
     assert exc_info.value.type == ProxyErrorTypes.budget_exceeded
+    assert exc_info.value.code == "400"
+    mock_exception.assert_not_called()
 
 
 @pytest.mark.asyncio
