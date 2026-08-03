@@ -425,6 +425,61 @@ See `CLAUDE.md` and the `Makefile` for standard commands. Key notes:
 
 ### Commit, image build, and local blue/green deployment
 
+#### `/cd` review, commit, test, and production delivery workflow
+
+When the user sends `/cd` (or the client-escaped spelling `//cd`), treat it as
+an explicit request to deliver the current intentional LiteLLM changes through
+the complete workflow below. Do not interpret it as a shell `cd` command. This
+authorization covers reviewer audit, committing, test-environment deployment
+and verification, pushing the verified commit, and local production blue/green
+deployment. It does not authorize
+including unrelated worktree changes or weakening security controls to make a
+check pass.
+
+1. Switch to a reviewer perspective and perform a fresh, skeptical review of
+   the complete diff before committing. Treat the implementation as untrusted
+   even if you authored it earlier. Inspect `git status`, the diff, relevant
+   call paths, tests, configuration and generated UI assets. Check behavior,
+   backward compatibility, sync/async and streaming variants where relevant,
+   error/status contracts, security and authorization invariants, data/schema
+   compatibility, secret exposure, and whether every requested path is covered.
+   Resolve all findings and rerun the review until no blocking finding remains.
+2. Run the smallest relevant tests first, then the broader regression suites
+   warranted by the risk. If the review or tests fail, fix the issue and repeat
+   review and verification. Do not commit known-broken changes.
+3. Inspect the final staged diff and commit only intentional files. Write a
+   precise imperative commit subject that describes the user-visible behavior;
+   avoid vague subjects such as `fix issue` or `update code`. Add a commit body
+   when the motivation, compatibility constraints, security boundary, or
+   verification context would not be obvious from the subject alone.
+4. Build an immutable `litellm:<12-character-commit-sha>` image from that exact
+   commit. Deploy that image to the isolated `litellm-test` service using
+   `/root/litellm/docker-compose.test.yml`; update only its `image` value to the
+   immutable tag, then recreate the test service without touching production.
+   Wait for both container health and `/health/readiness` on port 4001.
+5. Run a real end-to-end request against `http://127.0.0.1:4001` that exercises
+   the changed behavior, plus adjacent compatibility paths identified during
+   review. For Responses changes, run the applicable text, single-tool, and
+   parallel-tool modes from `/root/litellm/responses-e2e.py`. For auth, budget,
+   key-management, UI, or other changes, exercise the corresponding public API
+   or browser flow against the test database and verify both the response and
+   relevant logs. Never print credentials in commands or reports.
+6. Only after review, tests, test readiness, and E2E all pass, push the verified
+   commit and run `/root/litellm/deploy-litellm.sh switch --image litellm:<commit>`
+   for the production blue/green cutover. Let the script manage readiness,
+   traffic switching, connection draining, and old-service shutdown; do not
+   stop production containers manually.
+7. After cutover, verify the active image, `/health/readiness`, the changed
+   behavior through the production route, and logs for new regressions. Report
+   the review conclusion, commit SHA and message, tests, test-environment E2E,
+   push result, active production service/image, and post-cutover checks.
+
+This is fail-closed: if review finds an unresolved compatibility or security
+problem, the worktree is ambiguous, commit/push/build fails, the test service is
+unhealthy, E2E fails, or production readiness/cutover verification fails, stop
+at that stage and report the blocker. Never continue to production merely
+because earlier stages passed.
+
 When asked to ship the current repo changes to the local LiteLLM deployment:
 
 1. Inspect the worktree first:
