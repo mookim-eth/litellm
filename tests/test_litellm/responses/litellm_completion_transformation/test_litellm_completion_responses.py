@@ -1129,6 +1129,49 @@ class TestToolTransformation:
         assert result_tool["input_examples"] == [{"location": "San Francisco"}]
         assert web_search_options is None
 
+    def test_transform_codex_responses_only_tools_dropped(self):
+        """Unsupported Codex tools are dropped for chat-only providers."""
+        tools = [
+            {
+                "type": "function",
+                "name": "shell",
+                "description": "run a shell command",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "type": "namespace",
+                "name": "multi_agent_v1",
+                "description": "grouped tools",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "spawn_agent",
+                        "parameters": {"type": "object", "properties": {}},
+                    }
+                ],
+            },
+            {
+                "type": "tool_search",
+                "execution": "client",
+                "description": "search available tools",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {"type": "local_shell"},
+            {"type": "shell"},
+        ]
+
+        (
+            result_tools,
+            web_search_options,
+        ) = LiteLLMCompletionResponsesConfig.transform_responses_api_tools_to_chat_completion_tools(
+            tools=tools
+        )
+
+        assert web_search_options is None
+        assert len(result_tools) == 1
+        assert result_tools[0]["type"] == "function"
+        assert result_tools[0]["function"]["name"] == "shell"
+
     def test_transform_function_tools_with_cache_control_only(self):
         """Test that cache_control field is preserved when present"""
         function_tool = {

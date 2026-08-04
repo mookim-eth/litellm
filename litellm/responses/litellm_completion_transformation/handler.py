@@ -38,6 +38,17 @@ class LiteLLMCompletionTransformationHandler:
             Any, Any, Union[ResponsesAPIResponse, BaseResponsesAPIStreamingIterator]
         ],
     ]:
+        # Codex sends client_metadata for its own session telemetry. It is not a
+        # Chat Completions parameter, and forwarding it through the Responses
+        # fallback bridge makes the OpenAI SDK reject the request before it
+        # reaches an OpenAI-compatible provider.
+        kwargs.pop("client_metadata", None)
+        allowed_openai_params = kwargs.get("allowed_openai_params")
+        if isinstance(allowed_openai_params, list):
+            kwargs["allowed_openai_params"] = [
+                param for param in allowed_openai_params if param != "client_metadata"
+            ]
+
         litellm_completion_request: dict = LiteLLMCompletionResponsesConfig.transform_responses_api_request_to_chat_completion_request(
             model=model,
             input=input,

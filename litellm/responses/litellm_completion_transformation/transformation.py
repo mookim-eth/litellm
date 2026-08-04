@@ -1503,6 +1503,17 @@ class LiteLLMCompletionResponsesConfig:
                     )
                 )
             else:
+                _tool_type = tool.get("type")
+                if _tool_type in (
+                    "local_shell",
+                    "namespace",
+                    "shell",
+                    "tool_search",
+                ):
+                    # Responses-only tools do not have a Chat Completions
+                    # equivalent. Passing them through makes chat-only
+                    # providers reject the entire request.
+                    continue
                 chat_completion_tools.append(
                     cast(Union[ChatCompletionToolParam, OpenAIMcpServerTool], tool)
                 )
