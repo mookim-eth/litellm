@@ -71,6 +71,7 @@ export type LogEntry = {
   session_llm_count?: number;
   session_mcp_count?: number;
   session_agent_count?: number;
+  user_api_key_user_name?: string;
   onKeyHashClick?: (keyHash: string) => void;
 };
 
@@ -277,11 +278,19 @@ export const createColumns = (sortProps?: LogsSortProps): ColumnDef<LogEntry>[] 
   {
     header: "Key Name",
     accessorKey: "metadata.user_api_key_alias",
-    cell: (info: any) => (
-      <Tooltip title={String(info.getValue() || "-")}>
-        <span className="max-w-[15ch] truncate block">{String(info.getValue() || "-")}</span>
-      </Tooltip>
-    ),
+    cell: (info: any) => {
+      const keyName = String(info.getValue() || "-");
+      const row = info.row.original as LogEntry;
+      const userName = String(
+        row.user_api_key_user_name || row.metadata?.user_api_key_user_id || info.getValue() || "-",
+      );
+
+      return (
+        <Tooltip title={userName}>
+          <span className="max-w-[15ch] truncate block">{keyName}</span>
+        </Tooltip>
+      );
+    },
   },
   {
     header: "Model",

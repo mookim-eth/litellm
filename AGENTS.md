@@ -425,12 +425,13 @@ See `CLAUDE.md` and the `Makefile` for standard commands. Key notes:
 
 ### Commit, image build, and local blue/green deployment
 
-#### `/cd` review, commit, test, and production delivery workflow
+#### `/cd` / `cd` review, commit, test, and production delivery workflow
 
-When the user sends `/cd` (or the client-escaped spelling `//cd`), treat it as
-an explicit request to deliver the current intentional LiteLLM changes through
-the complete workflow below. Do not interpret it as a shell `cd` command. This
-authorization covers reviewer audit, committing, test-environment deployment
+When the user sends `/cd`, the client-escaped spelling `//cd`, or the standalone
+message `cd`, treat it as an explicit request to deliver the current intentional
+LiteLLM changes through the complete workflow below. Do not interpret it as a
+shell `cd` command. This authorization covers reviewer audit, committing,
+test-environment deployment
 and verification, pushing the verified commit, and local production blue/green
 deployment. It does not authorize
 including unrelated worktree changes or weakening security controls to make a

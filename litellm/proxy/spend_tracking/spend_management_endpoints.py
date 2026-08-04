@@ -2113,6 +2113,7 @@ async def ui_view_spend_logs(  # noqa: PLR0915
             page_size,
             total_pages,
             enrich_session_counts=not is_v2,
+            enrich_user_names=not is_v2,
         )
     except Exception as e:
         verbose_proxy_logger.exception(f"Error in ui_view_spend_logs: {e}")
@@ -3446,6 +3447,7 @@ async def _build_ui_spend_logs_response(
     page_size: int,
     total_pages: int,
     enrich_session_counts: bool = True,
+    enrich_user_names: bool = True,
 ) -> dict:
     """
     Build the paginated response for the UI spend-logs endpoint.
@@ -3457,40 +3459,42 @@ async def _build_ui_spend_logs_response(
     fetches the total number of logs in each referenced session.  Rows without
     a ``session_id`` default to ``1``.
 
-    When ``enrich_session_counts`` is ``False`` (v2 endpoint), rows are
-    serialised without the extra query.
+    When ``enrich_user_names`` is ``True``, the users referenced by the page's
+    spend-log metadata are resolved in one query. Each row receives a
+    ``user_api_key_user_name`` field using the user alias, email, or user ID in
+    that order. This lets the UI identify the key owner without issuing a
+    request per row and also works for historical spend logs.
+
+    When both enrichment flags are ``False`` (v2 endpoint), rows are
+    serialised without the extra queries.
 
     Args:
         prisma_client: The connected Prisma client instance.
-        data: A list of Prisma model instances (must support ``.model_dump()``
-              and have a ``session_id`` attribute).
+        data: A list of Prisma model instances (must support ``.model_dump()``)
+            or plain dictionaries.
         total_records: Total number of matching records (for pagination).
         page: Current page number.
         page_size: Number of items per page.
         total_pages: Total number of pages.
         enrich_session_counts: Whether to add ``session_total_count`` to each
             row.  Defaults to ``True``.
+        enrich_user_names: Whether to add ``user_api_key_user_name`` to each
+            row. Defaults to ``True``.
 
     Returns:
         A dict with ``data`` (enriched rows), ``total``, ``page``,
         ``page_size``, and ``total_pages``.
     """
+    row_dicts = (
+        [dict(row) if isinstance(row, dict) else row.model_dump() for row in data]
+        if enrich_session_counts or enrich_user_names
+        else []
+    )
+
     count_map: dict[str, int] = {}
     if enrich_session_counts:
         session_ids = list(
-            {
-                (
-                    row.get("session_id")
-                    if isinstance(row, dict)
-                    else getattr(row, "session_id", None)
-                )
-                for row in data
-                if (
-                    row.get("session_id")
-                    if isinstance(row, dict)
-                    else getattr(row, "session_id", None)
-                )
-            }
+            {row.get("session_id") for row in row_dicts if row.get("session_id")}
         )
         if session_ids:
             # NOTE: This GROUP BY runs on every v1/UI page load. The IN clause
@@ -3508,12 +3512,55 @@ async def _build_ui_spend_logs_response(
                 if r.get("session_id")
             }
 
-    if enrich_session_counts:
+    user_name_map: dict[str, str] = {}
+    if enrich_user_names:
+        user_ids = sorted(
+            {
+                user_id
+                for row in row_dicts
+                if isinstance(row.get("metadata"), dict)
+                and isinstance(
+                    user_id := row["metadata"].get("user_api_key_user_id"), str
+                )
+                and user_id
+            }
+        )
+        if user_ids:
+            users = await prisma_client.db.litellm_usertable.find_many(
+                where={"user_id": {"in": user_ids}}
+            )
+            for user in users:
+                user_id = (
+                    user.get("user_id")
+                    if isinstance(user, dict)
+                    else getattr(user, "user_id", None)
+                )
+                if not isinstance(user_id, str) or not user_id:
+                    continue
+                user_alias = (
+                    user.get("user_alias")
+                    if isinstance(user, dict)
+                    else getattr(user, "user_alias", None)
+                )
+                user_email = (
+                    user.get("user_email")
+                    if isinstance(user, dict)
+                    else getattr(user, "user_email", None)
+                )
+                user_name_map[user_id] = user_alias or user_email or user_id
+
+    if enrich_session_counts or enrich_user_names:
         enriched: List[dict] = []
-        for row in data:
-            row_dict = dict(row) if isinstance(row, dict) else row.model_dump()
-            sid = row_dict.get("session_id")
-            row_dict["session_total_count"] = count_map.get(sid, 1) if sid else 1
+        for row_dict in row_dicts:
+            if enrich_session_counts:
+                sid = row_dict.get("session_id")
+                row_dict["session_total_count"] = count_map.get(sid, 1) if sid else 1
+            if enrich_user_names and isinstance(row_dict.get("metadata"), dict):
+                user_id = row_dict["metadata"].get("user_api_key_user_id")
+                if isinstance(user_id, str) and user_id:
+                    row_dict["user_api_key_user_name"] = user_name_map.get(
+                        user_id, user_id
+                    )
             enriched.append(row_dict)
         response_data: list = enriched
     else:

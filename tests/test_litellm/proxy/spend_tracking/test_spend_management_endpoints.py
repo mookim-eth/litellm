@@ -2543,6 +2543,96 @@ async def test_build_ui_spend_logs_response_dict_rows_session_counts():
     )
 
 
+@pytest.mark.asyncio
+async def test_build_ui_spend_logs_response_enriches_key_owner_names():
+    from litellm.proxy.spend_tracking.spend_management_endpoints import (
+        _build_ui_spend_logs_response,
+    )
+
+    dict_rows = [
+        {
+            "request_id": "req-alias",
+            "metadata": {"user_api_key_user_id": "user-with-alias"},
+        },
+        {
+            "request_id": "req-email",
+            "metadata": {"user_api_key_user_id": "user-with-email"},
+        },
+        {
+            "request_id": "req-deleted",
+            "metadata": {"user_api_key_user_id": "deleted-user"},
+        },
+    ]
+
+    mock_prisma = MagicMock()
+    mock_prisma.db.litellm_usertable.find_many = AsyncMock(
+        return_value=[
+            {
+                "user_id": "user-with-alias",
+                "user_alias": "Alice",
+                "user_email": "alice@example.com",
+            },
+            {
+                "user_id": "user-with-email",
+                "user_alias": None,
+                "user_email": "bob@example.com",
+            },
+        ]
+    )
+
+    result = await _build_ui_spend_logs_response(
+        prisma_client=mock_prisma,
+        data=dict_rows,
+        total_records=3,
+        page=1,
+        page_size=50,
+        total_pages=1,
+        enrich_session_counts=False,
+        enrich_user_names=True,
+    )
+
+    assert [row["user_api_key_user_name"] for row in result["data"]] == [
+        "Alice",
+        "bob@example.com",
+        "deleted-user",
+    ]
+    mock_prisma.db.litellm_usertable.find_many.assert_awaited_once_with(
+        where={
+            "user_id": {"in": ["deleted-user", "user-with-alias", "user-with-email"]}
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_ui_spend_logs_response_does_not_enrich_v2_rows():
+    from litellm.proxy.spend_tracking.spend_management_endpoints import (
+        _build_ui_spend_logs_response,
+    )
+
+    dict_rows = [
+        {
+            "request_id": "req-v2",
+            "metadata": {"user_api_key_user_id": "user-123"},
+        }
+    ]
+    mock_prisma = MagicMock()
+
+    result = await _build_ui_spend_logs_response(
+        prisma_client=mock_prisma,
+        data=dict_rows,
+        total_records=1,
+        page=1,
+        page_size=50,
+        total_pages=1,
+        enrich_session_counts=False,
+        enrich_user_names=False,
+    )
+
+    assert result["data"] is dict_rows
+    assert "user_api_key_user_name" not in result["data"][0]
+    mock_prisma.db.litellm_usertable.find_many.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Tests for /spend/logs team-member permission
 # ---------------------------------------------------------------------------
