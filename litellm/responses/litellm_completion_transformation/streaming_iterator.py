@@ -919,6 +919,18 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             self._pending_response_events.append(content_part_event)
         return
 
+    def _start_message_item_after_reasoning(
+        self, chunk: ModelResponseStream
+    ) -> None:
+        """Open a message item before emitting text that follows reasoning."""
+        delta = chunk.choices[0].delta
+        if not delta.content:
+            return
+        self.sent_output_item_added_event = False
+        self.sent_content_part_added_event = False
+        self._cached_item_id = None
+        self._ensure_output_item_for_chunk(chunk)
+
     async def __anext__(
         self,
     ) -> Union[
@@ -1022,6 +1034,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                                 )
                                 self._reasoning_done_emitted = True
                                 self._reasoning_active = False
+                                self._start_message_item_after_reasoning(chunk)
 
                         response_api_chunk = (
                             self._transform_chat_completion_chunk_to_response_api_chunk(

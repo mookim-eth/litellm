@@ -420,6 +420,65 @@ class LiteLLMCompletionResponsesConfig:
         return litellm_completion_request
 
     @staticmethod
+    def _extract_reasoning_content_from_input_item(input_item: Any) -> Optional[str]:
+        reasoning_parts = input_item.get("summary") or input_item.get("content") or []
+        if not isinstance(reasoning_parts, list):
+            return None
+        texts = [
+            part.get("text") or part.get("reasoning")
+            for part in reasoning_parts
+            if isinstance(part, dict)
+            and (part.get("text") or part.get("reasoning"))
+        ]
+        return "".join(texts) or None
+
+    @staticmethod
+    def _attach_pending_reasoning_content(
+        messages: List[Any], reasoning_content: Optional[str]
+    ) -> Optional[str]:
+        if not reasoning_content:
+            return None
+        for message in messages:
+            role = (
+                message.get("role")
+                if isinstance(message, dict)
+                else getattr(message, "role", None)
+            )
+            if role != "assistant":
+                continue
+            if isinstance(message, dict):
+                cast(Dict[str, Any], message)["reasoning_content"] = reasoning_content
+            else:
+                setattr(message, "reasoning_content", reasoning_content)
+            return None
+        return reasoning_content
+
+    @staticmethod
+    def _record_input_tool_call_id(
+        existing_tool_call_ids: Set[str], input_item: Any
+    ) -> None:
+        call_id = input_item.get("call_id") or input_item.get("id")
+        if call_id:
+            existing_tool_call_ids.add(str(call_id))
+
+    @staticmethod
+    def ensure_reasoning_content_on_assistant_tool_calls(
+        messages: List[Any],
+    ) -> None:
+        """Satisfy thinking APIs that require the field on tool-call history."""
+        for message in messages:
+            getter = message.get if hasattr(message, "get") else None
+            role = getter("role") if getter else None
+            tool_calls = getter("tool_calls") if getter else None
+            reasoning_content = getter("reasoning_content") if getter else None
+            if role != "assistant" or not tool_calls or reasoning_content:
+                continue
+            if isinstance(message, dict):
+                message["reasoning_content"] = " "
+            else:
+                setattr(message, "reasoning_content", " ")
+
+    @staticmethod
     def _transform_response_input_param_to_chat_completion_message(
         input: Union[str, ResponseInputParam],
     ) -> List[
@@ -446,17 +505,28 @@ class LiteLLMCompletionResponsesConfig:
             messages.append(ChatCompletionUserMessage(role="user", content=input))
         elif isinstance(input, list):
             existing_tool_call_ids: Set[str] = set()
+            pending_reasoning_content: Optional[str] = None
             for _input in input:
+                if _input.get("type") == "reasoning":
+                    pending_reasoning_content = LiteLLMCompletionResponsesConfig._extract_reasoning_content_from_input_item(
+                        _input
+                    )
+                    continue
+
                 chat_completion_messages = LiteLLMCompletionResponsesConfig._transform_responses_api_input_item_to_chat_completion_message(
                     input_item=_input
+                )
+
+                pending_reasoning_content = LiteLLMCompletionResponsesConfig._attach_pending_reasoning_content(
+                    chat_completion_messages, pending_reasoning_content
                 )
 
                 if LiteLLMCompletionResponsesConfig._is_input_item_function_call(
                     input_item=_input
                 ):
-                    call_id_raw = _input.get("call_id") or _input.get("id") or ""
-                    if call_id_raw:
-                        existing_tool_call_ids.add(str(call_id_raw))
+                    LiteLLMCompletionResponsesConfig._record_input_tool_call_id(
+                        existing_tool_call_ids, _input
+                    )
 
                     #########################################################
                     # Merge consecutive function_call items into a single assistant

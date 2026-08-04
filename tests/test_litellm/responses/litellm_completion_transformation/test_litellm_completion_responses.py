@@ -2202,6 +2202,25 @@ class TestEnsureOutputItemContentPartAdded:
         assert isinstance(events[0], OutputItemAddedEvent)
         assert iterator.sent_content_part_added_event is False
 
+    def test_text_after_reasoning_starts_message_item(self):
+        """Text after a reasoning item needs its own Responses message item."""
+        from litellm.types.llms.openai import (
+            ContentPartAddedEvent,
+            OutputItemAddedEvent,
+        )
+
+        iterator = self._make_iterator()
+        iterator._ensure_output_item_for_chunk(self._make_reasoning_chunk())
+        iterator._pending_response_events.clear()
+
+        iterator._start_message_item_after_reasoning(self._make_text_chunk())
+
+        events = iterator._pending_response_events
+        assert len(events) == 2
+        assert isinstance(events[0], OutputItemAddedEvent)
+        assert events[0].item.type == "message"
+        assert isinstance(events[1], ContentPartAddedEvent)
+
     def test_only_emits_once(self):
         """Calling _ensure_output_item_for_chunk twice should not duplicate events."""
         iterator = self._make_iterator()

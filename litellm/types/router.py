@@ -105,6 +105,7 @@ class ModelInfo(BaseModel):
     base_model: Optional[
         str
     ] = None  # specify if the base model is azure/gpt-3.5-turbo etc for accurate cost tracking
+    requires_reasoning_content: Optional[bool] = None
     tier: Optional[Literal["free", "paid"]] = None
 
     """

@@ -21,6 +21,15 @@ from litellm.types.utils import ModelResponse
 
 
 class LiteLLMCompletionTransformationHandler:
+    @staticmethod
+    def _requires_reasoning_content(kwargs: Dict[str, Any]) -> bool:
+        litellm_metadata = kwargs.get("litellm_metadata") or {}
+        model_info = litellm_metadata.get("model_info") or kwargs.get("model_info") or {}
+        return bool(
+            isinstance(model_info, dict)
+            and model_info.get("requires_reasoning_content")
+        )
+
     def response_api_handler(
         self,
         model: str,
@@ -49,6 +58,13 @@ class LiteLLMCompletionTransformationHandler:
                 param for param in allowed_openai_params if param != "client_metadata"
             ]
 
+        # Responses clients need structured reasoning items for multi-turn
+        # replay. Converting reasoning_content into <think> text drops the
+        # provider field that thinking-mode chat APIs require on the next turn.
+        kwargs["merge_reasoning_content_in_choices"] = False
+
+        requires_reasoning_content = self._requires_reasoning_content(kwargs)
+
         litellm_completion_request: dict = LiteLLMCompletionResponsesConfig.transform_responses_api_request_to_chat_completion_request(
             model=model,
             input=input,
@@ -58,6 +74,10 @@ class LiteLLMCompletionTransformationHandler:
             extra_headers=extra_headers,
             **kwargs,
         )
+        if requires_reasoning_content:
+            LiteLLMCompletionResponsesConfig.ensure_reasoning_content_on_assistant_tool_calls(
+                litellm_completion_request.get("messages") or []
+            )
 
         if _is_async:
             return self.async_response_api_handler(
@@ -114,6 +134,10 @@ class LiteLLMCompletionTransformationHandler:
             litellm_completion_request = await LiteLLMCompletionResponsesConfig.async_responses_api_session_handler(
                 previous_response_id=previous_response_id,
                 litellm_completion_request=litellm_completion_request,
+            )
+        if self._requires_reasoning_content(kwargs):
+            LiteLLMCompletionResponsesConfig.ensure_reasoning_content_on_assistant_tool_calls(
+                litellm_completion_request.get("messages") or []
             )
 
         acompletion_args = {}

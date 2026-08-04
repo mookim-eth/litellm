@@ -279,6 +279,56 @@ class TestReasoningContentFinalResponse:
         assert reasoning_items[0].content[0].text == "Reasoning for first answer"
 
 
+def test_reasoning_summary_is_replayed_on_assistant_tool_call():
+    """Codex reasoning summaries must be restored for thinking-mode providers."""
+    messages = LiteLLMCompletionResponsesConfig._transform_response_input_param_to_chat_completion_message(
+        input=[
+            {
+                "type": "reasoning",
+                "id": "rs_test",
+                "summary": [
+                    {"type": "summary_text", "text": "I should inspect the repo."}
+                ],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_test",
+                "name": "exec_command",
+                "arguments": '{"cmd":"pwd"}',
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_test",
+                "output": "/workspace",
+            },
+        ]
+    )
+
+    assert [message.get("role") for message in messages] == ["assistant", "tool"]
+    assert messages[0].get("reasoning_content") == "I should inspect the repo."
+    assert messages[0].get("tool_calls")[0].get("id") == "call_test"
+
+
+def test_required_reasoning_content_supports_pydantic_session_messages():
+    message = Message(
+        role="assistant",
+        content=None,
+        tool_calls=[
+            {
+                "id": "call_test",
+                "type": "function",
+                "function": {"name": "exec_command", "arguments": "{}"},
+            }
+        ],
+    )
+
+    LiteLLMCompletionResponsesConfig.ensure_reasoning_content_on_assistant_tool_calls(
+        [message]
+    )
+
+    assert message.reasoning_content == " "
+
+
 def test_streaming_chunk_id_raw():
     """Test that streaming chunk IDs are raw (not encoded) to match OpenAI format"""
     chunk = ModelResponseStream(
