@@ -112,6 +112,20 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         return input_items
 
     @staticmethod
+    def _strip_input_item_namespace(input_items: Any) -> Any:
+        """Remove output-only Codex tool namespaces before history replay."""
+        if not isinstance(input_items, list):
+            return input_items
+
+        sanitized_items: List[Any] = []
+        for item in input_items:
+            if isinstance(item, dict) and "namespace" in item:
+                item = dict(item)
+                item.pop("namespace", None)
+            sanitized_items.append(item)
+        return sanitized_items
+
+    @staticmethod
     def _get_sse_output_index(
         parsed_chunk: Dict[str, Any], item_id_to_output_index: Dict[str, int]
     ) -> Optional[int]:
@@ -526,6 +540,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         response_api_optional_request_params.pop("metadata", None)
         is_codex_responses_lite = bool(headers.get(CODEX_RESPONSES_LITE_HEADER))
         input = self._coerce_input_to_chatgpt_list(input)
+        input = self._strip_input_item_namespace(input)
         extracted_instructions: Optional[str] = None
         if not is_codex_responses_lite:
             input, extracted_instructions = self._extract_instructions_from_input(input)

@@ -291,6 +291,46 @@ class TestChatGPTResponsesAPITransformation:
         ]
         assert "instructions" not in request
 
+    def test_chatgpt_responses_strips_namespace_from_replayed_input_items(self):
+        config = ChatGPTResponsesAPIConfig()
+        function_call = {
+            "type": "function_call",
+            "call_id": "call_test",
+            "name": "spawn_agent",
+            "arguments": '{"task":"inspect"}',
+            "namespace": "multi_agent_v1",
+        }
+        function_call_output = {
+            "type": "function_call_output",
+            "call_id": "call_test",
+            "output": "done",
+            "namespace": "multi_agent_v1",
+        }
+
+        request = config.transform_responses_api_request(
+            model="chatgpt/gpt-5.6-sol",
+            input=[function_call, function_call_output],
+            response_api_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert request["input"] == [
+            {
+                "type": "function_call",
+                "call_id": "call_test",
+                "name": "spawn_agent",
+                "arguments": '{"task":"inspect"}',
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_test",
+                "output": "done",
+            },
+        ]
+        assert function_call["namespace"] == "multi_agent_v1"
+        assert function_call_output["namespace"] == "multi_agent_v1"
+
     def test_chatgpt_responses_extracted_instructions_replace_existing_instructions(self):
         config = ChatGPTResponsesAPIConfig()
         request = config.transform_responses_api_request(
