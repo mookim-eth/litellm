@@ -1,9 +1,12 @@
+import asyncio
+import contextlib
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Union, cast
 
 import litellm
 from openai.types.responses import ResponseCustomToolCallInputDoneEvent
+from litellm.constants import STREAM_TEXT_COALESCE_SECONDS
 from litellm.main import stream_chunk_builder
 from litellm.responses.litellm_completion_transformation.transformation import (
     LiteLLMCompletionResponsesConfig,
@@ -112,6 +115,8 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         self._reasoning_item_id: Optional[str] = None
         self._accumulated_reasoning_content_parts: List[str] = []
         self._accumulated_provider_specific_fields: Dict[str, Any] = {}
+        self._pending_chat_completion_chunk: Optional[ModelResponseStream] = None
+        self._pending_chat_completion_chunk_task: Optional[asyncio.Task] = None
 
     def _is_custom_tool_name(self, name: str) -> bool:
         return name in LiteLLMCompletionResponsesConfig._get_custom_tool_names(
@@ -150,7 +155,101 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
 
     async def aclose(self) -> None:
         """Close the wrapped Chat Completions stream without using HTTP iterator state."""
+        task = self._pending_chat_completion_chunk_task
+        self._pending_chat_completion_chunk_task = None
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
         await self.litellm_custom_stream_wrapper.aclose()
+
+    @staticmethod
+    def _coalescible_text_delta(chunk: ModelResponseStream) -> Optional[str]:
+        """Return content only for a plain, non-terminal text delta."""
+        if len(chunk.choices) != 1 or getattr(chunk, "usage", None) is not None:
+            return None
+        choice = chunk.choices[0]
+        if choice.finish_reason is not None:
+            return None
+        delta = choice.delta
+        content = getattr(delta, "content", None)
+        if not isinstance(content, str) or not content:
+            return None
+        if not delta.model_fields_set.issubset({"content", "role"}):
+            return None
+        if getattr(choice, "logprobs", None) is not None:
+            return None
+        return content
+
+    @staticmethod
+    def _same_text_target(
+        first: ModelResponseStream, following: ModelResponseStream
+    ) -> bool:
+        if (
+            LiteLLMCompletionStreamingIterator._coalescible_text_delta(following)
+            is None
+        ):
+            return False
+        return (
+            first.choices[0].index == following.choices[0].index
+            and first.model == following.model
+        )
+
+    async def _next_chat_completion_chunk(self) -> ModelResponseStream:
+        if self._pending_chat_completion_chunk is not None:
+            chunk = self._pending_chat_completion_chunk
+            self._pending_chat_completion_chunk = None
+            return chunk
+        if self._pending_chat_completion_chunk_task is not None:
+            task = self._pending_chat_completion_chunk_task
+            self._pending_chat_completion_chunk_task = None
+            return cast(ModelResponseStream, await task)
+        return cast(
+            ModelResponseStream,
+            await self.litellm_custom_stream_wrapper.__anext__(),
+        )
+
+    async def _coalesce_chat_completion_text_chunk(
+        self, chunk: ModelResponseStream
+    ) -> ModelResponseStream:
+        """Micro-batch adjacent text deltas before converting them to Responses SSE."""
+        content = self._coalescible_text_delta(chunk)
+        if content is None or STREAM_TEXT_COALESCE_SECONDS <= 0:
+            return chunk
+
+        deadline = asyncio.get_running_loop().time() + STREAM_TEXT_COALESCE_SECONDS
+        while len(content) < 1024:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            self._pending_chat_completion_chunk_task = asyncio.create_task(
+                self.litellm_custom_stream_wrapper.__anext__()
+            )
+            done, _ = await asyncio.wait(
+                {self._pending_chat_completion_chunk_task}, timeout=remaining
+            )
+            if not done:
+                break
+            try:
+                following = cast(
+                    ModelResponseStream,
+                    self._pending_chat_completion_chunk_task.result(),
+                )
+            except StopAsyncIteration:
+                self._pending_chat_completion_chunk_task = None
+                break
+            self._pending_chat_completion_chunk_task = None
+            if not self._same_text_target(chunk, following):
+                self._pending_chat_completion_chunk = following
+                break
+            following_content = self._coalescible_text_delta(following)
+            if following_content is None:
+                self._pending_chat_completion_chunk = following
+                break
+            content += following_content
+            chunk.choices[0].delta.content = content
+        return chunk
 
     def _get_or_assign_tool_output_index(self, call_id: str) -> int:
         existing = self._tool_output_index_by_call_id.get(call_id)
@@ -954,9 +1053,10 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                     return self._pending_tool_events.pop(0)
 
                 try:
-                    chunk = await self.litellm_custom_stream_wrapper.__anext__()
+                    chunk = await self._next_chat_completion_chunk()
                     if chunk is not None:
                         chunk = cast(ModelResponseStream, chunk)
+                        chunk = await self._coalesce_chat_completion_text_chunk(chunk)
                         self._ensure_output_item_for_chunk(chunk)
                         # Accumulate provider_specific_fields from chunk and delta
                         for src in (

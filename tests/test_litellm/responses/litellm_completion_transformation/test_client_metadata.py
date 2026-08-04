@@ -59,6 +59,7 @@ async def test_async_responses_bridge_drops_codex_client_metadata():
             responses_api_request={},
             custom_llm_provider="custom_openai",
             _is_async=True,
+            stream=True,
             client_metadata={"session_id": "test-session"},
             allowed_openai_params=["client_metadata", "verbosity"],
             merge_reasoning_content_in_choices=True,
@@ -67,6 +68,10 @@ async def test_async_responses_bridge_drops_codex_client_metadata():
     assert "client_metadata" not in mock_acompletion.call_args.kwargs
     assert mock_acompletion.call_args.kwargs["allowed_openai_params"] == ["verbosity"]
     assert mock_acompletion.call_args.kwargs["merge_reasoning_content_in_choices"] is False
+    assert mock_acompletion.call_args.kwargs["stream"] is True
+    assert mock_acompletion.call_args.kwargs["stream_options"] == {
+        "include_usage": True
+    }
 
 
 def test_responses_bridge_fills_required_reasoning_content_for_tool_history():

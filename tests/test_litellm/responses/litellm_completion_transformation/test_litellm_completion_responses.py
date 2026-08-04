@@ -1,5 +1,8 @@
 import os
 import sys
+from unittest.mock import patch
+
+import pytest
 
 sys.path.insert(
     0, os.path.abspath("../../..")
@@ -2071,6 +2074,88 @@ class TestStreamingIDConsistency:
             else getattr(assistant_messages[0], "tool_calls", None)
         )
         assert tool_calls is not None and len(tool_calls) == 1
+
+
+class TestBridgeTextDeltaCoalescing:
+    @staticmethod
+    def _chunk(content, *, finish_reason=None, reasoning_content=None):
+        from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
+
+        delta_kwargs = {"content": content}
+        if reasoning_content is not None:
+            delta_kwargs["reasoning_content"] = reasoning_content
+        return ModelResponseStream(
+            id="chatcmpl-test",
+            choices=[
+                StreamingChoices(
+                    index=0,
+                    delta=Delta(**delta_kwargs),
+                    finish_reason=finish_reason,
+                )
+            ],
+            model="test-model",
+        )
+
+    @staticmethod
+    def _iterator(chunks):
+        from unittest.mock import Mock
+
+        from litellm.responses.litellm_completion_transformation.streaming_iterator import (
+            LiteLLMCompletionStreamingIterator,
+        )
+
+        class ChunkStream:
+            def __init__(self):
+                self.logging_obj = Mock()
+                self._chunks = iter(chunks)
+
+            async def __anext__(self):
+                try:
+                    return next(self._chunks)
+                except StopIteration as exc:
+                    raise StopAsyncIteration from exc
+
+            async def aclose(self):
+                return None
+
+        return LiteLLMCompletionStreamingIterator(
+            model="test-model",
+            litellm_custom_stream_wrapper=ChunkStream(),
+            request_input="test",
+            responses_api_request={},
+            custom_llm_provider="custom_openai",
+        )
+
+    @pytest.mark.asyncio
+    async def test_coalesces_adjacent_plain_text_deltas(self):
+        first = self._chunk("Hello")
+        second = self._chunk(" world")
+        terminal = self._chunk("", finish_reason="stop")
+        iterator = self._iterator([second, terminal])
+
+        with patch(
+            "litellm.responses.litellm_completion_transformation.streaming_iterator.STREAM_TEXT_COALESCE_SECONDS",
+            0.05,
+        ):
+            combined = await iterator._coalesce_chat_completion_text_chunk(first)
+
+        assert combined.choices[0].delta.content == "Hello world"
+        assert await iterator._next_chat_completion_chunk() is terminal
+
+    @pytest.mark.asyncio
+    async def test_does_not_coalesce_reasoning_with_text(self):
+        first = self._chunk("answer")
+        reasoning = self._chunk(None, reasoning_content="thinking")
+        iterator = self._iterator([reasoning])
+
+        with patch(
+            "litellm.responses.litellm_completion_transformation.streaming_iterator.STREAM_TEXT_COALESCE_SECONDS",
+            0.05,
+        ):
+            unchanged = await iterator._coalesce_chat_completion_text_chunk(first)
+
+        assert unchanged.choices[0].delta.content == "answer"
+        assert await iterator._next_chat_completion_chunk() is reasoning
 
 
 class TestEnsureOutputItemContentPartAdded:
