@@ -144,7 +144,7 @@ def test_chatgpt_gpt_5_5_cached_input_cost_calculation():
     [
         ("chatgpt/gpt-5.6-sol", 5e-6, 5e-7, 3e-5),
         ("chatgpt/gpt-5.6-terra", 2e-6, 2e-7, 1.2e-5),
-        ("chatgpt/gpt-5.6-luna", 2e-7, 2e-8, 1.2e-6),
+        ("chatgpt/gpt-5.6-luna", 4e-7, 4e-8, 2.4e-6),
     ],
 )
 def test_chatgpt_gpt_5_6_cached_input_pricing(
@@ -210,7 +210,7 @@ def test_chatgpt_auto_review_uses_response_model_pricing():
         call_type="responses",
     )
 
-    expected_cost = (2338 * 2e-7) + (7680 * 2e-8) + (83 * 1.2e-6)
+    expected_cost = (2338 * 4e-7) + (7680 * 4e-8) + (83 * 2.4e-6)
     assert round(cost, 12) == round(expected_cost, 12)
 
 
