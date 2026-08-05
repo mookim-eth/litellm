@@ -317,6 +317,7 @@ class LiteLLMAnthropicMessagesAdapter:
             "tools",
             "thinking",
             "output_format",
+            "output_config",
         ]
 
     def _is_web_search_tool(self, tool: Dict[str, Any]) -> bool:
@@ -694,6 +695,10 @@ class LiteLLMAnthropicMessagesAdapter:
                 return "low"
             else:
                 return "minimal"
+        elif thinking_type == "adaptive":
+            # Adaptive thinking uses output_config.effort instead of a token
+            # budget. The caller overrides this default when effort is set.
+            return "medium"
 
         return None
 
@@ -1035,6 +1040,11 @@ class LiteLLMAnthropicMessagesAdapter:
         if not reasoning_effort:
             return
 
+        if isinstance(thinking, dict) and thinking.get("type") == "adaptive":
+            output_config = anthropic_message_request.get("output_config")
+            if isinstance(output_config, dict) and output_config.get("effort"):
+                reasoning_effort = output_config["effort"]
+
         summary = thinking.get("summary") if isinstance(thinking, dict) else None
         auto_summary = is_reasoning_auto_summary_enabled()
         if summary:
@@ -1061,10 +1071,12 @@ class LiteLLMAnthropicMessagesAdapter:
         anthropic_message_request: AnthropicMessagesRequest,
         new_kwargs: ChatCompletionRequest,
     ) -> None:
-        """Translate output_format to response_format when applicable."""
-        if "output_format" not in anthropic_message_request:
-            return
-        output_format = anthropic_message_request["output_format"]
+        """Translate Anthropic structured output settings to response_format."""
+        output_format = anthropic_message_request.get("output_format")
+        if not output_format:
+            output_config = anthropic_message_request.get("output_config")
+            if isinstance(output_config, dict):
+                output_format = output_config.get("format")
         if not output_format:
             return
         response_format = self.translate_anthropic_output_format_to_openai(

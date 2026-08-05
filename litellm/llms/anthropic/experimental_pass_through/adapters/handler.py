@@ -27,6 +27,11 @@ from litellm.utils import get_model_info
 if TYPE_CHECKING:
     pass
 
+
+# Anthropic-only request fields consumed by the adapter transformation. They
+# must not be merged back into OpenAI Chat Completions kwargs afterwards.
+ANTHROPIC_ONLY_REQUEST_KEYS: frozenset[str] = frozenset({"output_config"})
+
 ########################################################
 # init adapter
 ANTHROPIC_ADAPTER = AnthropicAdapter()
@@ -163,6 +168,10 @@ class LiteLLMMessagesToCompletionTransformationHandler:
         if output_format:
             request_data["output_format"] = output_format
 
+        extra_kwargs = extra_kwargs if extra_kwargs is not None else {}
+        if "output_config" in extra_kwargs:
+            request_data["output_config"] = extra_kwargs["output_config"]
+
         (
             openai_request,
             tool_name_mapping,
@@ -181,8 +190,7 @@ class LiteLLMMessagesToCompletionTransformationHandler:
                 "include_usage": True,
             }
 
-        excluded_keys = {"anthropic_messages"}
-        extra_kwargs = extra_kwargs or {}
+        excluded_keys = ANTHROPIC_ONLY_REQUEST_KEYS | {"anthropic_messages"}
         for key, value in extra_kwargs.items():
             if (
                 key == "litellm_logging_obj"
