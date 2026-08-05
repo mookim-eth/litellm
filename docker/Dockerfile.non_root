@@ -1,6 +1,6 @@
 # Base images
-ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:c61ac6919b811ea53c4782d69f1fe05218ba3c25d53f01b6ab7892e621bd4370
-ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:c61ac6919b811ea53c4782d69f1fe05218ba3c25d53f01b6ab7892e621bd4370
+ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e
+ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e
 ARG PROXY_EXTRAS_SOURCE=published
 
 # -----------------
@@ -117,7 +117,7 @@ RUN for i in 1 2 3; do \
     apk add --no-cache python3 py3-pip bash openssl tzdata nodejs npm supervisor && break || sleep 5; \
     done \
   && apk upgrade --no-cache nodejs \
-  && npm install -g npm@11.12.1 tar@7.5.11 glob@11.1.0 @isaacs/brace-expansion@5.0.1 minimatch@10.2.4 diff@8.0.3 \
+  && npm install -g npm@11.12.1 tar@7.5.22 glob@11.1.0 @isaacs/brace-expansion@5.0.1 minimatch@10.2.4 diff@8.0.3 \
   && GLOBAL="$(npm root -g)" \
   && find "$GLOBAL/npm" -type d -name "tar" -path "*/node_modules/tar" | while read d; do \
         rm -rf "$d" && cp -rL "$GLOBAL/tar" "$d"; \
@@ -135,7 +135,7 @@ RUN for i in 1 2 3; do \
         rm -rf "$d" && cp -rL "$GLOBAL/diff" "$d"; \
      done \
   && find /usr/local/lib /usr/lib -path "*/node_modules/npm/package.json" -exec \
-        sed -i 's/"tar": "\^7\.5\.[0-9]*"/"tar": "^7.5.10"/g; s/"minimatch": "\^10\.[0-9.]*"/"minimatch": "^10.2.4"/g' {} + 2>/dev/null \
+        sed -i 's/"tar": "\^7\.5\.[0-9]*"/"tar": "^7.5.22"/g; s/"minimatch": "\^10\.[0-9.]*"/"minimatch": "^10.2.4"/g' {} + 2>/dev/null \
   && npm cache clean --force \
   && { apk del --no-cache npm 2>/dev/null || true; }
 

@@ -7,6 +7,7 @@ from packaging.version import Version
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 MINIMUM_SAFE_SEMANTIC_ROUTER_VERSION = Version("0.1.15")
+MINIMUM_SAFE_NODE_TAR_VERSION = Version("7.5.21")
 
 
 def _assert_safe_version(version: str, source: str) -> None:
@@ -41,3 +42,26 @@ def test_semantic_router_security_version_is_consistent() -> None:
     assert non_root_versions
     for version in non_root_versions:
         _assert_safe_version(version, "docker/Dockerfile.non_root")
+
+
+def test_node_tar_security_version_is_consistent() -> None:
+    dockerfiles = (
+        "Dockerfile",
+        "docker/Dockerfile.custom_ui",
+        "docker/Dockerfile.database",
+        "docker/Dockerfile.dev",
+        "docker/Dockerfile.non_root",
+    )
+
+    for dockerfile in dockerfiles:
+        content = (REPOSITORY_ROOT / dockerfile).read_text()
+        installed_versions = re.findall(r"tar@([0-9.]+)", content)
+        metadata_versions = re.findall(r'"tar": "\^([0-9.]+)"', content)
+
+        assert installed_versions, f"{dockerfile} must explicitly pin node-tar"
+        assert metadata_versions, f"{dockerfile} must patch npm's node-tar metadata"
+        for version in (*installed_versions, *metadata_versions):
+            assert Version(version) >= MINIMUM_SAFE_NODE_TAR_VERSION, (
+                f"{dockerfile} must not install a node-tar version affected by "
+                "GHSA-r292-9mhp-454m"
+            )

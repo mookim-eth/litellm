@@ -1,8 +1,8 @@
 # Base image for building
-ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:c61ac6919b811ea53c4782d69f1fe05218ba3c25d53f01b6ab7892e621bd4370
+ARG LITELLM_BUILD_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e
 
 # Runtime image
-ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:c61ac6919b811ea53c4782d69f1fe05218ba3c25d53f01b6ab7892e621bd4370
+ARG LITELLM_RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base@sha256:003627df3c1e1bba0c4116afcddb314aca9594ee2328c7e876a8081a6c988b2e
 
 # Builder system base. Build and retain this target to keep routine LiteLLM
 # builds independent from the Wolfi package index:
@@ -78,7 +78,7 @@ RUN if [ "$LITELLM_PREBUILT_RUNTIME_BASE" = "true" ]; then \
         exit 0; \
     fi; \
     apk add --no-cache bash openssl tzdata nodejs npm python3 py3-pip libsndfile && \
-    npm install -g npm@11.12.1 tar@7.5.11 glob@11.1.0 @isaacs/brace-expansion@5.0.1 minimatch@10.2.4 diff@8.0.3 && \
+    npm install -g npm@11.12.1 tar@7.5.22 glob@11.1.0 @isaacs/brace-expansion@5.0.1 minimatch@10.2.4 diff@8.0.3 && \
     # SECURITY FIX: npm bundles tar, glob, and brace-expansion at multiple nested
     # levels inside its dependency tree. `npm install -g <pkg>` only creates a
     # SEPARATE global package, it does NOT replace npm's internal copies.
@@ -102,7 +102,7 @@ RUN if [ "$LITELLM_PREBUILT_RUNTIME_BASE" = "true" ]; then \
     # SECURITY FIX: patch npm's own package.json metadata so scanners see the
     # actual installed versions instead of the stale declared dependencies.
     find /usr/local/lib /usr/lib -path "*/node_modules/npm/package.json" -exec \
-        sed -i 's/"tar": "\^7\.5\.[0-9]*"/"tar": "^7.5.10"/g; s/"minimatch": "\^10\.[0-9.]*"/"minimatch": "^10.2.4"/g' {} + 2>/dev/null && \
+        sed -i 's/"tar": "\^7\.5\.[0-9]*"/"tar": "^7.5.22"/g; s/"minimatch": "\^10\.[0-9.]*"/"minimatch": "^10.2.4"/g' {} + 2>/dev/null && \
     npm cache clean --force && \
     # Remove the apk-tracked npm so its stale SBOM metadata (tar 7.5.9) is
     # no longer visible to image scanners.  The globally installed npm@latest

@@ -454,7 +454,11 @@ check pass.
    when the motivation, compatibility constraints, security boundary, or
    verification context would not be obvious from the subject alone.
 4. Build an immutable `litellm:<12-character-commit-sha>` image from that exact
-   commit. Deploy that image to the isolated `litellm-test` service using
+   commit. On this host, first verify the exact retained builder/runtime image
+   IDs documented under "Offline Docker system base images", then pass both
+   retained image tags and both `LITELLM_PREBUILT_*_BASE=true` build arguments;
+   do not use the Dockerfile's remote Wolfi defaults for routine `/cd` builds.
+   Deploy that image to the isolated `litellm-test` service using
    `/root/litellm/docker-compose.test.yml`; update only its `image` value to the
    immutable tag, then recreate the test service without touching production.
    Wait for both container health and `/health/readiness` on port 4001.
@@ -505,11 +509,27 @@ When asked to ship the current repo changes to the local LiteLLM deployment:
    git push
    ```
 
-4. Build the local Docker image from the repo root after the commit is created. Use an immutable commit-specific tag by default: replace `<commit>` with the real short commit SHA from `git rev-parse --short=12 HEAD`. Only use the literal tag `litellm:commit` if the user explicitly asks for that exact tag.
+4. Build the local Docker image from the repo root after the commit is created.
+   Use an immutable commit-specific tag by default: replace `<commit>` with the
+   real short commit SHA from `git rev-parse --short=12 HEAD`. Only use the
+   literal tag `litellm:commit` if the user explicitly asks for that exact tag.
+   On this host, routine delivery builds must use the retained builder/runtime
+   bases below. Verify their immutable IDs before building so a locally retagged
+   image cannot silently change the build inputs.
 
    ```bash
    COMMIT_TAG="$(git rev-parse --short=12 HEAD)"
-   docker build -t "litellm:${COMMIT_TAG}" .
+   test "$(docker image inspect --format '{{.Id}}' litellm-internal-builder-base:20260805-003627df3c1e)" = \
+     "sha256:b65d45d4ea43f367ebe6c2212944c5d341c18427cecd24cfacdb92fd7bcf5ecc"
+   test "$(docker image inspect --format '{{.Id}}' litellm-internal-runtime-base:20260805-003627df3c1e)" = \
+     "sha256:f0b03d902767c5b97bf0dc27c89d9654cfe6a604f8ec7303c9011b05252a838b"
+   docker build \
+     --build-arg LITELLM_BUILD_IMAGE=litellm-internal-builder-base:20260805-003627df3c1e \
+     --build-arg LITELLM_PREBUILT_BUILD_BASE=true \
+     --build-arg LITELLM_RUNTIME_IMAGE=litellm-internal-runtime-base:20260805-003627df3c1e \
+     --build-arg LITELLM_PREBUILT_RUNTIME_BASE=true \
+     -t "litellm:${COMMIT_TAG}" \
+     .
    docker image ls "litellm:${COMMIT_TAG}"
    ```
 
@@ -541,17 +561,18 @@ When asked to ship the current repo changes to the local LiteLLM deployment:
 The local Docker daemon retains two prebuilt system stages so routine LiteLLM
 builds do not depend on the Chainguard Wolfi APK index being available:
 
-- `litellm-internal-builder-base:20260720-c61ac6919b81`
-  - Image ID: `sha256:0d01ff91e06f54f962b5fe2c86a93bf960895db25cf511265d8e3fbcdba01db6`
-  - Contains Python 3.13.14, gcc 16.1.0, OpenSSL 3.6.3, Python development
+- `litellm-internal-builder-base:20260805-003627df3c1e`
+  - Image ID: `sha256:b65d45d4ea43f367ebe6c2212944c5d341c18427cecd24cfacdb92fd7bcf5ecc`
+  - Contains Python 3.13.14-r3, gcc 16.1.0-r4, OpenSSL 3.6.3-r3, Python development
     headers, and `build==1.4.2`.
-- `litellm-internal-runtime-base:20260720-c61ac6919b81`
-  - Image ID: `sha256:51cdc04e9eece1bf5ed81c9819d195ac70b7b4ff71a2f3e887461a07e32b4f2e`
-  - Contains Python 3.13.14, Node 26.5.0, npm 11.12.1, OpenSSL 3.6.3,
-    `libsndfile`, and the Dockerfile's npm dependency hardening.
+- `litellm-internal-runtime-base:20260805-003627df3c1e`
+  - Image ID: `sha256:f0b03d902767c5b97bf0dc27c89d9654cfe6a604f8ec7303c9011b05252a838b`
+  - Contains Python 3.13.14-r3, Node 26.6.0, npm 11.12.1, OpenSSL 3.6.3-r3,
+    `libsndfile`, and the Dockerfile's npm dependency hardening with
+    `node-tar==7.5.22`.
 
 The date in each tag records when the rolling Wolfi packages were resolved;
-`c61ac6919b81` is the pinned Wolfi image digest prefix. These images are local
+`003627df3c1e` is the pinned Wolfi image digest prefix. These images are local
 only. Push them to an internal registry or save them outside the Docker data
 root before expecting them to be usable on another host or after Docker data
 loss.
@@ -562,15 +583,17 @@ both retained images and explicitly enable the prebuilt mode:
 ```bash
 COMMIT_TAG="$(git rev-parse --short=12 HEAD)"
 docker build \
-  --build-arg LITELLM_BUILD_IMAGE=litellm-internal-builder-base:20260720-c61ac6919b81 \
+  --build-arg LITELLM_BUILD_IMAGE=litellm-internal-builder-base:20260805-003627df3c1e \
   --build-arg LITELLM_PREBUILT_BUILD_BASE=true \
-  --build-arg LITELLM_RUNTIME_IMAGE=litellm-internal-runtime-base:20260720-c61ac6919b81 \
+  --build-arg LITELLM_RUNTIME_IMAGE=litellm-internal-runtime-base:20260805-003627df3c1e \
   --build-arg LITELLM_PREBUILT_RUNTIME_BASE=true \
   -t "litellm:${COMMIT_TAG}" \
   .
 ```
 
-The two no-network paths were verified with `docker build --network=none`.
+The two retained system-base targets were verified with
+`docker build --network=none`. A first complete application build still needs
+network access for the separate requirements wheelhouse and Prisma generation.
 Do not set a `LITELLM_PREBUILT_*_BASE` flag unless its corresponding image was
 built from the matching `builder-system-base` or `runtime-system-base` target;
 the flag intentionally turns the APK/pip-build/npm preparation commands into
