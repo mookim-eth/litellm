@@ -1,6 +1,7 @@
 import copy
 
 import litellm
+import pytest
 
 from litellm.litellm_core_utils.llm_cost_calc.utils import generic_cost_per_token
 from litellm import completion_cost
@@ -136,6 +137,81 @@ def test_chatgpt_gpt_5_5_cached_input_cost_calculation():
 
     assert round(prompt_cost, 12) == round(expected_prompt_cost, 12)
     assert round(completion_cost, 12) == round(expected_completion_cost, 12)
+
+
+@pytest.mark.parametrize(
+    ("model", "input_cost", "cache_read_cost", "output_cost"),
+    [
+        ("chatgpt/gpt-5.6-sol", 5e-6, 5e-7, 3e-5),
+        ("chatgpt/gpt-5.6-terra", 2e-6, 2e-7, 1.2e-5),
+        ("chatgpt/gpt-5.6-luna", 2e-7, 2e-8, 1.2e-6),
+    ],
+)
+def test_chatgpt_gpt_5_6_cached_input_pricing(
+    model: str,
+    input_cost: float,
+    cache_read_cost: float,
+    output_cost: float,
+):
+    _load_local_model_cost_map()
+
+    model_info = litellm.get_model_info(
+        model=model,
+        custom_llm_provider="chatgpt",
+    )
+    assert model_info["input_cost_per_token"] == input_cost
+    assert model_info["cache_read_input_token_cost"] == cache_read_cost
+    assert model_info["output_cost_per_token"] == output_cost
+
+    usage = Usage(
+        prompt_tokens=1000,
+        completion_tokens=100,
+        total_tokens=1100,
+        cache_read_input_tokens=800,
+    )
+    prompt_cost, completion_cost = generic_cost_per_token(
+        model=model,
+        usage=usage,
+        custom_llm_provider="chatgpt",
+    )
+
+    expected_prompt_cost = (200 * input_cost) + (800 * cache_read_cost)
+    expected_completion_cost = 100 * output_cost
+    assert round(prompt_cost, 12) == round(expected_prompt_cost, 12)
+    assert round(completion_cost, 12) == round(expected_completion_cost, 12)
+
+
+def test_chatgpt_auto_review_uses_response_model_pricing():
+    _load_local_model_cost_map()
+
+    response = ResponsesAPIResponse(
+        id="resp_auto_review",
+        created_at=1700000000,
+        model="gpt-5.6-luna",
+        object="response",
+        output=[],
+        parallel_tool_calls=True,
+        tool_choice="auto",
+        tools=[],
+        status="completed",
+        usage=ResponseAPIUsage(
+            input_tokens=10018,
+            output_tokens=83,
+            total_tokens=10101,
+            input_tokens_details={"cached_tokens": 7680},
+        ),
+    )
+
+    cost = completion_cost(
+        completion_response=response,
+        model="codex-auto-review",
+        custom_llm_provider="chatgpt",
+        optional_params={},
+        call_type="responses",
+    )
+
+    expected_cost = (2338 * 2e-7) + (7680 * 2e-8) + (83 * 1.2e-6)
+    assert round(cost, 12) == round(expected_cost, 12)
 
 
 def test_chatgpt_gpt_5_4_priority_cost_calculation():
