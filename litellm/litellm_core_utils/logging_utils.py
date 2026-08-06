@@ -36,8 +36,14 @@ import litellm
 Helper utils used for logging callbacks
 """
 
+try:
+    import orjson
+except ImportError:  # pragma: no cover - orjson is installed with proxy extras
+    orjson = None  # type: ignore
+
 _BYTES_PER_KIB = 1024
 _BYTES_PER_MIB = 1024 * 1024
+_BASE64_DATA_URI_MARKER = b";base64,"
 
 # Regex matching data-URI base64 content: "data:<mime>;base64,<payload>"
 # Captures: group(1)=mime_type, group(2)=base64_payload
@@ -73,6 +79,20 @@ def _truncate_base64_in_string(value: str) -> str:
     if MAX_BASE64_LENGTH_FOR_LOGGING <= 0:
         return value
     return _DATA_URI_RE.sub(_base64_data_uri_replacer, value)
+
+
+def _json_value_may_contain_base64_data_uri(value: Union[dict, list]) -> bool:
+    """Quickly check JSON-like values before the Python-level copy and traversal.
+
+    Proxy installations include orjson. If it is unavailable or cannot encode a
+    value, fall back to the existing traversal so base64 data is never skipped.
+    """
+    if orjson is None:
+        return True
+    try:
+        return _BASE64_DATA_URI_MARKER in orjson.dumps(value)
+    except (TypeError, ValueError):
+        return True
 
 
 def _truncate_base64_in_value(value: Any) -> Any:
@@ -128,12 +148,20 @@ def truncate_base64_in_messages(
     messages: Optional[Union[str, list, dict]],
 ) -> Optional[Union[str, list, dict]]:
     """
-    Return a copy of *messages* with long base64 data-URI payloads replaced
-    by human-readable size placeholders.
+    Return *messages* with long base64 data-URI payloads replaced by
+    human-readable size placeholders. JSON values without a base64 marker use
+    only a shallow top-level copy, avoiding a Python-level deep traversal while
+    preserving isolation from top-level callback mutations.
     """
     if messages is None or MAX_BASE64_LENGTH_FOR_LOGGING <= 0:
         return messages
     try:
+        if isinstance(messages, str) and ";base64," not in messages:
+            return messages
+        if isinstance(messages, (dict, list)) and not (
+            _json_value_may_contain_base64_data_uri(messages)
+        ):
+            return messages.copy()
         return _truncate_base64_in_value(messages)
     except Exception as e:
         verbose_logger.debug("Failed to truncate base64 in messages: %s", e)

@@ -2,8 +2,9 @@
 Tests for litellm.litellm_core_utils.logging_utils — base64 truncation helpers.
 """
 
-import pytest
+from unittest.mock import patch
 
+from litellm.litellm_core_utils import logging_utils
 from litellm.litellm_core_utils.logging_utils import (
     _format_base64_size,
     _truncate_base64_in_string,
@@ -57,6 +58,13 @@ class TestTruncateBase64InString:
         text = "hello world, no base64 here"
         assert _truncate_base64_in_string(text) == text
 
+    def test_plain_string_skips_regex_traversal(self):
+        text = "plain text" * 1000
+        with patch.object(logging_utils, "_truncate_base64_in_value") as truncate:
+            result = truncate_base64_in_messages(text)
+        assert result is text
+        truncate.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # truncate_base64_in_messages
@@ -66,6 +74,43 @@ class TestTruncateBase64InString:
 class TestTruncateBase64InMessages:
     def test_none_input(self):
         assert truncate_base64_in_messages(None) is None
+
+    def test_plain_json_messages_skip_python_traversal(self):
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "hello"}]}
+            for _ in range(1000)
+        ]
+        with patch.object(logging_utils, "_truncate_base64_in_value") as truncate:
+            result = truncate_base64_in_messages(messages)
+        assert result == messages
+        assert result is not messages
+        assert result[0] is messages[0]
+        truncate.assert_not_called()
+
+    def test_serialization_failure_falls_back_to_safe_traversal(self):
+        payload = "Z" * 200
+        messages = [
+            object(),
+            {"content": f"data:image/png;base64,{payload}"},
+        ]
+        result = truncate_base64_in_messages(messages)
+        assert "base64_data truncated" in result[1]["content"]
+        assert payload not in result[1]["content"]
+
+    def test_missing_orjson_falls_back_to_safe_traversal(self):
+        messages = [{"role": "user", "content": "plain text"}]
+        with (
+            patch.object(logging_utils, "orjson", None),
+            patch.object(
+                logging_utils,
+                "_truncate_base64_in_value",
+                wraps=logging_utils._truncate_base64_in_value,
+            ) as truncate,
+        ):
+            result = truncate_base64_in_messages(messages)
+        assert result == messages
+        assert result is not messages
+        truncate.assert_called_once_with(messages)
 
     def test_string_messages(self):
         payload = "C" * 200
