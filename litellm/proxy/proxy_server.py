@@ -1811,6 +1811,7 @@ def cost_tracking():
 # Bounds authoritative DB re-reads when enforcing a budget against a
 # stale-low spend counter: at most one DB read per counter per window.
 SPEND_DB_FLOOR_CACHE_TTL_SECONDS = 5
+_SPEND_DB_FLOOR_UNAVAILABLE = "unavailable"
 
 
 def _fail_closed_budget_enforcement() -> bool:
@@ -1984,33 +1985,45 @@ async def _authoritative_floor_spend(
 ) -> float | None:
     marker_key = f"spend_db_floor:{counter_key}"
     cached = spend_counter_cache.in_memory_cache.get_cache(key=marker_key)
+    if cached == _SPEND_DB_FLOOR_UNAVAILABLE:
+        return None
     if cached is not None:
         return float(cached)
 
-    db_spend = await SpendCounterReseed.from_db(
-        prisma_client=prisma_client, counter_key=counter_key
-    )
-    if (
-        db_spend is None
-        and window_entity_type is not None
-        and window_entity_id is not None
-        and window_start is not None
-    ):
-        db_spend = await SpendCounterReseed.window_from_spend_logs(
-            prisma_client=prisma_client,
-            entity_type=window_entity_type,
-            entity_id=window_entity_id,
-            window_start=window_start,
-        )
-    if db_spend is None:
-        return None
+    lock = await SpendCounterReseed._get_lock(marker_key)
+    async with lock:
+        cached = spend_counter_cache.in_memory_cache.get_cache(key=marker_key)
+        if cached == _SPEND_DB_FLOOR_UNAVAILABLE:
+            return None
+        if cached is not None:
+            return float(cached)
 
-    spend_counter_cache.in_memory_cache.set_cache(
-        key=marker_key,
-        value=db_spend,
-        ttl=SPEND_DB_FLOOR_CACHE_TTL_SECONDS,
-    )
-    return db_spend
+        db_spend = await SpendCounterReseed.from_db(
+            prisma_client=prisma_client, counter_key=counter_key
+        )
+        if (
+            db_spend is None
+            and window_entity_type is not None
+            and window_entity_id is not None
+            and window_start is not None
+        ):
+            db_spend = await SpendCounterReseed.window_from_spend_logs(
+                prisma_client=prisma_client,
+                entity_type=window_entity_type,
+                entity_id=window_entity_id,
+                window_start=window_start,
+            )
+
+        spend_counter_cache.in_memory_cache.set_cache(
+            key=marker_key,
+            value=(
+                db_spend
+                if db_spend is not None
+                else _SPEND_DB_FLOOR_UNAVAILABLE
+            ),
+            ttl=SPEND_DB_FLOOR_CACHE_TTL_SECONDS,
+        )
+        return db_spend
 
 
 async def _read_spend_counter_estimate(
