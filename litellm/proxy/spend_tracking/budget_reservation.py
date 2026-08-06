@@ -45,6 +45,9 @@ class _CounterReservationUnavailable(Exception):
         super().__init__("Counter reservation unavailable")
 
 
+BUDGET_RESERVATION_HEADROOM_USD = 1.0
+
+
 def get_reserved_counter_keys(budget_reservation: Optional[dict]) -> set:
     if not budget_reservation:
         return set()
@@ -88,6 +91,18 @@ async def reserve_budget_for_request(
         end_user_object=end_user_object,
     )
     if not counters:
+        return None
+
+    # Exact token counting is expensive for very large prompts. When every
+    # applicable budget still has more than $1 of headroom, rely on the normal
+    # post-call spend increment and the next request's read-time budget check
+    # instead of reserving this request up front. This intentionally permits
+    # concurrent requests to overshoot a budget in exchange for avoiding
+    # request-path tokenization while budgets are comfortably funded.
+    if await _all_counters_have_headroom(
+        counters=counters,
+        minimum_headroom=BUDGET_RESERVATION_HEADROOM_USD,
+    ):
         return None
 
     current_spend_by_counter_key: Dict[str, float] = {}
@@ -625,6 +640,24 @@ async def _get_current_counter_value(counter: _BudgetCounter) -> float:
         counter_key=counter.counter_key,
         fallback_spend=counter.fallback_spend,
     )
+
+
+async def _all_counters_have_headroom(
+    counters: List[_BudgetCounter],
+    minimum_headroom: float,
+) -> bool:
+    for counter in counters:
+        try:
+            current_spend = await _get_current_counter_value(counter=counter)
+        except Exception:
+            verbose_proxy_logger.debug(
+                "Unable to read spend headroom for budget reservation",
+                exc_info=True,
+            )
+            return False
+        if counter.max_budget - current_spend <= minimum_headroom:
+            return False
+    return True
 
 
 async def _set_reserved_entries_actual_cost(

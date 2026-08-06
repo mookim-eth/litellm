@@ -110,6 +110,89 @@ def test_should_not_serialize_budget_reservation_on_user_api_key_auth():
 
 
 @pytest.mark.asyncio
+async def test_should_skip_cost_estimation_when_all_budgets_have_more_than_one_dollar_headroom(
+    spend_counter_state,
+):
+    counter_cache, key_cache = spend_counter_state
+    proxy_logging_obj = ProxyLogging(user_api_key_cache=key_cache)
+    valid_token = UserAPIKeyAuth(
+        token="key-budget-large-headroom",
+        spend=2.0,
+        max_budget=10.0,
+    )
+    counter_cache.in_memory_cache.set_cache(
+        key="spend:key:key-budget-large-headroom",
+        value=2.0,
+    )
+
+    with patch(
+        "litellm.proxy.spend_tracking.budget_reservation.estimate_request_max_cost"
+    ) as estimate_request_max_cost_mock:
+        reservation = await reserve_budget_for_request(
+            request_body=_request_body(),
+            route="/chat/completions",
+            llm_router=None,
+            valid_token=valid_token,
+            team_object=None,
+            user_object=None,
+            prisma_client=None,
+            user_api_key_cache=key_cache,
+            proxy_logging_obj=proxy_logging_obj,
+        )
+
+    assert reservation is None
+    estimate_request_max_cost_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_should_reserve_when_any_budget_has_at_most_one_dollar_headroom(
+    spend_counter_state,
+):
+    counter_cache, key_cache = spend_counter_state
+    proxy_logging_obj = ProxyLogging(user_api_key_cache=key_cache)
+    valid_token = UserAPIKeyAuth(
+        token="key-budget-small-headroom",
+        user_id="user-budget-small-headroom",
+        spend=2.0,
+        max_budget=10.0,
+    )
+    user_object = LiteLLM_UserTable(
+        user_id="user-budget-small-headroom",
+        spend=0.0,
+        max_budget=1.0,
+    )
+    counter_cache.in_memory_cache.set_cache(
+        key="spend:key:key-budget-small-headroom",
+        value=2.0,
+    )
+
+    with patch(
+        "litellm.proxy.spend_tracking.budget_reservation.estimate_request_max_cost",
+        return_value=0.25,
+    ) as estimate_request_max_cost_mock:
+        reservation = await reserve_budget_for_request(
+            request_body=_request_body(),
+            route="/chat/completions",
+            llm_router=None,
+            valid_token=valid_token,
+            team_object=None,
+            user_object=user_object,
+            prisma_client=None,
+            user_api_key_cache=key_cache,
+            proxy_logging_obj=proxy_logging_obj,
+        )
+
+    assert reservation is not None
+    assert reservation["reserved_cost"] == pytest.approx(0.25)
+    assert {entry["counter_key"] for entry in reservation["entries"]} == {
+        "spend:key:key-budget-small-headroom",
+        "spend:user:user-budget-small-headroom",
+    }
+    estimate_request_max_cost_mock.assert_called_once()
+    await release_budget_reservation(reservation)
+
+
+@pytest.mark.asyncio
 async def test_should_shrink_second_key_reservation_to_remaining_budget(
     spend_counter_state,
 ):
@@ -481,7 +564,7 @@ async def test_should_reserve_user_budget_counter_for_team_key(spend_counter_sta
         team_id="team-no-budget",
     )
     team_object = LiteLLM_TeamTable(team_id="team-no-budget", spend=0.0, max_budget=None)
-    user_object = LiteLLM_UserTable(user_id="user-on-team", spend=0.0, max_budget=5.0)
+    user_object = LiteLLM_UserTable(user_id="user-on-team", spend=0.0, max_budget=1.0)
 
     with patch(
         "litellm.proxy.spend_tracking.budget_reservation.estimate_request_max_cost",
@@ -597,7 +680,7 @@ async def test_should_clamp_reservation_to_default_when_output_cap_missing(
     proxy_logging_obj = ProxyLogging(user_api_key_cache=key_cache)
     valid_token = UserAPIKeyAuth(
         token="key-budget-uncapped",
-        spend=0.2,
+        spend=9999.0,
         max_budget=10000.0,
     )
     await key_cache.async_set_cache(
@@ -899,7 +982,7 @@ async def test_should_clamp_reservation_to_model_ceiling_when_caller_overrequest
     proxy_logging_obj = ProxyLogging(user_api_key_cache=key_cache)
     valid_token = UserAPIKeyAuth(
         token="key-budget-overrequest",
-        spend=0.0,
+        spend=9999.0,
         max_budget=10000.0,
     )
     await key_cache.async_set_cache(
@@ -910,7 +993,7 @@ async def test_should_clamp_reservation_to_model_ceiling_when_caller_overrequest
     request_body = _request_body()
     request_body["max_tokens"] = 999_999_999
 
-    output_cost_per_token = 1e-5
+    output_cost_per_token = 5e-6
     model_ceiling = 128_000
     expected_cost = model_ceiling * output_cost_per_token
 
@@ -953,7 +1036,7 @@ async def test_should_reserve_image_generation_cost_per_image(
     valid_token = UserAPIKeyAuth(
         token="key-image-gen",
         spend=0.0,
-        max_budget=10.0,
+        max_budget=1.0,
     )
     await key_cache.async_set_cache(key="key-image-gen", value=valid_token)
 
@@ -1103,7 +1186,7 @@ async def test_should_use_token_pricing_for_chat_model_with_image_cost_field(
     valid_token = UserAPIKeyAuth(
         token="key-multimodal-chat",
         spend=0.0,
-        max_budget=10.0,
+        max_budget=1.0,
     )
     await key_cache.async_set_cache(key="key-multimodal-chat", value=valid_token)
 
@@ -1161,7 +1244,7 @@ async def test_should_reserve_image_edit_cost_per_image(
     valid_token = UserAPIKeyAuth(
         token="key-image-edit",
         spend=0.0,
-        max_budget=10.0,
+        max_budget=1.0,
     )
     await key_cache.async_set_cache(key="key-image-edit", value=valid_token)
 
@@ -1210,7 +1293,7 @@ async def test_should_skip_budget_window_with_unparseable_duration(
     valid_token = UserAPIKeyAuth(
         token="key-budget-malformed-window",
         spend=0.9,
-        max_budget=10.0,
+        max_budget=1.9,
         budget_limits=[
             {
                 "budget_duration": "not-a-duration",
@@ -1843,12 +1926,14 @@ async def test_should_reserve_all_budgeted_counters(spend_counter_state):
             proxy_logging_obj=proxy_logging_obj,
         )
 
+    assert reservation is not None
     assert (
         counter_cache.in_memory_cache.get_cache(key="spend:key:key-budget-all") == 0.3
     )
     assert (
         counter_cache.in_memory_cache.get_cache(key="spend:team:team-budget-all") == 0.3
     )
+    await release_budget_reservation(reservation)
 
 
 @pytest.mark.asyncio
@@ -1935,7 +2020,8 @@ async def test_should_not_block_concurrent_team_request_when_first_request_lacks
             user_api_key_cache=key_cache,
             proxy_logging_obj=proxy_logging_obj,
         )
-        assert second_reservation is not None
+        assert first_reservation is None
+        assert second_reservation is None
 
     if first_reservation is not None:
         await release_budget_reservation(first_reservation)
