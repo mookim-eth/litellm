@@ -33,6 +33,67 @@ from litellm.litellm_core_utils.litellm_logging import (
 from litellm.integrations.custom_logger import CustomLogger
 
 
+@pytest.mark.parametrize("drop_prompts", [True, False])
+def test_standard_logging_payload_applies_proxy_prompt_policy(drop_prompts):
+    from unittest.mock import patch
+
+    from litellm.constants import DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY
+    from litellm.litellm_core_utils import litellm_logging
+    from litellm.litellm_core_utils.litellm_logging import (
+        Logging,
+        get_standard_logging_object_payload,
+    )
+
+    messages = [{"role": "user", "content": "hello"}]
+    kwargs = {
+        "model": "gpt-4.1-mini",
+        "messages": messages,
+        "custom_llm_provider": "openai",
+        "litellm_params": {
+            "metadata": {
+                DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY: drop_prompts
+            }
+        },
+    }
+    response = {
+        "id": "chatcmpl-prompt-policy",
+        "model": "gpt-4.1-mini",
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        "choices": [],
+    }
+    now = datetime.now()
+    logging_obj = Logging(
+        model="gpt-4.1-mini",
+        messages=messages,
+        stream=False,
+        call_type="completion",
+        start_time=now,
+        litellm_call_id="prompt-policy",
+        function_id="prompt-policy",
+    )
+
+    with patch.object(
+        litellm_logging,
+        "truncate_base64_in_messages",
+        wraps=litellm_logging.truncate_base64_in_messages,
+    ) as truncate_messages:
+        payload = get_standard_logging_object_payload(
+            kwargs=kwargs,
+            init_response_obj=response,
+            start_time=now,
+            end_time=now,
+            logging_obj=logging_obj,
+            status="success",
+        )
+
+    assert payload is not None
+    if drop_prompts:
+        assert payload["messages"] is None
+    else:
+        assert payload["messages"] == messages
+    assert truncate_messages.call_count == (0 if drop_prompts else 1)
+
+
 @pytest.mark.parametrize(
     "response_obj,expected_values",
     [

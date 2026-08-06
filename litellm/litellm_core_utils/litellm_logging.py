@@ -44,6 +44,7 @@ from litellm.caching.caching_handler import LLMCachingHandler
 from litellm.constants import (
     DEFAULT_MOCK_RESPONSE_COMPLETION_TOKEN_COUNT,
     DEFAULT_MOCK_RESPONSE_PROMPT_TOKEN_COUNT,
+    DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY,
     SENTRY_DENYLIST,
     SENTRY_PII_DENYLIST,
 )
@@ -5596,6 +5597,14 @@ def get_standard_logging_object_payload(
         ):
             model_name = response_model_name
 
+        messages: Optional[Union[str, list, dict]] = None
+        if metadata.get(DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY) is not True:
+            messages = truncate_base64_in_messages(
+                StandardLoggingPayloadSetup.append_system_prompt_messages(
+                    kwargs=kwargs, messages=kwargs.get("messages")
+                )
+            )
+
         payload: StandardLoggingPayload = StandardLoggingPayload(
             id=str(id),
             trace_id=StandardLoggingPayloadSetup._get_standard_logging_payload_trace_id(
@@ -5637,11 +5646,7 @@ def get_standard_logging_object_payload(
             model_id=_model_id,
             requester_ip_address=clean_metadata.get("requester_ip_address", None),
             user_agent=clean_metadata.get("user_agent", None),
-            messages=truncate_base64_in_messages(
-                StandardLoggingPayloadSetup.append_system_prompt_messages(
-                    kwargs=kwargs, messages=kwargs.get("messages")
-                )
-            ),
+            messages=messages,
             response=final_response_obj,
             model_parameters=ModelParamHelper.get_standard_logging_model_parameters(
                 kwargs.get("optional_params", None) or {}

@@ -11,6 +11,7 @@ from starlette.datastructures import Headers
 import litellm
 from litellm._logging import verbose_logger, verbose_proxy_logger
 from litellm._service_logger import ServiceLogging
+from litellm.constants import DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY
 from litellm.litellm_core_utils.core_helpers import (
     get_metadata_variable_name_from_kwargs,
 )
@@ -140,6 +141,7 @@ _UNTRUSTED_ROOT_CONTROL_FIELDS = (
 )
 
 _UNTRUSTED_METADATA_CONTROL_FIELDS = (
+    DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY,
     "disable_global_guardrails",
     "disable_global_guardrail",
     "opted_out_global_guardrails",
@@ -1791,6 +1793,13 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
         _metadata_variable_name=_metadata_variable_name,
     )
     data[_metadata_variable_name]["litellm_api_version"] = version
+
+    if general_settings is not None and _is_false_like(
+        general_settings.get("store_prompts_in_spend_logs")
+    ):
+        data[_metadata_variable_name][
+            DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY
+        ] = True
 
     if general_settings is not None:
         data[_metadata_variable_name]["global_max_parallel_requests"] = (

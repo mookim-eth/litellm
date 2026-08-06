@@ -11,6 +11,7 @@ from fastapi import Request
 from pydantic import ValidationError as PydanticValidationError
 
 import litellm
+from litellm.constants import DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY
 from litellm.proxy._types import AddTeamCallback, TeamCallbackMetadata, UserAPIKeyAuth
 from litellm.proxy.litellm_pre_call_utils import (
     KeyAndTeamLoggingSettings,
@@ -241,6 +242,79 @@ class TestProxyServerRequestBodyMemorySafeLogging:
 
         assert body == data
         assert body is not data
+
+
+@pytest.mark.parametrize(
+    ("general_settings", "should_drop_prompts"),
+    [
+        ({"store_prompts_in_spend_logs": False}, True),
+        ({"store_prompts_in_spend_logs": "false"}, True),
+        ({"store_prompts_in_spend_logs": True}, False),
+        ({}, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_proxy_sets_standard_logging_prompt_policy(
+    general_settings, should_drop_prompts
+):
+    request = MagicMock(spec=Request)
+    request.url.path = "/v1/chat/completions"
+    request.url = MagicMock()
+    request.url.__str__.return_value = "http://localhost/v1/chat/completions"
+    request.method = "POST"
+    request.query_params = {}
+    request.headers = {"Content-Type": "application/json"}
+    request.client = MagicMock(host="127.0.0.1")
+
+    result = await add_litellm_data_to_request(
+        data={
+            "model": "gpt-4.1-mini",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        request=request,
+        user_api_key_dict=UserAPIKeyAuth(api_key="hashed-key", metadata={}),
+        proxy_config=MagicMock(),
+        general_settings=general_settings,
+        version="test-version",
+    )
+
+    assert (
+        result["metadata"].get(DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY)
+        is True
+    ) is should_drop_prompts
+
+
+@pytest.mark.asyncio
+async def test_client_cannot_set_standard_logging_prompt_policy():
+    request = MagicMock(spec=Request)
+    request.url.path = "/v1/chat/completions"
+    request.url = MagicMock()
+    request.url.__str__.return_value = "http://localhost/v1/chat/completions"
+    request.method = "POST"
+    request.query_params = {}
+    request.headers = {"Content-Type": "application/json"}
+    request.client = MagicMock(host="127.0.0.1")
+
+    result = await add_litellm_data_to_request(
+        data={
+            "model": "gpt-4.1-mini",
+            "messages": [{"role": "user", "content": "hello"}],
+            "metadata": {DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY: True},
+            "litellm_metadata": json.dumps(
+                {DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY: True}
+            ),
+        },
+        request=request,
+        user_api_key_dict=UserAPIKeyAuth(api_key="hashed-key", metadata={}),
+        proxy_config=MagicMock(),
+        general_settings={"store_prompts_in_spend_logs": True},
+        version="test-version",
+    )
+
+    assert DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY not in result["metadata"]
+    assert DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY not in result.get(
+        "litellm_metadata", {}
+    )
 
 
 def test_get_enforced_params_for_service_account_settings():

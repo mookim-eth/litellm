@@ -92,6 +92,12 @@ STREAM_TEXT_COALESCE_SECONDS = _get_finite_float_env(
 # Set to 0 to disable truncation.
 MAX_BASE64_LENGTH_FOR_LOGGING = int(os.getenv("MAX_BASE64_LENGTH_FOR_LOGGING", 64))
 
+# Proxy-owned marker used to omit prompts before constructing standard logging
+# objects. Requests must not be allowed to set this field themselves.
+DROP_PROMPTS_FROM_STANDARD_LOGGING_METADATA_KEY = (
+    "_drop_prompts_from_standard_logging"
+)
+
 # When true, adds detailed per-phase timing breakdown headers to responses.
 # Headers: x-litellm-timing-{pre-processing,llm-api,post-processing,message-copy}-ms
 LITELLM_DETAILED_TIMING = (
