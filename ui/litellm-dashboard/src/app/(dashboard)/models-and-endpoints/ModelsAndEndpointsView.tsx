@@ -167,7 +167,7 @@ const ModelsAndEndpointsView: React.FC<ModelDashboardProps> = ({ premiumUser, te
 
   const handleRefreshClick = () => {
     const currentDate = new Date();
-    setLastRefreshed(currentDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    setLastRefreshed(currentDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
     queryClient.invalidateQueries({ queryKey: ["models", "list"] });
     refetchModels();
   };
@@ -428,50 +428,56 @@ const ModelsAndEndpointsView: React.FC<ModelDashboardProps> = ({ premiumUser, te
                   </TabPanel>
                 )}
                 {isProxyAdmin && (
-                  <>
-                    <TabPanel>
-                      <CredentialsPanel uploadProps={uploadProps} />
-                    </TabPanel>
-                    <TabPanel>
-                      <PassThroughSettings
-                        accessToken={accessToken}
-                        userRole={userRole}
-                        userID={userID}
-                        modelData={processedModelData}
-                        premiumUser={premiumUser}
-                      />
-                    </TabPanel>
-                    <TabPanel>
-                      <HealthCheckComponent
-                        accessToken={accessToken}
-                        modelData={processedModelData}
-                        all_models_on_proxy={allModelIdsOnProxy}
-                        getDisplayModelName={getDisplayModelName}
-                        setSelectedModelId={setSelectedModelId}
-                        teams={teams}
-                      />
-                    </TabPanel>
-                    <ModelRetrySettingsTab
-                      selectedModelGroup={selectedModelGroup}
-                      setSelectedModelGroup={setSelectedModelGroup}
-                      availableModelGroups={availableModelGroups}
-                      globalRetryPolicy={globalRetryPolicy}
-                      setGlobalRetryPolicy={setGlobalRetryPolicy}
-                      defaultRetry={defaultRetry}
-                      modelGroupRetryPolicy={modelGroupRetryPolicy}
-                      setModelGroupRetryPolicy={setModelGroupRetryPolicy}
-                      handleSaveRetrySettings={handleSaveRetrySettings}
-                    />
-                    <TabPanel>
-                      <ModelGroupAliasSettings
-                        accessToken={accessToken}
-                        initialModelGroupAlias={modelGroupAlias}
-                        onAliasUpdate={setModelGroupAlias}
-                      />
-                    </TabPanel>
-                    <PriceDataManagementTab />
-                  </>
+                  <TabPanel>
+                    <CredentialsPanel uploadProps={uploadProps} />
+                  </TabPanel>
                 )}
+                {isProxyAdmin && (
+                  <TabPanel>
+                    <PassThroughSettings
+                      accessToken={accessToken}
+                      userRole={userRole}
+                      userID={userID}
+                      modelData={processedModelData}
+                      premiumUser={premiumUser}
+                    />
+                  </TabPanel>
+                )}
+                {isProxyAdmin && (
+                  <TabPanel>
+                    <HealthCheckComponent
+                      accessToken={accessToken}
+                      modelData={processedModelData}
+                      all_models_on_proxy={allModelIdsOnProxy}
+                      getDisplayModelName={getDisplayModelName}
+                      setSelectedModelId={setSelectedModelId}
+                      teams={teams}
+                    />
+                  </TabPanel>
+                )}
+                {isProxyAdmin && (
+                  <ModelRetrySettingsTab
+                    selectedModelGroup={selectedModelGroup}
+                    setSelectedModelGroup={setSelectedModelGroup}
+                    availableModelGroups={availableModelGroups}
+                    globalRetryPolicy={globalRetryPolicy}
+                    setGlobalRetryPolicy={setGlobalRetryPolicy}
+                    defaultRetry={defaultRetry}
+                    modelGroupRetryPolicy={modelGroupRetryPolicy}
+                    setModelGroupRetryPolicy={setModelGroupRetryPolicy}
+                    handleSaveRetrySettings={handleSaveRetrySettings}
+                  />
+                )}
+                {isProxyAdmin && (
+                  <TabPanel>
+                    <ModelGroupAliasSettings
+                      accessToken={accessToken}
+                      initialModelGroupAlias={modelGroupAlias}
+                      onAliasUpdate={setModelGroupAlias}
+                    />
+                  </TabPanel>
+                )}
+                {isProxyAdmin && <PriceDataManagementTab />}
               </TabPanels>
             </TabGroup>
           )}

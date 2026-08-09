@@ -39,6 +39,13 @@ vi.mock("@/components/networking", () => ({
   getUiSettings: vi.fn().mockResolvedValue({ values: {} }),
   latestHealthChecksCall: vi.fn().mockResolvedValue({ latest_health_checks: {} }),
   getModelCostMapReloadStatus: vi.fn().mockResolvedValue({}),
+  getModelCostMapSource: vi.fn().mockResolvedValue({
+    source: "local",
+    url: null,
+    is_env_forced: true,
+    fallback_reason: null,
+    model_count: 0,
+  }),
 }));
 
 vi.mock("@/app/(dashboard)/models-and-endpoints/components/ModelAnalyticsTab/ModelAnalyticsTab", () => ({
@@ -53,13 +60,59 @@ vi.mock("@/components/add_model/AddModelForm", () => ({
   default: () => null,
 }));
 
+vi.mock("@/components/add_model/add_model_tab", () => ({
+  default: () => <div>Add model panel content</div>,
+}));
+
+vi.mock("@/app/(dashboard)/models-and-endpoints/components/AllModelsTab", async () => {
+  const { TabPanel } = await import("@tremor/react");
+  return {
+    default: () => (
+      <TabPanel>
+        <div>All models panel content</div>
+      </TabPanel>
+    ),
+  };
+});
+
+const mockCredentialsPanel = vi.fn(() => <div>Credentials panel content</div>);
+vi.mock("@/components/model_add/credentials", () => ({
+  default: () => mockCredentialsPanel(),
+}));
+
+const mockPassThroughSettings = vi.fn(() => <div>Pass-through panel content</div>);
+vi.mock("@/components/pass_through_settings", () => ({
+  default: () => mockPassThroughSettings(),
+}));
+
 const mockHealthCheckComponent = vi.fn((_props: { all_models_on_proxy?: string[] }) => null);
 vi.mock("@/components/model_dashboard/HealthCheckComponent", () => ({
   default: (props: { all_models_on_proxy?: string[] }) => {
     mockHealthCheckComponent(props);
-    return null;
+    return <div>Health status panel content</div>;
   },
 }));
+
+const mockModelRetrySettingsTab = vi.fn(() => <div>Retry settings panel content</div>);
+vi.mock("@/app/(dashboard)/models-and-endpoints/components/ModelRetrySettingsTab", async () => {
+  const { TabPanel } = await import("@tremor/react");
+  return {
+    default: () => <TabPanel>{mockModelRetrySettingsTab()}</TabPanel>,
+  };
+});
+
+const mockModelGroupAliasSettings = vi.fn(() => <div>Model alias panel content</div>);
+vi.mock("@/components/model_group_alias_settings", () => ({
+  default: () => mockModelGroupAliasSettings(),
+}));
+
+const mockPriceDataManagementTab = vi.fn(() => <div>Price data panel content</div>);
+vi.mock("@/app/(dashboard)/models-and-endpoints/components/PriceDataManagementTab", async () => {
+  const { TabPanel } = await import("@tremor/react");
+  return {
+    default: () => <TabPanel>{mockPriceDataManagementTab()}</TabPanel>,
+  };
+});
 
 vi.mock("@/app/(dashboard)/hooks/useTeams", () => ({
   default: () => ({
@@ -242,7 +295,12 @@ describe("ModelsAndEndpointsView", () => {
 
     expect(await screen.findByText("Model Management", {}, { timeout: 10000 })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "LLM Credentials" })).not.toBeInTheDocument();
+    expect(mockCredentialsPanel).not.toHaveBeenCalled();
+    expect(mockPassThroughSettings).not.toHaveBeenCalled();
     expect(mockHealthCheckComponent).not.toHaveBeenCalled();
+    expect(mockModelRetrySettingsTab).not.toHaveBeenCalled();
+    expect(mockModelGroupAliasSettings).not.toHaveBeenCalled();
+    expect(mockPriceDataManagementTab).not.toHaveBeenCalled();
 
     await waitFor(() => {
       expect(credentialListCall).not.toHaveBeenCalled();
@@ -289,5 +347,60 @@ describe("ModelsAndEndpointsView", () => {
     const healthCheckProps = mockHealthCheckComponent.mock.calls[0][0];
     expect(healthCheckProps.all_models_on_proxy).toEqual(["deployment-id-1", "deployment-id-2"]);
     expect(healthCheckProps.all_models_on_proxy).not.toContain("gpt-4");
+  });
+
+  it("should show only the selected admin tab panel", async () => {
+    const queryClient = createQueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ModelsAndEndpointsView
+          token="123"
+          modelData={{ data: [] }}
+          keys={[]}
+          setModelData={() => {}}
+          premiumUser={false}
+          teams={[]}
+        />
+      </QueryClientProvider>,
+    );
+
+    const panels = [
+      {
+        tab: "LLM Credentials",
+        content: await screen.findByText("Credentials panel content", {}, { timeout: 10000 }),
+      },
+      {
+        tab: "Pass-Through Endpoints",
+        content: screen.getByText("Pass-through panel content"),
+      },
+      {
+        tab: "Health Status",
+        content: screen.getByText("Health status panel content"),
+      },
+      {
+        tab: "Model Retry Settings",
+        content: screen.getByText("Retry settings panel content"),
+      },
+      {
+        tab: "Model Group Alias",
+        content: screen.getByText("Model alias panel content"),
+      },
+      {
+        tab: "Price Data Reload",
+        content: screen.getByText("Price data panel content"),
+      },
+    ];
+
+    for (const selectedPanel of panels) {
+      await act(async () => {
+        fireEvent.click(screen.getByRole("tab", { name: selectedPanel.tab }));
+      });
+
+      for (const panel of panels) {
+        const panelContainer = panel.content.closest("[aria-selected]");
+        expect(panelContainer).not.toBeNull();
+        expect(panelContainer).toHaveAttribute("aria-selected", panel === selectedPanel ? "true" : "false");
+      }
+    }
   });
 });
