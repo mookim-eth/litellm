@@ -77,6 +77,37 @@ describe("networking - expired session handling", () => {
 
     expect(mockFetch).toHaveBeenCalledOnce();
   });
+
+  it("should allow user key lists to exclude team and created-by keys", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ keys: [], total_pages: 0 }),
+    } as any);
+    global.fetch = mockFetch as any;
+
+    await Networking.keyListCall(
+      "token",
+      null,
+      null,
+      null,
+      "user-123",
+      null,
+      1,
+      100,
+      "created_at",
+      "desc",
+      null,
+      null,
+      false,
+      false,
+    );
+
+    const calledUrl = mockFetch.mock.calls[0][0] as string;
+    const parsed = new URL(calledUrl, "http://example.com");
+    expect(parsed.searchParams.get("user_id")).toBe("user-123");
+    expect(parsed.searchParams.get("include_team_keys")).toBe("false");
+    expect(parsed.searchParams.get("include_created_by_keys")).toBe("false");
+  });
 });
 
 describe("daily activity helpers", () => {

@@ -8,6 +8,7 @@ const mockTeamMemberDeleteCall = vi.fn();
 const mockTeamListCall = vi.fn();
 const mockUserGetInfoV2 = vi.fn();
 const mockTeamInfoCall = vi.fn();
+const mockKeyListCall = vi.fn();
 
 const MOCK_USER_DATA = {
   user_id: "user-123",
@@ -31,6 +32,27 @@ const MOCK_USER_DATA_NO_TEAMS = {
   teams: [],
 };
 
+const MOCK_USER_KEYS = [
+  {
+    token: "hashed-key-1",
+    token_id: "key-1",
+    key_name: "sk-...key1",
+    key_alias: "Production Key",
+    user_id: "user-123",
+    spend: 12.3456,
+    max_budget: 50,
+  },
+  {
+    token: "hashed-key-2",
+    token_id: "key-2",
+    key_name: "sk-...key2",
+    key_alias: "Unlimited Key",
+    user_id: "user-123",
+    spend: 1.25,
+    max_budget: null,
+  },
+];
+
 vi.mock("../networking", () => {
   return {
     userGetInfoV2: (...args: any[]) => mockUserGetInfoV2(...args),
@@ -42,6 +64,7 @@ vi.mock("../networking", () => {
     teamListCall: (...args: any[]) => mockTeamListCall(...args),
     teamMemberAddCall: (...args: any[]) => mockTeamMemberAddCall(...args),
     teamMemberDeleteCall: (...args: any[]) => mockTeamMemberDeleteCall(...args),
+    keyListCall: (...args: any[]) => mockKeyListCall(...args),
     getProxyBaseUrl: () => "https://litellm.test",
   };
 });
@@ -73,9 +96,17 @@ describe("UserInfoView", () => {
     ]);
     mockTeamMemberAddCall.mockResolvedValue({});
     mockTeamMemberDeleteCall.mockResolvedValue({});
+    mockKeyListCall.mockResolvedValue({
+      keys: MOCK_USER_KEYS,
+      total_count: MOCK_USER_KEYS.length,
+      current_page: 1,
+      total_pages: 1,
+    });
   });
 
   it("should render the loading state", () => {
+    mockUserGetInfoV2.mockReturnValue(new Promise(() => {}));
+    mockKeyListCall.mockReturnValue(new Promise(() => {}));
     render(<UserInfoView {...defaultProps} />);
 
     expect(screen.getByText("Loading user data...")).toBeInTheDocument();
@@ -94,6 +125,58 @@ describe("UserInfoView", () => {
 
     const aliases = await screen.findAllByText("Test Alias");
     expect(aliases.length).toBeGreaterThan(0);
+  });
+
+  it("should render all user key names, usage, and budgets in the overview", async () => {
+    render(<UserInfoView {...defaultProps} />);
+
+    expect(await screen.findByText("Production Key")).toBeInTheDocument();
+    expect(screen.getByText("Unlimited Key")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Key Name" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Usage (USD)" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Budget (USD)" })).toBeInTheDocument();
+    expect(screen.getByText("$12.3456")).toBeInTheDocument();
+    expect(screen.getByText("$50.0000")).toBeInTheDocument();
+    expect(screen.getByText("Unlimited")).toBeInTheDocument();
+  });
+
+  it("should load every key page and exclude partial user ID matches", async () => {
+    mockKeyListCall
+      .mockResolvedValueOnce({
+        keys: [
+          MOCK_USER_KEYS[0],
+          {
+            ...MOCK_USER_KEYS[1],
+            token: "hashed-key-other",
+            token_id: "key-other",
+            key_alias: "Another User Key",
+            user_id: "user-123-extra",
+          },
+        ],
+        total_pages: 2,
+      })
+      .mockResolvedValueOnce({
+        keys: [MOCK_USER_KEYS[1]],
+        total_pages: 2,
+      });
+
+    render(<UserInfoView {...defaultProps} />);
+
+    expect(await screen.findByText("Production Key")).toBeInTheDocument();
+    expect(screen.getByText("Unlimited Key")).toBeInTheDocument();
+    expect(screen.queryByText("Another User Key")).not.toBeInTheDocument();
+    expect(mockKeyListCall).toHaveBeenCalledTimes(2);
+    expect(mockKeyListCall.mock.calls[0][4]).toBe("user-123");
+    expect(mockKeyListCall.mock.calls[0][6]).toBe(1);
+    expect(mockKeyListCall.mock.calls[1][6]).toBe(2);
+    expect(mockKeyListCall.mock.calls[0].slice(-2)).toEqual([false, false]);
+  });
+
+  it("should show an empty state when the user has no keys", async () => {
+    mockKeyListCall.mockResolvedValue({ keys: [], total_pages: 0 });
+    render(<UserInfoView {...defaultProps} />);
+
+    expect(await screen.findByText("No keys")).toBeInTheDocument();
   });
 
   it("should render teams in a table with team names", async () => {

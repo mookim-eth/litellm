@@ -16,6 +16,7 @@ import {
   teamListCall,
   teamMemberAddCall,
   teamMemberDeleteCall,
+  keyListCall,
   Member,
 } from "../networking";
 import { Button as AntdButton, Modal, Select as AntdSelect, Form, Tooltip } from "antd";
@@ -27,6 +28,7 @@ import { CopyIcon, CheckIcon } from "lucide-react";
 import NotificationsManager from "../molecules/notifications_manager";
 import { getBudgetDurationLabel } from "../common_components/budget_duration_dropdown";
 import DeleteResourceModal from "../common_components/DeleteResourceModal";
+import type { KeyResponse } from "../key_team_helpers/key_list";
 
 interface UserInfoViewProps {
   userId: string;
@@ -44,6 +46,44 @@ interface TeamDisplayInfo {
   team_id: string;
   team_alias: string | null;
 }
+
+interface KeyListResponse {
+  keys: KeyResponse[];
+  total_pages: number;
+}
+
+const USER_KEYS_PAGE_SIZE = 100;
+
+const getAllKeysForUser = async (accessToken: string, userId: string): Promise<KeyResponse[]> => {
+  const getPage = (page: number): Promise<KeyListResponse> =>
+    keyListCall(
+      accessToken,
+      null,
+      null,
+      null,
+      userId,
+      null,
+      page,
+      USER_KEYS_PAGE_SIZE,
+      "created_at",
+      "desc",
+      null,
+      null,
+      false,
+      false,
+    );
+
+  const firstPage = await getPage(1);
+  const keys = [...(firstPage.keys || [])];
+  for (let page = 2; page <= (firstPage.total_pages || 1); page += 1) {
+    const nextPage = await getPage(page);
+    keys.push(...(nextPage.keys || []));
+  }
+
+  // Proxy admins receive substring user_id matches from /key/list. Keep this
+  // view scoped to keys actually owned by the selected user.
+  return keys.filter((key) => key.user_id === userId);
+};
 
 export default function UserInfoView({
   userId,
@@ -77,6 +117,9 @@ export default function UserInfoView({
   const [selectedTeamId, setSelectedTeamId] = useState<string>("");
   const [selectedRole, setSelectedRole] = useState<string>("user");
   const [isLoadingTeams, setIsLoadingTeams] = useState(false);
+  const [userKeys, setUserKeys] = useState<KeyResponse[]>([]);
+  const [isLoadingUserKeys, setIsLoadingUserKeys] = useState(true);
+  const [userKeysLoadFailed, setUserKeysLoadFailed] = useState(false);
 
   React.useEffect(() => {
     setBaseUrl(getProxyBaseUrl());
@@ -124,7 +167,26 @@ export default function UserInfoView({
       }
     };
 
+    const fetchUserKeys = async () => {
+      if (!accessToken) {
+        setIsLoadingUserKeys(false);
+        return;
+      }
+      setIsLoadingUserKeys(true);
+      setUserKeysLoadFailed(false);
+      setUserKeys([]);
+      try {
+        setUserKeys(await getAllKeysForUser(accessToken, userId));
+      } catch (error) {
+        console.error("Error fetching user keys:", error);
+        setUserKeysLoadFailed(true);
+      } finally {
+        setIsLoadingUserKeys(false);
+      }
+    };
+
     fetchData();
+    fetchUserKeys();
   }, [accessToken, userId, userRole]);
 
   const isProxyAdmin = userRole === "proxy_admin" || userRole === "Admin";
@@ -520,6 +582,42 @@ export default function UserInfoView({
                 </div>
               </Card>
             </Grid>
+
+            <Card className="mt-6">
+              <Title>Virtual Keys</Title>
+              <div className="mt-4 overflow-x-auto">
+                {isLoadingUserKeys ? (
+                  <Text>Loading keys...</Text>
+                ) : userKeysLoadFailed ? (
+                  <Text>Failed to load keys</Text>
+                ) : userKeys.length === 0 ? (
+                  <Text>No keys</Text>
+                ) : (
+                  <Table>
+                    <TableHead>
+                      <TableRow>
+                        <TableHeaderCell>Key Name</TableHeaderCell>
+                        <TableHeaderCell>Usage (USD)</TableHeaderCell>
+                        <TableHeaderCell>Budget (USD)</TableHeaderCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {userKeys.map((key) => (
+                        <TableRow key={key.token_id || key.token}>
+                          <TableCell>{key.key_alias || key.key_name || key.token_id || "-"}</TableCell>
+                          <TableCell>${formatNumberWithCommas(key.spend || 0, 4)}</TableCell>
+                          <TableCell>
+                            {key.max_budget !== null && key.max_budget !== undefined
+                              ? `$${formatNumberWithCommas(key.max_budget, 4)}`
+                              : "Unlimited"}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
+            </Card>
           </TabPanel>
 
           {/* Details Panel */}
