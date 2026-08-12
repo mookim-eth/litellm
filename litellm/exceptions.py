@@ -483,6 +483,13 @@ class ContentPolicyViolationError(BadRequestError):  # type: ignore
             litellm_debug_info=self.litellm_debug_info,
             body=body,
         )  # Call the base class constructor with the parameters it needs
+        # The provider may return an HTTP 200 SSE stream whose terminal event is
+        # response.incomplete/content_filter. BadRequestError keeps that raw
+        # response for diagnostics, but the OpenAI SDK copies its HTTP status
+        # onto the exception. Restore the public content-policy error contract.
+        self.status_code = 400
+        self.code = "content_policy_violation"
+        self.type = "invalid_request_error"
 
     def __str__(self):
         return self._transform_error_to_string()

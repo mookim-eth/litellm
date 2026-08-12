@@ -559,7 +559,10 @@ class TestChatGPTResponsesAPITransformation:
             ]
         )
         raw_response = httpx.Response(
-            200, headers={"content-type": "text/event-stream"}, text=sse_body
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=sse_body,
+            request=httpx.Request("POST", "https://chatgpt.example.com/responses"),
         )
         logging_obj = MagicMock()
 
@@ -873,7 +876,10 @@ class TestChatGPTResponsesAPITransformation:
             + ["data: [DONE]", ""]
         )
         raw_response = httpx.Response(
-            200, headers={"content-type": "text/event-stream"}, text=sse_body
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=sse_body,
+            request=httpx.Request("POST", "https://chatgpt.example.com/responses"),
         )
 
         with pytest.raises(OpenAIError) as exc_info:
@@ -900,12 +906,16 @@ class TestChatGPTResponsesAPITransformation:
             }
         }
 
-        with pytest.raises(litellm.ContentPolicyViolationError):
+        with pytest.raises(litellm.ContentPolicyViolationError) as mapped_error:
             litellm.exception_type(
                 model="gpt-5.4-mini",
                 original_exception=exc_info.value,
                 custom_llm_provider="chatgpt",
             )
+        assert mapped_error.value.status_code == 400
+        assert mapped_error.value.code == "content_policy_violation"
+        assert mapped_error.value.type == "invalid_request_error"
+        assert mapped_error.value.response.status_code == 200
 
     def test_chatgpt_non_stream_error_event_uses_top_level_status_code(self):
         config = ChatGPTResponsesAPIConfig()
