@@ -503,6 +503,72 @@ def _is_expected_max_parallel_requests_limit(e: Exception) -> bool:
     )
 
 
+def _get_incomplete_response_event(error: Exception) -> Optional[dict]:
+    response = getattr(error, "response", None)
+    body_text = getattr(response, "text", "") if response is not None else ""
+    if not isinstance(body_text, str):
+        return None
+    incomplete_event = None
+    for line in body_text.splitlines():
+        if not line.startswith("data:"):
+            continue
+        try:
+            event = json.loads(line.removeprefix("data:").strip())
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(event, dict) and event.get("type") == "response.incomplete":
+            incomplete_event = event
+    return incomplete_event
+
+
+def _log_incomplete_response_event(error: Exception, request_data: dict) -> bool:
+    event = _get_incomplete_response_event(error)
+    if event is None:
+        return False
+    response = event.get("response") or {}
+    incomplete_details = response.get("incomplete_details") or {}
+    reason = incomplete_details.get("reason") or "unknown"
+    request_input = request_data.get("input")
+    if request_input is None:
+        request_input = request_data.get("messages")
+    if reason != "content_filter":
+        request_input = None
+    verbose_proxy_logger.warning(
+        "litellm.proxy.proxy_server._handle_llm_api_exception(): "
+        "upstream returned an incomplete response - request_id=%s model=%s "
+        "reason=%s event=%r request_input=%r",
+        request_data.get("litellm_call_id"),
+        request_data.get("model"),
+        reason,
+        event,
+        request_input,
+    )
+    return True
+
+
+def _log_expected_llm_api_exception(error: Exception, request_data: dict) -> bool:
+    if _log_incomplete_response_event(error, request_data):
+        return True
+    if isinstance(error, litellm.ContentPolicyViolationError):
+        verbose_proxy_logger.warning(
+            "litellm.proxy.proxy_server._handle_llm_api_exception(): "
+            "upstream content filter blocked request - request_id=%s model=%s "
+            "request_input=%r",
+            request_data.get("litellm_call_id"),
+            request_data.get("model"),
+            request_data.get("input") or request_data.get("messages"),
+        )
+        return True
+    if _is_expected_max_parallel_requests_limit(error):
+        verbose_proxy_logger.warning(
+            "litellm.proxy.proxy_server._handle_llm_api_exception(): "
+            "expected max_parallel_requests rate limit - %s",
+            str(error),
+        )
+        return True
+    return False
+
+
 class ProxyBaseLLMRequestProcessing:
     def __init__(self, data: dict):
         self.data = data
@@ -1605,13 +1671,7 @@ class ProxyBaseLLMRequestProcessing:
         version: Optional[str] = None,
     ):
         """Raises ProxyException (OpenAI API compatible) if an exception is raised"""
-        if _is_expected_max_parallel_requests_limit(e):
-            verbose_proxy_logger.warning(
-                "litellm.proxy.proxy_server._handle_llm_api_exception(): "
-                "expected max_parallel_requests rate limit - %s",
-                str(e),
-            )
-        else:
+        if not _log_expected_llm_api_exception(e, self.data):
             verbose_proxy_logger.exception(
                 f"litellm.proxy.proxy_server._handle_llm_api_exception(): Exception occured - {str(e)}"
             )

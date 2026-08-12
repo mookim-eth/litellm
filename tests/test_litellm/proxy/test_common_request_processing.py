@@ -1,5 +1,6 @@
 import copy
 import datetime
+import json
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2322,3 +2323,88 @@ class TestExpectedRateLimitLogging:
         exc = HTTPException(status_code=429, detail="provider quota exceeded")
 
         assert _is_expected_max_parallel_requests_limit(exc) is False
+
+
+@pytest.mark.asyncio
+async def test_should_log_content_filter_request_input(caplog):
+    processor = ProxyBaseLLMRequestProcessing(
+        data={
+            "litellm_call_id": "request-filtered",
+            "model": "gpt-5.4-mini",
+            "input": [{"role": "user", "content": "describe this image"}],
+        }
+    )
+    proxy_logging_obj = MagicMock()
+    proxy_logging_obj.post_call_failure_hook = AsyncMock(return_value=None)
+    proxy_logging_obj.post_call_response_headers_hook = AsyncMock(return_value={})
+    error = litellm.ContentPolicyViolationError(
+        message="blocked",
+        model="gpt-5.4-mini",
+        llm_provider="chatgpt",
+    )
+
+    with caplog.at_level("WARNING", logger="LiteLLM Proxy"):
+        with pytest.raises(Exception):
+            await processor._handle_llm_api_exception(
+                e=error,
+                user_api_key_dict=ProxyUserAPIKeyAuth(api_key="sk-test"),
+                proxy_logging_obj=proxy_logging_obj,
+            )
+
+    assert any(
+        "upstream content filter blocked request" in record.message
+        and "request_id=request-filtered" in record.message
+        and "describe this image" in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize(
+    "reason,should_log_input",
+    [("content_filter", True), ("max_output_tokens", False)],
+)
+@pytest.mark.asyncio
+async def test_should_log_non_streaming_incomplete_event(
+    caplog, reason, should_log_input
+):
+    event = {
+        "type": "response.incomplete",
+        "response": {"incomplete_details": {"reason": reason}},
+    }
+    response = MagicMock()
+    response.text = f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n"
+    error = litellm.APIError(
+        status_code=500,
+        message="incomplete response",
+        llm_provider="chatgpt",
+        model="gpt-5.4-mini",
+    )
+    error.response = response
+    processor = ProxyBaseLLMRequestProcessing(
+        data={
+            "litellm_call_id": "request-incomplete",
+            "model": "gpt-5.4-mini",
+            "input": "SENSITIVE_USER_INPUT",
+        }
+    )
+    proxy_logging_obj = MagicMock()
+    proxy_logging_obj.post_call_failure_hook = AsyncMock(return_value=None)
+    proxy_logging_obj.post_call_response_headers_hook = AsyncMock(return_value={})
+
+    with caplog.at_level("WARNING", logger="LiteLLM Proxy"):
+        with pytest.raises(Exception):
+            await processor._handle_llm_api_exception(
+                e=error,
+                user_api_key_dict=ProxyUserAPIKeyAuth(api_key="sk-test"),
+                proxy_logging_obj=proxy_logging_obj,
+            )
+
+    records = [
+        record.message
+        for record in caplog.records
+        if "upstream returned an incomplete response" in record.message
+    ]
+    assert len(records) == 1
+    assert f"reason={reason}" in records[0]
+    assert "event=" in records[0]
+    assert ("SENSITIVE_USER_INPUT" in records[0]) is should_log_input

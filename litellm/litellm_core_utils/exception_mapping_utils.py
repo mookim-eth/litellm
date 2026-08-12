@@ -425,10 +425,7 @@ def exception_type(  # type: ignore  # noqa: PLR0915
                         litellm_debug_info=extra_information,
                     )
                 elif (
-                    (
-                        "invalid_request_error" in error_str
-                        and "content_policy_violation" in error_str
-                    )
+                    "content_policy_violation" in error_str.lower()
                     or (
                         "Invalid prompt" in error_str
                         and "violating our usage policy" in error_str

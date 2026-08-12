@@ -503,6 +503,42 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             fallback_status_code if fallback_status_code >= 400 else 500,
         )
 
+    @staticmethod
+    def _error_from_incomplete_response(
+        response_payload: Any,
+    ) -> tuple[str, Dict[str, Any], int]:
+        if not isinstance(response_payload, dict):
+            response_payload = {}
+        incomplete_details = response_payload.get("incomplete_details") or {}
+        incomplete_reason = incomplete_details.get("reason") or "unknown"
+        if incomplete_reason == "content_filter":
+            message = (
+                "The upstream response was blocked by the content filter "
+                "(content_policy_violation)."
+            )
+            return (
+                message,
+                {
+                    "code": "content_policy_violation",
+                    "message": message,
+                    "param": None,
+                    "type": "invalid_request_error",
+                },
+                400,
+            )
+
+        message = f"The upstream response was incomplete: {incomplete_reason}."
+        return (
+            message,
+            {
+                "code": "response_incomplete",
+                "message": message,
+                "param": None,
+                "type": "api_error",
+            },
+            500,
+        )
+
     def validate_environment(
         self,
         headers: dict,
@@ -616,9 +652,11 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         )
 
         completed_response = None
-        error_message = None
-        error_payload = None
-        error_status_code = raw_response.status_code
+        error_message, error_payload, error_status_code = (
+            None,
+            None,
+            raw_response.status_code,
+        )
         reconstructed_output = self._reconstruct_output_from_sse(body_text)
         for chunk in body_text.splitlines():
             stripped_chunk = CustomStreamWrapper._strip_sse_data_from_chunk(chunk)
@@ -643,6 +681,13 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
                         response_payload=response_payload,
                         reconstructed_output=reconstructed_output,
                     )
+                break
+            if event_type == ResponsesAPIStreamEvents.RESPONSE_INCOMPLETE:
+                error_message, error_payload, error_status_code = (
+                    self._error_from_incomplete_response(
+                        parsed_chunk.get("response")
+                    )
+                )
                 break
             if event_type in (
                 ResponsesAPIStreamEvents.RESPONSE_FAILED,

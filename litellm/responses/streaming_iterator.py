@@ -169,6 +169,42 @@ class BaseResponsesAPIStreamingIterator:
     def _mark_ttft_stage(self, stage: str) -> None:
         mark_stream_ttft_trace(self.request_data, stage)
 
+    @staticmethod
+    def _get_response_field(value: Any, field: str) -> Any:
+        if isinstance(value, dict):
+            return value.get(field)
+        return getattr(value, field, None)
+
+    def _log_incomplete_response(self, chunk: Any) -> None:
+        response = self._get_response_field(chunk, "response")
+        incomplete_details = self._get_response_field(
+            response, "incomplete_details"
+        )
+        reason = self._get_response_field(incomplete_details, "reason") or "unknown"
+        if reason != "content_filter":
+            verbose_proxy_logger.warning(
+                "litellm.responses: upstream returned an incomplete streaming "
+                "response - request_id=%s model=%s reason=%s event=%r",
+                getattr(self.logging_obj, "litellm_call_id", None),
+                self.model,
+                reason,
+                chunk,
+            )
+            return
+
+        request_input = self.request_data.get("input")
+        if request_input is None:
+            request_input = self.request_data.get("messages")
+        verbose_proxy_logger.warning(
+            "litellm.responses: upstream content filter blocked streaming request - "
+            "request_id=%s model=%s reason=%s event=%r request_input=%r",
+            getattr(self.logging_obj, "litellm_call_id", None),
+            self.model,
+            reason,
+            chunk,
+            request_input,
+        )
+
     def _model_call_ttft_ms(self) -> Optional[float]:
         start_time = getattr(self.logging_obj, "start_time", None)
         if not isinstance(start_time, datetime):
@@ -411,6 +447,8 @@ class BaseResponsesAPIStreamingIterator:
                     ResponsesAPIStreamEvents.RESPONSE_FAILED,
                 ):
                     self.completed_response = openai_responses_api_chunk
+                    if _chunk_type == ResponsesAPIStreamEvents.RESPONSE_INCOMPLETE:
+                        self._log_incomplete_response(openai_responses_api_chunk)
                     # Add cost to usage object if include_cost_in_streaming_usage is True
                     if (
                         litellm.include_cost_in_streaming_usage

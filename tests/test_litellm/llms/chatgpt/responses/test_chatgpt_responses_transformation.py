@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+import litellm
 
 sys.path.insert(0, os.path.abspath("../../../../.."))
 
@@ -850,6 +851,61 @@ class TestChatGPTResponsesAPITransformation:
 
         assert exc_info.value.status_code == 400
         assert exc_info.value.message == "Invalid request."
+
+    def test_should_summarize_chatgpt_non_stream_sse_content_filter(self):
+        config = ChatGPTResponsesAPIConfig()
+        sse_events = [
+            {
+                "type": "response.created",
+                "response": {"id": "resp_filtered", "status": "in_progress"},
+            },
+            {
+                "type": "response.incomplete",
+                "response": {
+                    "id": "resp_filtered",
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "content_filter"},
+                },
+            },
+        ]
+        sse_body = "\n".join(
+            [f"data: {json.dumps(event)}" for event in sse_events]
+            + ["data: [DONE]", ""]
+        )
+        raw_response = httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, text=sse_body
+        )
+
+        with pytest.raises(OpenAIError) as exc_info:
+            config.transform_response_api_response(
+                model="chatgpt/gpt-5.4-mini",
+                raw_response=raw_response,
+                logging_obj=MagicMock(),
+            )
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.message == (
+            "The upstream response was blocked by the content filter "
+            "(content_policy_violation)."
+        )
+        assert exc_info.value.body == {
+            "error": {
+                "code": "content_policy_violation",
+                "message": (
+                    "The upstream response was blocked by the content filter "
+                    "(content_policy_violation)."
+                ),
+                "param": None,
+                "type": "invalid_request_error",
+            }
+        }
+
+        with pytest.raises(litellm.ContentPolicyViolationError):
+            litellm.exception_type(
+                model="gpt-5.4-mini",
+                original_exception=exc_info.value,
+                custom_llm_provider="chatgpt",
+            )
 
     def test_chatgpt_non_stream_error_event_uses_top_level_status_code(self):
         config = ChatGPTResponsesAPIConfig()

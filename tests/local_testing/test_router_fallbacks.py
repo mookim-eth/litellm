@@ -1158,6 +1158,21 @@ async def test_router_content_policy_fallbacks(
         ),
     )
 
+    if fallback_type == "default":
+        if sync_mode is True:
+            with pytest.raises(litellm.ContentPolicyViolationError):
+                router.completion(
+                    model="claude-sonnet-4-5-20250929",
+                    messages=[{"role": "user", "content": "Hey, how's it going?"}],
+                )
+        else:
+            with pytest.raises(litellm.ContentPolicyViolationError):
+                await router.acompletion(
+                    model="claude-sonnet-4-5-20250929",
+                    messages=[{"role": "user", "content": "Hey, how's it going?"}],
+                )
+        return
+
     if sync_mode is True:
         response = router.completion(
             model="claude-sonnet-4-5-20250929",

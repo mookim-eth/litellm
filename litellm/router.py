@@ -5337,6 +5337,15 @@ class Router:
 
         if disable_fallbacks is True or original_model_group is None:
             raise e
+        if (
+            isinstance(e, litellm.ContentPolicyViolationError)
+            and content_policy_fallbacks is None
+        ):
+            verbose_router_logger.info(
+                "Got 'ContentPolicyViolationError' without an explicit "
+                "content_policy_fallback; skipping regular fallbacks."
+            )
+            raise e
 
         input_kwargs = {
             "litellm_router": self,
@@ -5472,40 +5481,27 @@ class Router:
 
                     e.message += "\n{}".format(error_message)
             elif isinstance(e, litellm.ContentPolicyViolationError):
-                if content_policy_fallbacks is not None:
-                    content_policy_fallback_model_group: Optional[List[str]] = (
-                        self._get_fallback_model_group_from_fallbacks(
-                            fallbacks=content_policy_fallbacks,
-                            model_group=model_group,
-                        )
+                content_policy_fallback_model_group: Optional[List[str]] = (
+                    self._get_fallback_model_group_from_fallbacks(
+                        fallbacks=content_policy_fallbacks,
+                        model_group=model_group,
                     )
-                    if content_policy_fallback_model_group is None:
-                        raise original_exception
+                )
+                if content_policy_fallback_model_group is None:
+                    raise original_exception
 
-                    input_kwargs.update(
-                        {
-                            "fallback_model_group": content_policy_fallback_model_group,
-                            "original_model_group": original_model_group,
-                        }
-                    )
+                input_kwargs.update(
+                    {
+                        "fallback_model_group": content_policy_fallback_model_group,
+                        "original_model_group": original_model_group,
+                    }
+                )
 
-                    response = await run_async_fallback(
-                        *args,
-                        **input_kwargs,
-                    )
-                    return response
-                else:
-                    error_message = "model={}. content_policy_fallback={}. fallbacks={}.\n\nSet 'content_policy_fallback' - https://docs.litellm.ai/docs/routing#fallbacks".format(
-                        model_group, content_policy_fallbacks, fallbacks
-                    )
-                    verbose_router_logger.info(
-                        msg="Got 'ContentPolicyViolationError'. No content_policy_fallback set. Defaulting \
-                        to fallbacks, if available.{}".format(
-                            error_message
-                        )
-                    )
-
-                    e.message += "\n{}".format(error_message)
+                response = await run_async_fallback(
+                    *args,
+                    **input_kwargs,
+                )
+                return response
             if fallbacks is not None and model_group is not None:
                 verbose_router_logger.debug(f"inside model fallbacks: {fallbacks}")
                 (

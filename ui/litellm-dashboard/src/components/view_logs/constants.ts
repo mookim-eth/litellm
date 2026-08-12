@@ -1,4 +1,5 @@
 export const ERROR_CODE_OPTIONS: { label: string; value: string }[] = [
+  { label: "200 - Failed SSE Response (Legacy)", value: "200" },
   { label: "400 - Bad Request", value: "400" },
   { label: "401 - Invalid Authentication", value: "401" },
   { label: "403 - Permission Denied", value: "403" },
