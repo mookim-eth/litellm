@@ -1098,6 +1098,7 @@ class TestBaseResponsesAPIStreamingIterator:
                 iterator._process_chunk(json.dumps(test_chunk_data))
 
         assert exc_info.value.status_code == 429
+        assert exc_info.value.is_responses_stream_overload is True
         assert "Selected model is at capacity" in str(exc_info.value)
         assert "retry-after" not in exc_info.value.response.headers
         assert any(

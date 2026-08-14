@@ -980,6 +980,178 @@ async def test_router_ageneric_api_call_with_fallbacks_helper():
                     assert router.fail_calls["gpt-3.5-turbo"] == initial_fail_count + 1
 
 
+class _TestResponsesStream:
+    def __init__(self, events, error=None):
+        self._events = iter(events)
+        self._error = error
+        self.closed = False
+        self._hidden_params = {"model_id": "test-model-id"}
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._events)
+        except StopIteration:
+            if self._error is not None:
+                error, self._error = self._error, None
+                raise error
+            raise StopAsyncIteration
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_overload_before_output_uses_fallback():
+    from types import SimpleNamespace
+
+    from litellm.responses.streaming_iterator import BaseResponsesAPIStreamingIterator
+
+    router = litellm.Router(
+        model_list=[], fallbacks=[{"primary": ["fallback"]}]
+    )
+    overload = litellm.RateLimitError(
+        message="Our servers are currently overloaded",
+        model="primary-deployment",
+        llm_provider="chatgpt",
+    )
+    overload.is_responses_stream_overload = True
+    primary = _TestResponsesStream(
+        [
+            SimpleNamespace(
+                type="response.created",
+                response=SimpleNamespace(id="primary"),
+                sequence_number=0,
+            )
+        ],
+        error=overload,
+    )
+    fallback = _TestResponsesStream(
+        [
+            SimpleNamespace(
+                type="response.created",
+                response=SimpleNamespace(id="fallback"),
+                sequence_number=0,
+            ),
+            SimpleNamespace(
+                type="response.output_text.delta", delta="ok", sequence_number=1
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(id="fallback"),
+                sequence_number=2,
+            ),
+        ]
+    )
+
+    with patch.object(
+        router,
+        "async_function_with_fallbacks_common_utils",
+        new=AsyncMock(return_value=fallback),
+    ) as mock_fallback:
+        response = router._aresponses_streaming_iterator(
+            model_response=primary,
+            initial_kwargs={"model": "primary", "stream": True},
+        )
+        events = [event async for event in response]
+
+    assert isinstance(response, BaseResponsesAPIStreamingIterator)
+    assert [event.type for event in events] == [
+        "response.created",
+        "response.output_text.delta",
+        "response.completed",
+    ]
+    assert [event.sequence_number for event in events] == [0, 1, 2]
+    assert events[0].response.id == "fallback"
+    assert all(
+        getattr(getattr(event, "response", None), "id", None) != "primary"
+        for event in events
+    )
+    mock_fallback.assert_awaited_once()
+    assert mock_fallback.await_args.kwargs["e"] is overload
+    assert primary.closed is True
+    assert fallback.closed is True
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_overload_after_output_does_not_fallback():
+    from types import SimpleNamespace
+
+    router = litellm.Router(model_list=[], fallbacks=[{"primary": ["fallback"]}])
+    overload = litellm.RateLimitError(
+        message="Our servers are currently overloaded",
+        model="primary-deployment",
+        llm_provider="chatgpt",
+    )
+    overload.is_responses_stream_overload = True
+    primary = _TestResponsesStream(
+        [
+            SimpleNamespace(type="response.created", response=SimpleNamespace(id="primary")),
+            SimpleNamespace(type="response.output_text.delta", delta="partial"),
+        ],
+        error=overload,
+    )
+
+    with patch.object(
+        router,
+        "async_function_with_fallbacks_common_utils",
+        new=AsyncMock(),
+    ) as mock_fallback:
+        response = router._aresponses_streaming_iterator(
+            model_response=primary,
+            initial_kwargs={"model": "primary", "stream": True},
+        )
+        events = []
+        with pytest.raises(litellm.RateLimitError):
+            async for event in response:
+                events.append(event)
+
+    assert [event.type for event in events] == [
+        "response.created",
+        "response.output_text.delta",
+    ]
+    mock_fallback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_non_overload_error_does_not_fallback():
+    from types import SimpleNamespace
+
+    router = litellm.Router(model_list=[], fallbacks=[{"primary": ["fallback"]}])
+    provider_error = litellm.BadRequestError(
+        message="invalid request",
+        model="primary-deployment",
+        llm_provider="chatgpt",
+    )
+    primary = _TestResponsesStream(
+        [
+            SimpleNamespace(
+                type="response.created", response=SimpleNamespace(id="primary")
+            )
+        ],
+        error=provider_error,
+    )
+
+    with patch.object(
+        router,
+        "async_function_with_fallbacks_common_utils",
+        new=AsyncMock(),
+    ) as mock_fallback:
+        response = router._aresponses_streaming_iterator(
+            model_response=primary,
+            initial_kwargs={"model": "primary", "stream": True},
+        )
+        events = []
+        with pytest.raises(litellm.BadRequestError):
+            async for event in response:
+                events.append(event)
+
+    assert [event.type for event in events] == ["response.created"]
+    mock_fallback.assert_not_awaited()
+
+
 def test_router_get_model_access_groups_team_only_models():
     """
     Test that Router.get_model_access_groups returns the correct response for team-only models

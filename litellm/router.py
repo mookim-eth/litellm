@@ -3838,6 +3838,14 @@ class Router:
         """
 
         passthrough_on_no_deployment = kwargs.pop("passthrough_on_no_deployment", False)
+        streaming_fallback_kwargs = kwargs.copy()
+        streaming_fallback_kwargs.update(
+            {
+                "model": model,
+                "original_generic_function": original_generic_function,
+                "original_function": self._ageneric_api_call_with_fallbacks_helper,
+            }
+        )
         function_name = "_ageneric_api_call_with_fallbacks"
         try:
             parent_otel_span = _get_parent_otel_span_from_kwargs(kwargs)
@@ -3917,6 +3925,17 @@ class Router:
                 f"ageneric_api_call_with_fallbacks(model={model_name})\033[32m 200 OK\033[0m"
             )
 
+            if kwargs.get("stream") is True:
+                from litellm.responses.streaming_iterator import (
+                    BaseResponsesAPIStreamingIterator,
+                )
+
+                if isinstance(response, BaseResponsesAPIStreamingIterator):
+                    return self._aresponses_streaming_iterator(
+                        model_response=response,
+                        initial_kwargs=streaming_fallback_kwargs,
+                    )
+
             return response
         except Exception as e:
             verbose_router_logger.info(
@@ -3925,6 +3944,134 @@ class Router:
             if model is not None:
                 self.fail_calls[model] += 1
             raise e
+
+    def _aresponses_streaming_iterator(
+        self,
+        model_response: Any,
+        initial_kwargs: dict,
+    ) -> Any:
+        """Apply Router fallbacks to retryable failures inside a Responses SSE stream."""
+        from litellm.responses.streaming_iterator import (
+            BaseResponsesAPIStreamingIterator,
+        )
+        from litellm.types.llms.openai import ResponsesAPIStreamEvents
+
+        router_self = self
+
+        class ResponsesFallbackStreamWrapper(BaseResponsesAPIStreamingIterator):
+            def __init__(self, async_generator: AsyncGenerator):
+                # Deliberately do not initialize a second provider iterator. This
+                # wrapper only preserves the concrete iterator type expected by
+                # the proxy and delegates stream ownership to the generator.
+                self._async_generator = async_generator
+                self._active_response = model_response
+                self._hidden_params = getattr(model_response, "_hidden_params", {})
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._active_response, name)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                return await self._async_generator.__anext__()
+
+            async def aclose(self) -> None:
+                await self._async_generator.aclose()
+
+            def close(self) -> None:
+                close = getattr(self._active_response, "close", None)
+                if callable(close):
+                    close()
+
+            def record_proxy_first_yield(self) -> None:
+                record = getattr(self._active_response, "record_proxy_first_yield", None)
+                if callable(record):
+                    record()
+
+        wrapper: ResponsesFallbackStreamWrapper
+
+        async def stream_with_fallbacks():
+            fallback_response = None
+            buffered_events: List[Any] = []
+            stream_committed = False
+            try:
+                try:
+                    async for item in model_response:
+                        event_type = getattr(item, "type", None)
+                        if not stream_committed and event_type in (
+                            ResponsesAPIStreamEvents.RESPONSE_CREATED,
+                            ResponsesAPIStreamEvents.RESPONSE_IN_PROGRESS,
+                        ):
+                            buffered_events.append(item)
+                            continue
+
+                        if not stream_committed:
+                            stream_committed = True
+                            for buffered_item in buffered_events:
+                                yield buffered_item
+                            buffered_events.clear()
+                        yield item
+                except Exception as e:
+                    if not (
+                        getattr(e, "is_responses_stream_overload", False)
+                        and not stream_committed
+                    ):
+                        for buffered_item in buffered_events:
+                            yield buffered_item
+                        raise
+
+                    model_group = cast(str, initial_kwargs.get("model"))
+                    fallbacks: Optional[List] = initial_kwargs.get(
+                        "fallbacks", router_self.fallbacks
+                    )
+                    context_window_fallbacks: Optional[List] = initial_kwargs.get(
+                        "context_window_fallbacks",
+                        router_self.context_window_fallbacks,
+                    )
+                    content_policy_fallbacks: Optional[List] = initial_kwargs.get(
+                        "content_policy_fallbacks",
+                        router_self.content_policy_fallbacks,
+                    )
+                    router_self._update_kwargs_before_fallbacks(
+                        model=model_group,
+                        kwargs=initial_kwargs,
+                        metadata_variable_name="litellm_metadata",
+                    )
+                    fallback_response = (
+                        await router_self.async_function_with_fallbacks_common_utils(
+                            e=e,
+                            disable_fallbacks=False,
+                            fallbacks=fallbacks,
+                            context_window_fallbacks=context_window_fallbacks,
+                            content_policy_fallbacks=content_policy_fallbacks,
+                            model_group=model_group,
+                            args=(),
+                            kwargs=initial_kwargs,
+                        )
+                    )
+                    wrapper._active_response = fallback_response
+                    if not hasattr(fallback_response, "__aiter__"):
+                        raise TypeError(
+                            "Responses stream fallback returned a non-streaming response"
+                        )
+                    async for fallback_item in fallback_response:
+                        yield fallback_item
+            finally:
+                with anyio.CancelScope(shield=True):
+                    for response in (model_response, fallback_response):
+                        close = getattr(response, "aclose", None)
+                        if callable(close):
+                            try:
+                                await close()
+                            except BaseException as e:
+                                verbose_router_logger.debug(
+                                    "responses stream fallback: error closing response: %s",
+                                    e,
+                                )
+
+        wrapper = ResponsesFallbackStreamWrapper(stream_with_fallbacks())
+        return wrapper
 
     def _generic_api_call_with_fallbacks(
         self, model: str, original_function: Callable, **kwargs

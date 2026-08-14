@@ -526,6 +526,10 @@ class BaseResponsesAPIStreamingIterator:
                 llm_provider=self.custom_llm_provider or "",
                 response=self.response,
             )
+            # The HTTP request has already returned 200 at this point, so the
+            # Router can only distinguish this provider-side SSE failure from
+            # an unrelated/local 429 while consuming the stream.
+            setattr(exception, "is_responses_stream_overload", True)
             verbose_logger.warning(
                 "responses stream: %s mapped to retryable RateLimitError (429); message=%s",
                 error_info.get("code"),
