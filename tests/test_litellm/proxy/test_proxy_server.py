@@ -4505,6 +4505,60 @@ async def test_async_data_generator_cleanup_on_midstream_error():
     mock_response.aclose.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_async_data_generator_maps_responses_overload_to_retryable_event():
+    """An exhausted Responses overload must be retryable by Codex."""
+    from litellm.proxy._types import UserAPIKeyAuth
+    from litellm.proxy.proxy_server import async_data_generator
+    from litellm.proxy.utils import ProxyLogging
+
+    overload = litellm.RateLimitError(
+        message="Our servers are currently overloaded",
+        model="test-model",
+        llm_provider="chatgpt",
+    )
+    overload.is_responses_stream_overload = True
+
+    async def mock_streaming_iterator_with_overload(*args, **kwargs):
+        raise overload
+        yield  # pragma: no cover
+
+    mock_proxy_logging_obj = MagicMock(spec=ProxyLogging)
+    mock_proxy_logging_obj.async_post_call_streaming_iterator_hook = (
+        mock_streaming_iterator_with_overload
+    )
+    mock_proxy_logging_obj.post_call_failure_hook = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.aclose = AsyncMock()
+
+    with patch("litellm.proxy.proxy_server.proxy_logging_obj", mock_proxy_logging_obj):
+        chunks = [
+            chunk
+            async for chunk in async_data_generator(
+                mock_response,
+                MagicMock(spec=UserAPIKeyAuth),
+                {"model": "test-model", "stream": True},
+            )
+        ]
+
+    assert len(chunks) == 1
+    event = json.loads(chunks[0].removeprefix("data: "))
+    assert event == {
+        "type": "response.failed",
+        "response": {
+            "error": {
+                "code": "rate_limit_exceeded",
+                "message": (
+                    "Our servers are currently overloaded. "
+                    "Please try again in 10 seconds."
+                ),
+            }
+        },
+    }
+    mock_proxy_logging_obj.post_call_failure_hook.assert_awaited_once()
+    mock_response.aclose.assert_awaited_once()
+
+
 # ============================================================================
 # store_model_in_db DB Config Override Tests
 # ============================================================================

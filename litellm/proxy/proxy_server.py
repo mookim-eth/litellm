@@ -6524,6 +6524,24 @@ async def async_data_generator(  # noqa: PLR0915
             f"\033[1;31mAn error occurred: {e}\n\n Debug this by setting `--debug`, e.g. `litellm --model gpt-3.5-turbo --debug`"
         )
 
+        if getattr(e, "is_responses_stream_overload", False):
+            # Codex treats server_is_overloaded/slow_down as terminal errors. Map
+            # the exhausted upstream overload to its retryable Responses error
+            # shape, including the exact delay phrase parsed by the client.
+            retryable_error = {
+                "type": "response.failed",
+                "response": {
+                    "error": {
+                        "code": "rate_limit_exceeded",
+                        "message": (
+                            "Our servers are currently overloaded. "
+                            "Please try again in 10 seconds."
+                        ),
+                    }
+                },
+            }
+            yield f"data: {json.dumps(retryable_error)}\n\n"
+            return
         if isinstance(e, HTTPException):
             raise e
         elif isinstance(e, StreamingCallbackError):
