@@ -1047,6 +1047,9 @@ async def test_responses_stream_overload_before_output_uses_fallback():
                 part=SimpleNamespace(type="output_text", text=""),
                 sequence_number=4,
             ),
+            SimpleNamespace(
+                type="error", code="server_is_overloaded", sequence_number=5
+            ),
         ],
         error=overload,
     )
@@ -1167,6 +1170,7 @@ async def test_responses_stream_non_overload_error_does_not_fallback():
                 item_id="primary-message",
                 part=SimpleNamespace(type="output_text", text=""),
             ),
+            SimpleNamespace(type="error", code="invalid_request_error"),
         ],
         error=provider_error,
     )
@@ -1189,6 +1193,7 @@ async def test_responses_stream_non_overload_error_does_not_fallback():
         "response.created",
         "response.output_item.added",
         "response.content_part.added",
+        "error",
     ]
     mock_fallback.assert_not_awaited()
 

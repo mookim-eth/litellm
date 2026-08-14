@@ -3996,6 +3996,7 @@ class Router:
             ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
             ResponsesAPIStreamEvents.CONTENT_PART_ADDED,
             ResponsesAPIStreamEvents.RESPONSE_PART_ADDED,
+            ResponsesAPIStreamEvents.ERROR,
         )
 
         async def stream_with_fallbacks():
