@@ -1024,7 +1024,29 @@ async def test_responses_stream_overload_before_output_uses_fallback():
                 type="response.created",
                 response=SimpleNamespace(id="primary"),
                 sequence_number=0,
-            )
+            ),
+            SimpleNamespace(
+                type="response.in_progress",
+                response=SimpleNamespace(id="primary"),
+                sequence_number=1,
+            ),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(id="primary-reasoning", summary=[]),
+                sequence_number=2,
+            ),
+            SimpleNamespace(
+                type="response.reasoning_summary_part.added",
+                item_id="primary-reasoning",
+                part=SimpleNamespace(type="summary_text", text=""),
+                sequence_number=3,
+            ),
+            SimpleNamespace(
+                type="response.content_part.added",
+                item_id="primary-message",
+                part=SimpleNamespace(type="output_text", text=""),
+                sequence_number=4,
+            ),
         ],
         error=overload,
     )
@@ -1076,7 +1098,7 @@ async def test_responses_stream_overload_before_output_uses_fallback():
 
 
 @pytest.mark.asyncio
-async def test_responses_stream_overload_after_output_does_not_fallback():
+async def test_responses_stream_overload_after_output_does_not_fallback(caplog):
     from types import SimpleNamespace
 
     router = litellm.Router(model_list=[], fallbacks=[{"primary": ["fallback"]}])
@@ -1094,25 +1116,31 @@ async def test_responses_stream_overload_after_output_does_not_fallback():
         error=overload,
     )
 
-    with patch.object(
-        router,
-        "async_function_with_fallbacks_common_utils",
-        new=AsyncMock(),
-    ) as mock_fallback:
-        response = router._aresponses_streaming_iterator(
-            model_response=primary,
-            initial_kwargs={"model": "primary", "stream": True},
-        )
-        events = []
-        with pytest.raises(litellm.RateLimitError):
-            async for event in response:
-                events.append(event)
+    with caplog.at_level("DEBUG"):
+        with patch.object(
+            router,
+            "async_function_with_fallbacks_common_utils",
+            new=AsyncMock(),
+        ) as mock_fallback:
+            response = router._aresponses_streaming_iterator(
+                model_response=primary,
+                initial_kwargs={"model": "primary", "stream": True},
+            )
+            events = []
+            with pytest.raises(litellm.RateLimitError):
+                async for event in response:
+                    events.append(event)
 
     assert [event.type for event in events] == [
         "response.created",
         "response.output_text.delta",
     ]
     mock_fallback.assert_not_awaited()
+    assert any(
+        "committed_by_event_type=response.output_text.delta" in record.message
+        and "stream_committed=True" in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -1129,7 +1157,16 @@ async def test_responses_stream_non_overload_error_does_not_fallback():
         [
             SimpleNamespace(
                 type="response.created", response=SimpleNamespace(id="primary")
-            )
+            ),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(id="primary-reasoning", summary=[]),
+            ),
+            SimpleNamespace(
+                type="response.content_part.added",
+                item_id="primary-message",
+                part=SimpleNamespace(type="output_text", text=""),
+            ),
         ],
         error=provider_error,
     )
@@ -1148,7 +1185,11 @@ async def test_responses_stream_non_overload_error_does_not_fallback():
             async for event in response:
                 events.append(event)
 
-    assert [event.type for event in events] == ["response.created"]
+    assert [event.type for event in events] == [
+        "response.created",
+        "response.output_item.added",
+        "response.content_part.added",
+    ]
     mock_fallback.assert_not_awaited()
 
 

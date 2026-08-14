@@ -3945,7 +3945,7 @@ class Router:
                 self.fail_calls[model] += 1
             raise e
 
-    def _aresponses_streaming_iterator(
+    def _aresponses_streaming_iterator(  # noqa: PLR0915
         self,
         model_response: Any,
         initial_kwargs: dict,
@@ -3990,32 +3990,62 @@ class Router:
                     record()
 
         wrapper: ResponsesFallbackStreamWrapper
+        pre_output_event_types = (
+            ResponsesAPIStreamEvents.RESPONSE_CREATED,
+            ResponsesAPIStreamEvents.RESPONSE_IN_PROGRESS,
+            ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
+            ResponsesAPIStreamEvents.CONTENT_PART_ADDED,
+            ResponsesAPIStreamEvents.RESPONSE_PART_ADDED,
+        )
 
         async def stream_with_fallbacks():
             fallback_response = None
             buffered_events: List[Any] = []
             stream_committed = False
+            committed_by_event_type = None
+            observed_event_types: List[Any] = []
+            collect_debug_event_types = verbose_router_logger.isEnabledFor(
+                logging.DEBUG
+            )
             try:
                 try:
                     async for item in model_response:
                         event_type = getattr(item, "type", None)
-                        if not stream_committed and event_type in (
-                            ResponsesAPIStreamEvents.RESPONSE_CREATED,
-                            ResponsesAPIStreamEvents.RESPONSE_IN_PROGRESS,
+                        event_type_value = getattr(event_type, "value", event_type)
+                        if collect_debug_event_types and len(observed_event_types) < 20:
+                            observed_event_types.append(event_type_value)
+                        if (
+                            not stream_committed
+                            and event_type in pre_output_event_types
                         ):
                             buffered_events.append(item)
                             continue
 
                         if not stream_committed:
                             stream_committed = True
+                            committed_by_event_type = event_type_value
                             for buffered_item in buffered_events:
                                 yield buffered_item
                             buffered_events.clear()
                         yield item
                 except Exception as e:
+                    is_responses_stream_overload = getattr(
+                        e, "is_responses_stream_overload", False
+                    )
+                    if is_responses_stream_overload:
+                        verbose_router_logger.debug(
+                            "responses stream overload fallback decision: "
+                            "model_group=%s stream_committed=%s "
+                            "committed_by_event_type=%s observed_event_types=%s "
+                            "fallbacks=%s",
+                            initial_kwargs.get("model"),
+                            stream_committed,
+                            committed_by_event_type,
+                            observed_event_types,
+                            initial_kwargs.get("fallbacks", router_self.fallbacks),
+                        )
                     if not (
-                        getattr(e, "is_responses_stream_overload", False)
-                        and not stream_committed
+                        is_responses_stream_overload and not stream_committed
                     ):
                         for buffered_item in buffered_events:
                             yield buffered_item
