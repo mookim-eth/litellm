@@ -20,6 +20,8 @@ _OPTIONAL_KWARGS_KEYS = frozenset(
         "vertex_ai_location",
         "vertex_ai_credentials",
         "chatgpt_auth_file_path",
+        "chatgpt_fingerprint_mode",
+        "chatgpt_fingerprint_installation_id",
         "aws_region_name",
         "aws_access_key_id",
         "aws_secret_access_key",

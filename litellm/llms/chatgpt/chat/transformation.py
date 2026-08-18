@@ -7,8 +7,14 @@ from litellm.types.llms.openai import AllMessageValues
 from ..authenticator import Authenticator
 from ..common_utils import (
     GetAccessTokenError,
+    apply_chatgpt_client_identity_headers,
+    apply_chatgpt_fingerprint_client_metadata,
+    apply_chatgpt_fingerprint_headers,
     ensure_chatgpt_session_id,
     get_chatgpt_default_headers,
+    get_chatgpt_fingerprint_mode,
+    get_chatgpt_fingerprint_request_headers,
+    resolve_chatgpt_fingerprint_ids_with_fallback,
 )
 from .streaming_utils import ChatGPTToolCallNormalizer
 
@@ -81,10 +87,25 @@ class ChatGPTConfig(OpenAIConfig):
 
         account_id = authenticator.get_account_id()
         session_id = ensure_chatgpt_session_id(litellm_params)
+        fingerprint_client_headers = get_chatgpt_fingerprint_request_headers(
+            litellm_params, headers
+        )
+        fingerprint_ids = resolve_chatgpt_fingerprint_ids_with_fallback(
+            litellm_params=litellm_params,
+            account_id=account_id,
+            get_persisted_installation_id=authenticator.get_or_create_installation_id,
+        )
+        if litellm_params is not None:
+            litellm_params["chatgpt_fingerprint_ids"] = fingerprint_ids
         default_headers = get_chatgpt_default_headers(
             resolved_api_key or "", account_id, session_id
         )
-        return {**default_headers, **validated_headers}
+        merged_headers = {**default_headers, **validated_headers}
+        apply_chatgpt_client_identity_headers(
+            merged_headers, fingerprint_client_headers
+        )
+        apply_chatgpt_fingerprint_headers(merged_headers, fingerprint_ids)
+        return merged_headers
 
     def post_stream_processing(self, stream: Any) -> Any:
         return ChatGPTToolCallNormalizer(stream)
@@ -139,6 +160,28 @@ class ChatGPTConfig(OpenAIConfig):
 
         if extra_body:
             optional_params = {**optional_params, "extra_body": extra_body}
+
+        fingerprint_mode = get_chatgpt_fingerprint_mode(litellm_params)
+        fingerprint_ids = (
+            litellm_params.get("chatgpt_fingerprint_ids")
+            if fingerprint_mode != "off"
+            else None
+        )
+        if fingerprint_ids is None and fingerprint_mode != "off":
+            authenticator = self._get_authenticator_for_request(
+                api_base=litellm_params.get("api_base"),
+                litellm_params=litellm_params,
+            )
+            fingerprint_ids = resolve_chatgpt_fingerprint_ids_with_fallback(
+                litellm_params=litellm_params,
+                account_id=authenticator.get_account_id(),
+                get_persisted_installation_id=authenticator.get_or_create_installation_id,
+            )
+        if fingerprint_ids is not None:
+            apply_chatgpt_fingerprint_headers(headers, fingerprint_ids)
+            extra_body = dict(optional_params.get("extra_body") or {})
+            if apply_chatgpt_fingerprint_client_metadata(extra_body, fingerprint_ids):
+                optional_params = {**optional_params, "extra_body": extra_body}
 
         return {"model": model, "messages": non_instruction_messages, **optional_params}
 

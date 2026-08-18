@@ -1,8 +1,10 @@
 import base64
 import json
 import os
+import stat
 import time
 from unittest.mock import mock_open, patch
+from uuid import UUID
 
 import pytest
 
@@ -113,3 +115,32 @@ class TestChatGPTAuthenticator:
         assert "Interactive ChatGPT device-code login is disabled" in str(
             exc_info.value
         )
+
+    def test_installation_id_is_random_and_persisted_next_to_auth_file(
+        self, tmp_path
+    ):
+        auth_file = tmp_path / "account.json"
+        auth_file.write_text("{}", encoding="utf-8")
+
+        first = Authenticator(auth_file_path=str(auth_file))
+        first_id = first.get_or_create_installation_id()
+        second_id = Authenticator(
+            auth_file_path=str(auth_file)
+        ).get_or_create_installation_id()
+
+        assert first_id is not None
+        assert UUID(first_id).version == 4
+        assert second_id == first_id
+        assert first.installation_id_file == f"{auth_file}.installation_id"
+        assert stat.S_IMODE(os.stat(first.installation_id_file).st_mode) == 0o600
+
+    def test_invalid_persisted_installation_id_fails_closed(self, tmp_path):
+        auth_file = tmp_path / "account.json"
+        auth_file.write_text("{}", encoding="utf-8")
+        installation_file = tmp_path / "account.json.installation_id"
+        installation_file.write_text("not-a-uuid", encoding="utf-8")
+
+        authenticator = Authenticator(auth_file_path=str(auth_file))
+
+        assert authenticator.get_or_create_installation_id() is None
+        assert installation_file.read_text(encoding="utf-8") == "not-a-uuid"

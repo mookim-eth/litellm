@@ -97,6 +97,32 @@ model_list:
       model: chatgpt/gpt-5.3-chat-latest
 ```
 
+### Codex fingerprint convergence
+
+When several callers share one ChatGPT OAuth deployment, Codex client identity
+headers and `client_metadata` can be converged to the deployment account. The
+feature is explicitly opt-in; omitted or invalid values leave the client
+identity unchanged.
+
+```yaml
+litellm_params:
+  model: chatgpt/gpt-5.3-codex
+  chatgpt_auth_file_path: /path/to/auth.json
+  chatgpt_fingerprint_mode: device  # off | device
+```
+
+`device` converges only `installation_id` and preserves the client's session,
+thread, turn, window, and prompt-cache identity. For backward compatibility,
+legacy `session` and `full` values normalize to `device`. A valid OAuth
+`account_id` is deterministically mapped to a UUIDv4-shaped installation ID, so
+the same account remains stable without exposing its raw ID. If `account_id` is
+missing or invalid, LiteLLM creates a random UUIDv4 in
+`<auth-file>.installation_id` and reuses it across restarts.
+`chatgpt_fingerprint_installation_id` may be supplied to use an explicit stable
+UUID instead. Regular Responses requests project the identity through
+`client_metadata`; compact requests use the direct installation header. Include
+the sidecar file in backups when an account uses the random fallback.
+
 ```bash showLineNumbers title="Start LiteLLM Proxy"
 litellm --config config.yaml
 ```

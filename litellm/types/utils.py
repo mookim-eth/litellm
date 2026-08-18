@@ -3103,6 +3103,8 @@ all_litellm_params = (
         "azure_scope",
         "client_secret",
         "chatgpt_auth_file_path",
+        "chatgpt_fingerprint_mode",
+        "chatgpt_fingerprint_installation_id",
         "user_continue_message",
         "configurable_clientside_auth_params",
         "weight",

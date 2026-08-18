@@ -22,8 +22,14 @@ from ..authenticator import Authenticator
 from ..common_utils import (
     CHATGPT_API_BASE,
     GetAccessTokenError,
+    apply_chatgpt_client_identity_headers,
+    apply_chatgpt_fingerprint_client_metadata,
+    apply_chatgpt_fingerprint_headers,
     ensure_chatgpt_session_id,
+    get_chatgpt_fingerprint_mode,
     get_chatgpt_default_headers,
+    get_chatgpt_fingerprint_request_headers,
+    resolve_chatgpt_fingerprint_ids_with_fallback,
 )
 
 CODEX_RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
@@ -560,10 +566,30 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
 
         account_id = authenticator.get_account_id()
         session_id = ensure_chatgpt_session_id(litellm_params)
+        # Resolve once so headers and client_metadata share the same account identity.
+        fingerprint_client_headers = get_chatgpt_fingerprint_request_headers(
+            litellm_params, headers
+        )
+        fingerprint_ids = resolve_chatgpt_fingerprint_ids_with_fallback(
+            litellm_params=litellm_params,
+            account_id=account_id,
+            get_persisted_installation_id=authenticator.get_or_create_installation_id,
+        )
+        if litellm_params is not None:
+            if fingerprint_ids is None:
+                litellm_params["chatgpt_fingerprint_ids"] = None
+            else:
+                litellm_params["chatgpt_fingerprint_ids"] = fingerprint_ids
+
         default_headers = get_chatgpt_default_headers(
             access_token, account_id, session_id
         )
-        return {**default_headers, **headers}
+        merged_headers = {**default_headers, **headers}
+        apply_chatgpt_client_identity_headers(
+            merged_headers, fingerprint_client_headers
+        )
+        apply_chatgpt_fingerprint_headers(merged_headers, fingerprint_ids)
+        return merged_headers
 
     def transform_responses_api_request(
         self,
@@ -604,6 +630,25 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             include.append("reasoning.encrypted_content")
         request["include"] = include
 
+        fingerprint_mode = get_chatgpt_fingerprint_mode(litellm_params)
+        fingerprint_ids = None
+        if fingerprint_mode != "off" and litellm_params is not None:
+            fingerprint_ids = litellm_params.get("chatgpt_fingerprint_ids")
+        if fingerprint_ids is None and fingerprint_mode != "off":
+            # Keep direct provider-config calls correct even when the caller
+            # bypasses validate_environment (the normal HTTP path stages IDs).
+            authenticator = self._get_authenticator_for_request(
+                api_base=litellm_params.get("api_base") if litellm_params else None,
+                litellm_params=litellm_params,
+            )
+            fingerprint_ids = resolve_chatgpt_fingerprint_ids_with_fallback(
+                litellm_params=litellm_params,
+                account_id=authenticator.get_account_id(),
+                get_persisted_installation_id=authenticator.get_or_create_installation_id,
+            )
+        apply_chatgpt_fingerprint_headers(headers, fingerprint_ids)
+        apply_chatgpt_fingerprint_client_metadata(request, fingerprint_ids)
+
         allowed_keys = {
             "model",
             "input",
@@ -618,11 +663,50 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             "prompt_cache_key",
             "previous_response_id",
             "parallel_tool_calls",
+            "client_metadata",
             "truncation",
             "service_tier",
         }
 
         return {k: v for k, v in request.items() if k in allowed_keys}
+
+    def transform_compact_response_api_request(
+        self,
+        model: str,
+        input: Any,
+        response_api_optional_request_params: Dict,
+        api_base: str,
+        litellm_params: GenericLiteLLMParams,
+        headers: dict,
+    ) -> tuple[str, Dict]:
+        fingerprint_mode = get_chatgpt_fingerprint_mode(litellm_params)
+        fingerprint_ids = (
+            litellm_params.get("chatgpt_fingerprint_ids")
+            if fingerprint_mode != "off"
+            else None
+        )
+        if (
+            fingerprint_ids is None
+            and fingerprint_mode != "off"
+        ):
+            authenticator = self._get_authenticator_for_request(
+                api_base=litellm_params.get("api_base"),
+                litellm_params=litellm_params,
+            )
+            fingerprint_ids = resolve_chatgpt_fingerprint_ids_with_fallback(
+                litellm_params=litellm_params,
+                account_id=authenticator.get_account_id(),
+                get_persisted_installation_id=authenticator.get_or_create_installation_id,
+            )
+        apply_chatgpt_fingerprint_headers(headers, fingerprint_ids, compact=True)
+        return super().transform_compact_response_api_request(
+            model=model,
+            input=input,
+            response_api_optional_request_params=response_api_optional_request_params,
+            api_base=api_base,
+            litellm_params=litellm_params,
+            headers=headers,
+        )
 
     def transform_response_api_response(
         self,
