@@ -1603,10 +1603,6 @@ def completion(  # type: ignore # noqa: PLR0915
             client_id=kwargs.get("client_id"),
             client_secret=kwargs.get("client_secret"),
             chatgpt_auth_file_path=kwargs.get("chatgpt_auth_file_path"),
-            chatgpt_fingerprint_mode=kwargs.get("chatgpt_fingerprint_mode"),
-            chatgpt_fingerprint_installation_id=kwargs.get(
-                "chatgpt_fingerprint_installation_id"
-            ),
             azure_username=kwargs.get("azure_username"),
             azure_password=kwargs.get("azure_password"),
             azure_scope=kwargs.get("azure_scope"),

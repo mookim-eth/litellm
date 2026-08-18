@@ -148,8 +148,6 @@ class CredentialLiteLLMParams(BaseModel):
     api_base: Optional[str] = None
     api_version: Optional[str] = None
     chatgpt_auth_file_path: Optional[str] = None
-    chatgpt_fingerprint_mode: Optional[str] = None
-    chatgpt_fingerprint_installation_id: Optional[str] = None
     ## VERTEX AI ##
     vertex_project: Optional[str] = None
     vertex_location: Optional[str] = None

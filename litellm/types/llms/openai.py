@@ -1154,7 +1154,6 @@ class ResponsesAPIOptionalRequestParams(TypedDict, total=False):
     instructions: Optional[str]
     max_output_tokens: Optional[int]
     metadata: Optional[Dict[str, Any]]
-    client_metadata: Optional[Dict[str, Any]]
     parallel_tool_calls: Optional[bool]
     previous_response_id: Optional[str]
     reasoning: Optional[Reasoning]

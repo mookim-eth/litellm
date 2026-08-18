@@ -3,7 +3,6 @@ import json
 import os
 import time
 from typing import Any, Dict, Optional
-from uuid import UUID, uuid4
 
 import httpx
 
@@ -49,7 +48,6 @@ class Authenticator:
             self.auth_file = os.path.join(
                 self.token_dir, os.getenv("CHATGPT_AUTH_FILE", "auth.json")
             )
-        self.installation_id_file = f"{self.auth_file}.installation_id"
         self._ensure_token_dir()
 
     def get_api_base(self) -> str:
@@ -128,69 +126,6 @@ class Authenticator:
             auth_data["account_id"] = derived
             self._write_auth_file(auth_data)
         return derived
-
-    @staticmethod
-    def _normalize_installation_id(value: Any) -> Optional[str]:
-        try:
-            parsed = UUID(str(value).strip())
-        except (AttributeError, TypeError, ValueError):
-            return None
-        if parsed.int == 0:
-            return None
-        return str(parsed)
-
-    def _read_installation_id(self) -> Optional[str]:
-        try:
-            with open(self.installation_id_file, "r") as f:
-                raw_value = f.read()
-        except IOError:
-            return None
-        installation_id = self._normalize_installation_id(raw_value)
-        if installation_id is None:
-            verbose_logger.warning(
-                "Invalid ChatGPT installation ID file: %s",
-                self.installation_id_file,
-            )
-        return installation_id
-
-    def get_or_create_installation_id(self) -> Optional[str]:
-        """Persist one random installation identity next to this account auth file."""
-        installation_id = self._read_installation_id()
-        if installation_id is not None:
-            return installation_id
-
-        candidate = str(uuid4())
-        try:
-            file_descriptor = os.open(
-                self.installation_id_file,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o600,
-            )
-        except FileExistsError:
-            # Another worker may still be finishing the exclusive create.
-            for _ in range(3):
-                installation_id = self._read_installation_id()
-                if installation_id is not None:
-                    return installation_id
-                time.sleep(0.01)
-            return None
-        except OSError as exc:
-            verbose_logger.error(
-                "Failed to create ChatGPT installation ID file: %s", exc
-            )
-            return None
-
-        try:
-            with os.fdopen(file_descriptor, "w") as f:
-                f.write(f"{candidate}\n")
-                f.flush()
-                os.fsync(f.fileno())
-        except OSError as exc:
-            verbose_logger.error(
-                "Failed to write ChatGPT installation ID file: %s", exc
-            )
-            return None
-        return candidate
 
     def _ensure_token_dir(self) -> None:
         if not os.path.exists(self.token_dir):
