@@ -1477,3 +1477,84 @@ async def test_commit_spend_updates_uses_pipeline():
     mock_redis_update_buffer.get_all_daily_end_user_spend_update_transactions_from_redis_buffer.assert_not_called()
     mock_redis_update_buffer.get_all_daily_agent_spend_update_transactions_from_redis_buffer.assert_not_called()
     mock_redis_update_buffer.get_all_daily_tag_spend_update_transactions_from_redis_buffer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_daily_global_original_spend_tracks_original_chatgpt_gpt_cost():
+    writer = DBSpendUpdateWriter()
+    prisma_client = MagicMock()
+    prisma_client.get_request_status.return_value = "success"
+    payload = {
+        "startTime": "2026-08-18T01:02:03",
+        "api_key": "hashed-key",
+        "user": "user-1",
+        "model": "gpt-5.6-sol",
+        "model_group": "gpt-5.6-sol",
+        "model_id": "model-id",
+        "custom_llm_provider": "chatgpt",
+        "prompt_tokens": 10,
+        "completion_tokens": 20,
+        "spend": 1.5,
+        "call_type": "acompletion",
+        "metadata": json.dumps(
+            {
+                "usage_object": {},
+                "cost_breakdown": {
+                    "original_cost": 1.0,
+                    "total_cost": 1.5,
+                    "margin_percent": 0.5,
+                },
+            }
+        ),
+    }
+
+    await writer.add_spend_log_transaction_to_daily_global_original_transaction(
+        payload=payload,
+        prisma_client=prisma_client,
+    )
+
+    transactions = (
+        await writer.daily_global_original_spend_update_queue.flush_and_get_aggregated_daily_spend_update_transactions()
+    )
+
+    assert len(transactions) == 1
+    transaction = next(iter(transactions.values()))
+    assert transaction["spend"] == 1.0
+    assert transaction["api_key"] == "__global__"
+    assert transaction["model"] == "gpt-5.6-sol"
+    assert transaction["custom_llm_provider"] == "chatgpt"
+
+
+@pytest.mark.asyncio
+async def test_daily_global_original_spend_excludes_spark_models():
+    writer = DBSpendUpdateWriter()
+    prisma_client = MagicMock()
+    prisma_client.get_request_status.return_value = "success"
+    payload = {
+        "startTime": "2026-08-18T01:02:03",
+        "api_key": "hashed-key",
+        "user": "user-1",
+        "model": "gpt-5.3-codex-spark",
+        "model_group": "gpt-5.3-codex-spark",
+        "model_id": "spark-model-id",
+        "custom_llm_provider": "chatgpt",
+        "prompt_tokens": 10,
+        "completion_tokens": 20,
+        "spend": 1.5,
+        "metadata": json.dumps(
+            {
+                "usage_object": {},
+                "cost_breakdown": {"original_cost": 1.0},
+            }
+        ),
+    }
+
+    await writer.add_spend_log_transaction_to_daily_global_original_transaction(
+        payload=payload,
+        prisma_client=prisma_client,
+    )
+
+    transactions = (
+        await writer.daily_global_original_spend_update_queue.flush_and_get_aggregated_daily_spend_update_transactions()
+    )
+    assert transactions == {}

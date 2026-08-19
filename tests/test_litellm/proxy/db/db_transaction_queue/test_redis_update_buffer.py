@@ -46,6 +46,11 @@ async def test_store_in_memory_spend_updates_uses_pipeline(redis_update_buffer, 
         return_value={"user_key1": {"spend": 1.0}}
     )
 
+    daily_global_original_queue = AsyncMock()
+    daily_global_original_queue.flush_and_get_aggregated_daily_spend_update_transactions = AsyncMock(
+        return_value={}
+    )
+
     daily_team_queue = AsyncMock()
     daily_team_queue.flush_and_get_aggregated_daily_spend_update_transactions = AsyncMock(
         return_value={"team_key1": {"spend": 2.0}}
@@ -70,6 +75,7 @@ async def test_store_in_memory_spend_updates_uses_pipeline(redis_update_buffer, 
     await redis_update_buffer.store_in_memory_spend_updates_in_redis(
         spend_update_queue=spend_update_queue,
         daily_spend_update_queue=daily_spend_queue,
+        daily_global_original_spend_update_queue=daily_global_original_queue,
         daily_team_spend_update_queue=daily_team_queue,
         daily_org_spend_update_queue=daily_org_queue,
         daily_end_user_spend_update_queue=daily_end_user_queue,
@@ -107,6 +113,7 @@ async def test_store_in_memory_spend_updates_all_empty_returns_early(
     await redis_update_buffer.store_in_memory_spend_updates_in_redis(
         spend_update_queue=empty_queue,
         daily_spend_update_queue=empty_daily_queue,
+        daily_global_original_spend_update_queue=empty_daily_queue,
         daily_team_spend_update_queue=empty_daily_queue,
         daily_org_spend_update_queue=empty_daily_queue,
         daily_end_user_spend_update_queue=empty_daily_queue,
@@ -124,7 +131,7 @@ async def test_get_all_transactions_from_redis_buffer_pipeline(
     Verify get_all_transactions_from_redis_buffer_pipeline correctly parses
     and aggregates results from async_lpop_pipeline.
     """
-    # Simulate pipeline results: slot 0 = spend updates, slots 1-5 = daily categories
+    # Simulate pipeline results: slot 0 = spend updates, slots 1-6 = daily categories
     db_spend_json = json.dumps(
         {
             "key_list_transactions": {"key1": 1.0, "key2": 2.0},
@@ -137,23 +144,35 @@ async def test_get_all_transactions_from_redis_buffer_pipeline(
         }
     )
     daily_user_json = json.dumps({"user_key1": {"spend": 1.0, "api_requests": 1}})
+    daily_global_original_json = json.dumps(
+        {"global_key1": {"spend": 0.5, "api_requests": 1}}
+    )
     daily_team_json = json.dumps({"team_key1": {"spend": 2.0, "api_requests": 2}})
 
     mock_redis_cache.async_lpop_pipeline = AsyncMock(
         return_value=[
             [db_spend_json],        # slot 0: db spend updates
             [daily_user_json],      # slot 1: daily user
-            [daily_team_json],      # slot 2: daily team
-            None,                    # slot 3: daily org (empty)
-            None,                    # slot 4: daily end-user (empty)
-            None,                    # slot 5: daily agent (empty)
+            [daily_global_original_json],  # slot 2: daily global original
+            [daily_team_json],      # slot 3: daily team
+            None,                    # slot 4: daily org (empty)
+            None,                    # slot 5: daily end-user (empty)
+            None,                    # slot 6: daily agent (empty)
         ]
     )
 
     result = await redis_update_buffer.get_all_transactions_from_redis_buffer_pipeline()
 
-    assert len(result) == 6
-    db_spend, daily_user, daily_team, daily_org, daily_end_user, daily_agent = result
+    assert len(result) == 7
+    (
+        db_spend,
+        daily_user,
+        daily_global_original,
+        daily_team,
+        daily_org,
+        daily_end_user,
+        daily_agent,
+    ) = result
 
     # Verify db spend was parsed correctly
     assert db_spend is not None
@@ -164,6 +183,10 @@ async def test_get_all_transactions_from_redis_buffer_pipeline(
     # Verify daily user was parsed
     assert daily_user is not None
     assert daily_user["user_key1"]["spend"] == 1.0
+
+    # Verify daily global original was parsed
+    assert daily_global_original is not None
+    assert daily_global_original["global_key1"]["spend"] == 0.5
 
     # Verify daily team was parsed
     assert daily_team is not None
@@ -183,7 +206,7 @@ async def test_get_all_transactions_from_redis_buffer_pipeline_no_redis():
     """When redis_cache is None, should return all Nones"""
     buffer = RedisUpdateBuffer(redis_cache=None)
     result = await buffer.get_all_transactions_from_redis_buffer_pipeline()
-    assert result == (None, None, None, None, None, None)
+    assert result == (None, None, None, None, None, None, None)
 
 
 def test_validate_redis_transaction_buffer_raises_without_redis():

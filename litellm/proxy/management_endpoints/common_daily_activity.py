@@ -26,6 +26,7 @@ _PRISMA_TO_PG_TABLE: Dict[str, str] = {
     "litellm_dailyenduserspend": "LiteLLM_DailyEndUserSpend",
     "litellm_dailyagentspend": "LiteLLM_DailyAgentSpend",
     "litellm_dailytagspend": "LiteLLM_DailyTagSpend",
+    "litellm_dailyglobaloriginalspend": "LiteLLM_DailyGlobalOriginalSpend",
 }
 
 
@@ -807,6 +808,118 @@ async def get_daily_activity_aggregated(
     except Exception as e:
         verbose_proxy_logger.exception(
             f"Error fetching aggregated daily activity: {str(e)}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": f"Failed to fetch analytics: {str(e)}"},
+        )
+
+
+async def get_global_original_gpt_daily_activity(
+    prisma_client: Optional[PrismaClient],
+    start_date: Optional[str],
+    end_date: Optional[str],
+    model: Optional[str],
+    timezone_offset_minutes: Optional[int] = None,
+) -> SpendAnalyticsPaginatedResponse:
+    """
+    Return global daily original GPT spend, excluding spark models.
+
+    The source table stores original/provider cost in spend_original. The
+    response aliases it to metrics.spend to match the existing daily activity
+    response shape used by internal rank tooling.
+    """
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": CommonProxyErrors.db_not_connected_error.value},
+        )
+
+    if start_date is None or end_date is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "Please provide start_date and end_date"},
+        )
+
+    try:
+        adjusted_start, adjusted_end = _adjust_dates_for_timezone(
+            start_date, end_date, timezone_offset_minutes
+        )
+
+        sql_conditions: List[str] = [
+            "date >= $1",
+            "date <= $2",
+            "custom_llm_provider = 'chatgpt'",
+            "(model ILIKE '%gpt%' OR model_group ILIKE '%gpt%')",
+            "COALESCE(model, '') NOT ILIKE '%spark%'",
+            "COALESCE(model_group, '') NOT ILIKE '%spark%'",
+        ]
+        sql_params: List[Any] = [adjusted_start, adjusted_end]
+        if model:
+            sql_params.append(model)
+            sql_conditions.append(f"model = ${len(sql_params)}")
+
+        where_clause = " AND ".join(sql_conditions)
+        sql_query = f"""
+            SELECT
+                date,
+                '__global__' AS api_key,
+                model,
+                model_group,
+                custom_llm_provider,
+                NULL::text AS mcp_namespaced_tool_name,
+                endpoint,
+                SUM(spend_original)::float AS spend,
+                SUM(prompt_tokens)::bigint AS prompt_tokens,
+                SUM(completion_tokens)::bigint AS completion_tokens,
+                SUM(cache_read_input_tokens)::bigint AS cache_read_input_tokens,
+                SUM(cache_creation_input_tokens)::bigint AS cache_creation_input_tokens,
+                SUM(api_requests)::bigint AS api_requests,
+                SUM(successful_requests)::bigint AS successful_requests,
+                SUM(failed_requests)::bigint AS failed_requests
+            FROM "LiteLLM_DailyGlobalOriginalSpend"
+            WHERE {where_clause}
+            GROUP BY date, model, model_group, custom_llm_provider, endpoint
+            ORDER BY date DESC
+        """
+
+        rows = await prisma_client.db.query_raw(sql_query, *sql_params)
+        if rows is None:
+            rows = []
+
+        records = [SimpleNamespace(**row) for row in rows]
+        aggregated = await _aggregate_spend_records(
+            prisma_client=prisma_client,
+            records=records,
+            entity_id_field=None,
+            entity_metadata_field=None,
+        )
+
+        return SpendAnalyticsPaginatedResponse(
+            results=aggregated["results"],
+            metadata=DailySpendMetadata(
+                total_spend=aggregated["totals"].spend,
+                total_prompt_tokens=aggregated["totals"].prompt_tokens,
+                total_completion_tokens=aggregated["totals"].completion_tokens,
+                total_tokens=aggregated["totals"].total_tokens,
+                total_api_requests=aggregated["totals"].api_requests,
+                total_successful_requests=aggregated["totals"].successful_requests,
+                total_failed_requests=aggregated["totals"].failed_requests,
+                total_cache_read_input_tokens=aggregated[
+                    "totals"
+                ].cache_read_input_tokens,
+                total_cache_creation_input_tokens=aggregated[
+                    "totals"
+                ].cache_creation_input_tokens,
+                page=1,
+                total_pages=1,
+                has_more=False,
+            ),
+        )
+
+    except Exception as e:
+        verbose_proxy_logger.exception(
+            f"Error fetching global original GPT daily activity: {str(e)}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -14,6 +14,7 @@ from litellm.constants import (
     MAX_REDIS_BUFFER_DEQUEUE_COUNT,
     REDIS_DAILY_AGENT_SPEND_UPDATE_BUFFER_KEY,
     REDIS_DAILY_END_USER_SPEND_UPDATE_BUFFER_KEY,
+    REDIS_DAILY_GLOBAL_ORIGINAL_SPEND_UPDATE_BUFFER_KEY,
     REDIS_DAILY_ORG_SPEND_UPDATE_BUFFER_KEY,
     REDIS_DAILY_SPEND_UPDATE_BUFFER_KEY,
     REDIS_DAILY_TAG_SPEND_UPDATE_BUFFER_KEY,
@@ -24,6 +25,7 @@ from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 from litellm.proxy._types import (
     DailyAgentSpendTransaction,
     DailyEndUserSpendTransaction,
+    DailyGlobalOriginalSpendTransaction,
     DailyOrganizationSpendTransaction,
     DailyTagSpendTransaction,
     DailyTeamSpendTransaction,
@@ -127,6 +129,7 @@ class RedisUpdateBuffer:
         self,
         spend_update_queue: SpendUpdateQueue,
         daily_spend_update_queue: DailySpendUpdateQueue,
+        daily_global_original_spend_update_queue: DailySpendUpdateQueue,
         daily_team_spend_update_queue: DailySpendUpdateQueue,
         daily_org_spend_update_queue: DailySpendUpdateQueue,
         daily_end_user_spend_update_queue: DailySpendUpdateQueue,
@@ -189,6 +192,9 @@ class RedisUpdateBuffer:
         daily_spend_update_transactions = (
             await daily_spend_update_queue.flush_and_get_aggregated_daily_spend_update_transactions()
         )
+        daily_global_original_spend_update_transactions = (
+            await daily_global_original_spend_update_queue.flush_and_get_aggregated_daily_spend_update_transactions()
+        )
         daily_team_spend_update_transactions = (
             await daily_team_spend_update_queue.flush_and_get_aggregated_daily_spend_update_transactions()
         )
@@ -219,6 +225,11 @@ class RedisUpdateBuffer:
             (
                 daily_spend_update_transactions,
                 REDIS_DAILY_SPEND_UPDATE_BUFFER_KEY,
+                ServiceTypes.REDIS_DAILY_SPEND_UPDATE_QUEUE,
+            ),
+            (
+                daily_global_original_spend_update_transactions,
+                REDIS_DAILY_GLOBAL_ORIGINAL_SPEND_UPDATE_BUFFER_KEY,
                 ServiceTypes.REDIS_DAILY_SPEND_UPDATE_QUEUE,
             ),
             (
@@ -363,6 +374,7 @@ class RedisUpdateBuffer:
     ) -> Tuple[
         Optional[DBSpendUpdateTransactions],
         Optional[Dict[str, DailyUserSpendTransaction]],
+        Optional[Dict[str, DailyGlobalOriginalSpendTransaction]],
         Optional[Dict[str, DailyTeamSpendTransaction]],
         Optional[Dict[str, DailyOrganizationSpendTransaction]],
         Optional[Dict[str, DailyEndUserSpendTransaction]],
@@ -374,13 +386,14 @@ class RedisUpdateBuffer:
         Returns a 6-tuple of parsed results in this order:
             0: DBSpendUpdateTransactions
             1: daily user spend
-            2: daily team spend
-            3: daily org spend
-            4: daily end-user spend
-            5: daily agent spend
+            2: daily global original spend
+            3: daily team spend
+            4: daily org spend
+            5: daily end-user spend
+            6: daily agent spend
         """
         if self.redis_cache is None:
-            return None, None, None, None, None, None
+            return None, None, None, None, None, None, None
 
         lpop_list: List[RedisPipelineLpopOperation] = [
             RedisPipelineLpopOperation(
@@ -388,6 +401,10 @@ class RedisUpdateBuffer:
             ),
             RedisPipelineLpopOperation(
                 key=REDIS_DAILY_SPEND_UPDATE_BUFFER_KEY,
+                count=MAX_REDIS_BUFFER_DEQUEUE_COUNT,
+            ),
+            RedisPipelineLpopOperation(
+                key=REDIS_DAILY_GLOBAL_ORIGINAL_SPEND_UPDATE_BUFFER_KEY,
                 count=MAX_REDIS_BUFFER_DEQUEUE_COUNT,
             ),
             RedisPipelineLpopOperation(
@@ -411,7 +428,7 @@ class RedisUpdateBuffer:
         raw_results = await self.redis_cache.async_lpop_pipeline(lpop_list=lpop_list)
 
         # Pad with None if pipeline returned fewer results than expected
-        while len(raw_results) < 6:
+        while len(raw_results) < 7:
             raw_results.append(None)
 
         # Slot 0: DBSpendUpdateTransactions
@@ -421,9 +438,9 @@ class RedisUpdateBuffer:
             if len(parsed) > 0:
                 db_spend = self._combine_list_of_transactions(parsed)
 
-        # Slots 1-5: daily spend categories
+        # Slots 1-6: daily spend categories
         daily_results: List[Optional[Dict[str, Any]]] = []
-        for slot in range(1, 6):
+        for slot in range(1, 7):
             if raw_results[slot] is None:
                 daily_results.append(None)
             else:
@@ -436,12 +453,16 @@ class RedisUpdateBuffer:
         return (
             db_spend,
             cast(Optional[Dict[str, DailyUserSpendTransaction]], daily_results[0]),
-            cast(Optional[Dict[str, DailyTeamSpendTransaction]], daily_results[1]),
             cast(
-                Optional[Dict[str, DailyOrganizationSpendTransaction]], daily_results[2]
+                Optional[Dict[str, DailyGlobalOriginalSpendTransaction]],
+                daily_results[1],
             ),
-            cast(Optional[Dict[str, DailyEndUserSpendTransaction]], daily_results[3]),
-            cast(Optional[Dict[str, DailyAgentSpendTransaction]], daily_results[4]),
+            cast(Optional[Dict[str, DailyTeamSpendTransaction]], daily_results[2]),
+            cast(
+                Optional[Dict[str, DailyOrganizationSpendTransaction]], daily_results[3]
+            ),
+            cast(Optional[Dict[str, DailyEndUserSpendTransaction]], daily_results[4]),
+            cast(Optional[Dict[str, DailyAgentSpendTransaction]], daily_results[5]),
         )
 
     async def store_in_memory_daily_tag_spend_updates_in_redis(

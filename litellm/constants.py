@@ -302,6 +302,9 @@ DEFAULT_SSL_CIPHERS = os.getenv(
 ########### v2 Architecture constants for managing writing updates to the database ###########
 REDIS_UPDATE_BUFFER_KEY = "litellm_spend_update_buffer"
 REDIS_DAILY_SPEND_UPDATE_BUFFER_KEY = "litellm_daily_spend_update_buffer"
+REDIS_DAILY_GLOBAL_ORIGINAL_SPEND_UPDATE_BUFFER_KEY = (
+    "litellm_daily_global_original_spend_update_buffer"
+)
 REDIS_DAILY_TEAM_SPEND_UPDATE_BUFFER_KEY = "litellm_daily_team_spend_update_buffer"
 REDIS_DAILY_ORG_SPEND_UPDATE_BUFFER_KEY = "litellm_daily_org_spend_update_buffer"
 REDIS_DAILY_END_USER_SPEND_UPDATE_BUFFER_KEY = (

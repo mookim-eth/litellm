@@ -699,6 +699,33 @@ model LiteLLM_DailyUserSpend {
   @@index([endpoint])
 }
 
+// Track daily global original GPT spend without user-facing margin
+model LiteLLM_DailyGlobalOriginalSpend {
+  id                  String   @id @default(uuid())
+  date                String
+  model               String?
+  model_group         String?
+  custom_llm_provider String?
+  endpoint            String?
+  prompt_tokens       BigInt   @default(0)
+  completion_tokens   BigInt   @default(0)
+  cache_read_input_tokens     BigInt      @default(0)
+  cache_creation_input_tokens BigInt      @default(0)
+  spend_original      Float    @default(0.0)
+  api_requests        BigInt   @default(0)
+  successful_requests BigInt   @default(0)
+  failed_requests     BigInt   @default(0)
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  @@unique([date, model, model_group, custom_llm_provider, endpoint])
+  @@index([date])
+  @@index([model])
+  @@index([model_group])
+  @@index([custom_llm_provider])
+  @@index([endpoint])
+}
+
 // Track daily organization spend metrics per model and key
 model LiteLLM_DailyOrganizationSpend {
   id                  String   @id @default(uuid())

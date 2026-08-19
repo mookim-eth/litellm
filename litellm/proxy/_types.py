@@ -4471,6 +4471,10 @@ class DailyUserSpendTransaction(BaseDailySpendTransaction):
     user_id: str
 
 
+class DailyGlobalOriginalSpendTransaction(BaseDailySpendTransaction):
+    pass
+
+
 class DailyEndUserSpendTransaction(BaseDailySpendTransaction):
     end_user_id: str
 

@@ -31,6 +31,7 @@ from litellm.proxy.hooks.user_management_event_hooks import UserManagementEventH
 from litellm.proxy.management_endpoints.common_daily_activity import (
     get_daily_activity,
     get_daily_activity_aggregated,
+    get_global_original_gpt_daily_activity,
 )
 from litellm.proxy.management_endpoints.common_utils import (
     _is_user_team_admin,
@@ -2735,3 +2736,54 @@ async def get_user_daily_activity_aggregated(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to fetch analytics: {str(e)}"},
         )
+
+
+@router.get(
+    "/global/original-spend/daily",
+    tags=["Budget & Spend Tracking", "Internal User management"],
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=SpendAnalyticsPaginatedResponse,
+)
+@management_endpoint_wrapper
+async def get_global_original_spend_daily(
+    start_date: Optional[str] = fastapi.Query(
+        default=None,
+        description="Start date in YYYY-MM-DD format",
+    ),
+    end_date: Optional[str] = fastapi.Query(
+        default=None,
+        description="End date in YYYY-MM-DD format",
+    ),
+    model: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter by specific model",
+    ),
+    timezone: Optional[int] = fastapi.Query(
+        default=None,
+        description="Timezone offset in minutes from UTC (e.g., 480 for PST). "
+        "Matches JavaScript's Date.getTimezoneOffset() convention.",
+    ),
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+) -> SpendAnalyticsPaginatedResponse:
+    """
+    Internal admin endpoint for global original GPT spend without margin.
+
+    Only ChatGPT provider GPT model traffic is returned, and spark model groups
+    are excluded. The response shape matches daily activity endpoints so
+    internal rank tooling can sum metrics.spend.
+    """
+    from litellm.proxy.proxy_server import prisma_client
+
+    if not _user_has_admin_view(user_api_key_dict):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "Only admins can view global original spend."},
+        )
+
+    return await get_global_original_gpt_daily_activity(
+        prisma_client=prisma_client,
+        start_date=start_date,
+        end_date=end_date,
+        model=model,
+        timezone_offset_minutes=timezone,
+    )

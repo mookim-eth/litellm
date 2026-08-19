@@ -38,6 +38,7 @@ from litellm.proxy._types import (
     BaseDailySpendTransaction,
     DailyAgentSpendTransaction,
     DailyEndUserSpendTransaction,
+    DailyGlobalOriginalSpendTransaction,
     DailyOrganizationSpendTransaction,
     DailyTagSpendTransaction,
     DailyTeamSpendTransaction,
@@ -91,6 +92,7 @@ class DBSpendUpdateWriter:
         self.daily_agent_spend_update_queue = DailySpendUpdateQueue()
         self.daily_org_spend_update_queue = DailySpendUpdateQueue()
         self.daily_tag_spend_update_queue = DailySpendUpdateQueue()
+        self.daily_global_original_spend_update_queue = DailySpendUpdateQueue()
 
     async def update_database(
         # LiteLLM management object fields
@@ -796,6 +798,7 @@ class DBSpendUpdateWriter:
         await self.redis_update_buffer.store_in_memory_spend_updates_in_redis(
             spend_update_queue=self.spend_update_queue,
             daily_spend_update_queue=self.daily_spend_update_queue,
+            daily_global_original_spend_update_queue=self.daily_global_original_spend_update_queue,
             daily_team_spend_update_queue=self.daily_team_spend_update_queue,
             daily_org_spend_update_queue=self.daily_org_spend_update_queue,
             daily_end_user_spend_update_queue=self.daily_end_user_spend_update_queue,
@@ -812,6 +815,7 @@ class DBSpendUpdateWriter:
                 (
                     db_spend_update_transactions,
                     daily_spend_update_transactions,
+                    daily_global_original_spend_update_transactions,
                     daily_team_spend_update_transactions,
                     daily_org_spend_update_transactions,
                     daily_end_user_spend_update_transactions,
@@ -874,6 +878,13 @@ class DBSpendUpdateWriter:
                         prisma_client=prisma_client,
                         proxy_logging_obj=proxy_logging_obj,
                         daily_spend_transactions=daily_spend_update_transactions,
+                    )
+                if daily_global_original_spend_update_transactions is not None:
+                    await DBSpendUpdateWriter.update_daily_global_original_spend(
+                        n_retry_times=n_retry_times,
+                        prisma_client=prisma_client,
+                        proxy_logging_obj=proxy_logging_obj,
+                        daily_spend_transactions=daily_global_original_spend_update_transactions,
                     )
                 if daily_team_spend_update_transactions is not None:
                     await DBSpendUpdateWriter.update_daily_team_spend(
@@ -955,6 +966,19 @@ class DBSpendUpdateWriter:
             prisma_client=prisma_client,
             proxy_logging_obj=proxy_logging_obj,
             daily_spend_transactions=daily_spend_update_transactions,
+        )
+
+        ################## Daily Global Original Spend Update Transactions ##################
+        daily_global_original_spend_update_transactions = cast(
+            Dict[str, DailyGlobalOriginalSpendTransaction],
+            await self.daily_global_original_spend_update_queue.flush_and_get_aggregated_daily_spend_update_transactions(),
+        )
+
+        await DBSpendUpdateWriter.update_daily_global_original_spend(
+            n_retry_times=n_retry_times,
+            prisma_client=prisma_client,
+            proxy_logging_obj=proxy_logging_obj,
+            daily_spend_transactions=daily_global_original_spend_update_transactions,
         )
 
         ################## Daily Team Spend Update Transactions ##################
@@ -1795,6 +1819,156 @@ class DBSpendUpdateWriter:
         )
 
     @staticmethod
+    async def update_daily_global_original_spend(
+        n_retry_times: int,
+        prisma_client: PrismaClient,
+        proxy_logging_obj: ProxyLogging,
+        daily_spend_transactions: Dict[str, DailyGlobalOriginalSpendTransaction],
+    ) -> None:
+        """
+        Batch job to update LiteLLM_DailyGlobalOriginalSpend.
+
+        The transaction 'spend' value is the original/provider cost, not the
+        user-facing spend with margin. It is persisted as spend_original.
+        """
+        from litellm.proxy.utils import _raise_failed_update_spend_exception
+
+        verbose_proxy_logger.debug(
+            "Daily Global Original Spend transactions: %d",
+            len(daily_spend_transactions),
+        )
+        BATCH_SIZE = 100
+        start_time = time.time()
+
+        try:
+            for i in range(n_retry_times + 1):
+                try:
+                    transactions_to_process = dict(
+                        sorted(
+                            daily_spend_transactions.items(),
+                            key=lambda x: (
+                                x[1].get("date") or "",
+                                x[1].get("model") or "",
+                                x[1].get("model_group") or "",
+                                x[1].get("custom_llm_provider") or "",
+                            ),
+                        )[:BATCH_SIZE]
+                    )
+
+                    if len(transactions_to_process) == 0:
+                        verbose_proxy_logger.debug(
+                            "No new transactions to process for daily global original spend update"
+                        )
+                        break
+
+                    async with prisma_client.db.batch_() as batcher:
+                        for _, transaction in transactions_to_process.items():
+                            model = transaction.get("model") or ""
+                            model_group = transaction.get("model_group") or ""
+                            custom_llm_provider = (
+                                transaction.get("custom_llm_provider") or ""
+                            )
+                            endpoint = transaction.get("endpoint") or ""
+
+                            common_data = {
+                                "date": transaction["date"],
+                                "model": model,
+                                "model_group": model_group,
+                                "custom_llm_provider": custom_llm_provider,
+                                "endpoint": endpoint,
+                                "prompt_tokens": transaction["prompt_tokens"],
+                                "completion_tokens": transaction[
+                                    "completion_tokens"
+                                ],
+                                "cache_read_input_tokens": transaction.get(
+                                    "cache_read_input_tokens", 0
+                                ),
+                                "cache_creation_input_tokens": transaction.get(
+                                    "cache_creation_input_tokens", 0
+                                ),
+                                "spend_original": transaction["spend"],
+                                "api_requests": transaction["api_requests"],
+                                "successful_requests": transaction[
+                                    "successful_requests"
+                                ],
+                                "failed_requests": transaction["failed_requests"],
+                            }
+                            update_data = {
+                                "prompt_tokens": {
+                                    "increment": transaction["prompt_tokens"]
+                                },
+                                "completion_tokens": {
+                                    "increment": transaction["completion_tokens"]
+                                },
+                                "cache_read_input_tokens": {
+                                    "increment": transaction.get(
+                                        "cache_read_input_tokens", 0
+                                    )
+                                },
+                                "cache_creation_input_tokens": {
+                                    "increment": transaction.get(
+                                        "cache_creation_input_tokens", 0
+                                    )
+                                },
+                                "spend_original": {
+                                    "increment": transaction["spend"]
+                                },
+                                "api_requests": {
+                                    "increment": transaction["api_requests"]
+                                },
+                                "successful_requests": {
+                                    "increment": transaction["successful_requests"]
+                                },
+                                "failed_requests": {
+                                    "increment": transaction["failed_requests"]
+                                },
+                            }
+
+                            batcher.litellm_dailyglobaloriginalspend.upsert(
+                                where={
+                                    "date_model_model_group_custom_llm_provider_endpoint": {
+                                        "date": transaction["date"],
+                                        "model": model,
+                                        "model_group": model_group,
+                                        "custom_llm_provider": custom_llm_provider,
+                                        "endpoint": endpoint,
+                                    }
+                                },
+                                data={
+                                    "create": common_data,
+                                    "update": update_data,
+                                },
+                            )
+
+                    verbose_proxy_logger.debug(
+                        "Processed %d daily global original spend transactions in %.2fs",
+                        len(transactions_to_process),
+                        time.time() - start_time,
+                    )
+
+                    for key in transactions_to_process.keys():
+                        daily_spend_transactions.pop(key, None)
+
+                    break
+
+                except DB_CONNECTION_ERROR_TYPES as e:
+                    if i >= n_retry_times:
+                        _raise_failed_update_spend_exception(
+                            e=e,
+                            start_time=start_time,
+                            proxy_logging_obj=proxy_logging_obj,
+                        )
+                    await asyncio.sleep(random.uniform(2**i, 2 ** (i + 1)))
+
+        except Exception as e:
+            if "transactions_to_process" in locals():
+                for key in transactions_to_process.keys():  # type: ignore
+                    daily_spend_transactions.pop(key, None)
+            _raise_failed_update_spend_exception(
+                e=e, start_time=start_time, proxy_logging_obj=proxy_logging_obj
+            )
+
+    @staticmethod
     async def update_daily_team_spend(
         n_retry_times: int,
         prisma_client: PrismaClient,
@@ -1991,6 +2165,92 @@ class DBSpendUpdateWriter:
         except Exception as e:
             raise e
 
+    @staticmethod
+    def _is_gpt_chatgpt_non_spark_payload(
+        payload: Union[dict, SpendLogsPayload],
+    ) -> bool:
+        provider = (payload.get("custom_llm_provider") or "").lower()
+        if provider != "chatgpt":
+            return False
+
+        model_fields = [
+            str(payload.get("model") or ""),
+            str(payload.get("model_group") or ""),
+            str(payload.get("model_id") or ""),
+        ]
+        model_text = " ".join(model_fields).lower()
+        return "gpt" in model_text and "spark" not in model_text
+
+    @staticmethod
+    def _get_original_cost_from_spend_payload(
+        payload: Union[dict, SpendLogsPayload],
+        metadata: SpendLogsMetadata,
+    ) -> float:
+        cost_breakdown = metadata.get("cost_breakdown") or {}
+        if isinstance(cost_breakdown, dict):
+            original_cost = cost_breakdown.get("original_cost")
+            if original_cost is not None:
+                return float(original_cost)
+
+            margin_percent = cost_breakdown.get("margin_percent")
+            margin_fixed_amount = cost_breakdown.get("margin_fixed_amount", 0.0) or 0.0
+            if margin_percent is not None:
+                return max(
+                    (float(payload["spend"]) - float(margin_fixed_amount))
+                    / (1 + float(margin_percent)),
+                    0.0,
+                )
+
+        return float(payload["spend"]) / 1.5
+
+    async def add_spend_log_transaction_to_daily_global_original_transaction(
+        self,
+        payload: Union[dict, SpendLogsPayload],
+        prisma_client: Optional[PrismaClient] = None,
+    ) -> None:
+        """
+        Track global original GPT spend without user-facing margin.
+
+        This intentionally excludes spark models and only records ChatGPT provider
+        GPT traffic so the table can survive SpendLogs cleanup and be used by
+        internal ranking/limit inference.
+        """
+        if prisma_client is None:
+            verbose_proxy_logger.debug(
+                "prisma_client is None. Skipping writing global original spend to db."
+            )
+            return
+
+        if not self._is_gpt_chatgpt_non_spark_payload(payload):
+            return
+
+        base_daily_transaction = (
+            await self._common_add_spend_log_transaction_to_daily_transaction(
+                payload, prisma_client, "user"
+            )
+        )
+        if base_daily_transaction is None:
+            return
+
+        metadata: SpendLogsMetadata = json.loads(payload["metadata"])
+        base_daily_transaction["spend"] = self._get_original_cost_from_spend_payload(
+            payload, metadata
+        )
+        base_daily_transaction["api_key"] = "__global__"
+
+        endpoint_str = base_daily_transaction.get("endpoint") or ""
+        daily_transaction_key = (
+            f"{base_daily_transaction['date']}_{base_daily_transaction.get('model')}"
+            f"_{base_daily_transaction.get('model_group')}"
+            f"_{base_daily_transaction.get('custom_llm_provider')}_{endpoint_str}"
+        )
+        daily_transaction = DailyGlobalOriginalSpendTransaction(
+            **base_daily_transaction
+        )
+        await self.daily_global_original_spend_update_queue.add_update(
+            update={daily_transaction_key: daily_transaction}
+        )
+
     async def add_spend_log_transaction_to_daily_user_transaction(
         self,
         payload: Union[dict, SpendLogsPayload],
@@ -2025,6 +2285,16 @@ class DBSpendUpdateWriter:
         await self.daily_spend_update_queue.add_update(
             update={daily_transaction_key: daily_transaction}
         )
+        try:
+            await self.add_spend_log_transaction_to_daily_global_original_transaction(
+                payload=payload,
+                prisma_client=prisma_client,
+            )
+        except Exception:
+            verbose_proxy_logger.debug(
+                "add_spend_log_transaction_to_daily_global_original_transaction failed: %s",
+                traceback.format_exc(),
+            )
 
     async def add_spend_log_transaction_to_daily_team_transaction(
         self,
