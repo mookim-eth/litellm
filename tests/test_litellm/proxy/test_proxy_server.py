@@ -4459,6 +4459,54 @@ async def test_async_data_generator_cleanup_on_normal_completion():
 
 
 @pytest.mark.asyncio
+async def test_async_data_generator_preserves_zai_responses_sequence_numbers():
+    """ZAI Responses events receive contiguous sequence numbers at proxy output."""
+    from litellm.proxy._types import UserAPIKeyAuth
+    from litellm.proxy.proxy_server import async_data_generator
+    from litellm.proxy.utils import ProxyLogging
+    from litellm.types.llms.openai import OutputTextDeltaEvent
+
+    events = [
+        OutputTextDeltaEvent(
+            type="response.output_text.delta",
+            item_id=f"item_{index}",
+            output_index=0,
+            content_index=0,
+            delta="ok",
+        )
+        for index in range(2)
+    ]
+
+    async def mock_streaming_iterator(*args, **kwargs):
+        for event in events:
+            yield event
+
+    mock_proxy_logging_obj = MagicMock(spec=ProxyLogging)
+    mock_proxy_logging_obj.async_post_call_streaming_iterator_hook = (
+        mock_streaming_iterator
+    )
+    mock_proxy_logging_obj.async_post_call_streaming_hook = AsyncMock(
+        side_effect=lambda **kwargs: kwargs.get("response")
+    )
+    mock_proxy_logging_obj.post_call_failure_hook = AsyncMock()
+    mock_response = MagicMock(custom_llm_provider="zai")
+    mock_response.aclose = AsyncMock()
+
+    with patch("litellm.proxy.proxy_server.proxy_logging_obj", mock_proxy_logging_obj):
+        chunks = [
+            chunk
+            async for chunk in async_data_generator(
+                mock_response,
+                MagicMock(spec=UserAPIKeyAuth),
+                {"model": "glm-5.3", "stream": True},
+            )
+        ]
+
+    payloads = [json.loads(chunk.removeprefix("data: ")) for chunk in chunks[:-1]]
+    assert [payload["sequence_number"] for payload in payloads] == [0, 1]
+
+
+@pytest.mark.asyncio
 async def test_async_data_generator_cleanup_on_midstream_error():
     """
     Test that async_data_generator calls response.aclose() via finally block

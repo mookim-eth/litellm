@@ -6449,6 +6449,7 @@ async def async_data_generator(  # noqa: PLR0915
         requested_model_from_client = _get_client_requested_model_for_streaming(
             request_data=request_data
         )
+        zai_responses_sequence_number = 0
         model_mismatch_logged = False
         first_proxy_yield_recorded = False
         # Use a running string instead of list + join to avoid O(n^2) overhead.
@@ -6487,6 +6488,14 @@ async def async_data_generator(  # noqa: PLR0915
             )
 
             if isinstance(chunk, BaseModel):
+                chunk_type = getattr(chunk, "type", "")
+                chunk_type_value = getattr(chunk_type, "value", str(chunk_type))
+                if (
+                    getattr(response, "custom_llm_provider", None) == "zai"
+                    and chunk_type_value.startswith("response.")
+                ):
+                    setattr(chunk, "sequence_number", zai_responses_sequence_number)
+                    zai_responses_sequence_number += 1
                 chunk = chunk.model_dump_json(exclude_none=True, exclude_unset=True)
             elif isinstance(chunk, str) and chunk.startswith("data: "):
                 error_message = chunk
