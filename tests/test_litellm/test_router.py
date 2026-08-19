@@ -1003,6 +1003,21 @@ class _TestResponsesStream:
         self.closed = True
 
 
+def test_router_recognizes_chatgpt_normalized_stream_for_midstream_fallback():
+    from unittest.mock import MagicMock
+
+    from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
+    from litellm.llms.chatgpt.chat.streaming_utils import ChatGPTToolCallNormalizer
+
+    router = litellm.Router(model_list=[])
+    underlying_stream = MagicMock(spec=CustomStreamWrapper)
+    normalized_stream = ChatGPTToolCallNormalizer(underlying_stream)
+
+    assert router._supports_midstream_fallback(underlying_stream) is True
+    assert router._supports_midstream_fallback(normalized_stream) is True
+    assert router._supports_midstream_fallback(object()) is False
+
+
 @pytest.mark.asyncio
 async def test_responses_stream_overload_before_output_uses_fallback():
     from types import SimpleNamespace
@@ -1101,6 +1116,76 @@ async def test_responses_stream_overload_before_output_uses_fallback():
 
 
 @pytest.mark.asyncio
+async def test_responses_stream_midstream_fallback_error_before_output_uses_fallback():
+    from types import SimpleNamespace
+
+    from litellm.exceptions import MidStreamFallbackError
+
+    router = litellm.Router(model_list=[], fallbacks=[{"primary": ["fallback"]}])
+    bridge_error = MidStreamFallbackError(
+        message="Our servers are currently overloaded",
+        model="primary-deployment",
+        llm_provider="chatgpt",
+        generated_content="",
+        is_pre_first_chunk=True,
+    )
+    primary = _TestResponsesStream(
+        [
+            SimpleNamespace(
+                type="response.created",
+                response=SimpleNamespace(id="primary"),
+                sequence_number=0,
+            ),
+            SimpleNamespace(
+                type="response.in_progress",
+                response=SimpleNamespace(id="primary"),
+                sequence_number=1,
+            ),
+        ],
+        error=bridge_error,
+    )
+    fallback = _TestResponsesStream(
+        [
+            SimpleNamespace(
+                type="response.created",
+                response=SimpleNamespace(id="fallback"),
+                sequence_number=0,
+            ),
+            SimpleNamespace(
+                type="response.output_text.delta", delta="ok", sequence_number=1
+            ),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(id="fallback"),
+                sequence_number=2,
+            ),
+        ]
+    )
+
+    with patch.object(
+        router,
+        "async_function_with_fallbacks_common_utils",
+        new=AsyncMock(return_value=fallback),
+    ) as mock_fallback:
+        response = router._aresponses_streaming_iterator(
+            model_response=primary,
+            initial_kwargs={"model": "primary", "stream": True},
+        )
+        events = [event async for event in response]
+
+    assert [event.type for event in events] == [
+        "response.created",
+        "response.output_text.delta",
+        "response.completed",
+    ]
+    assert events[0].response.id == "fallback"
+    mock_fallback.assert_awaited_once()
+    assert mock_fallback.await_args.kwargs["e"] is bridge_error
+    assert primary.closed is True
+    assert fallback.closed is True
+
+
+@pytest.mark.asyncio
 async def test_responses_stream_overload_after_output_does_not_fallback(caplog):
     from types import SimpleNamespace
 
@@ -1119,7 +1204,7 @@ async def test_responses_stream_overload_after_output_does_not_fallback(caplog):
         error=overload,
     )
 
-    with caplog.at_level("DEBUG"):
+    with caplog.at_level("DEBUG", logger="LiteLLM Router"):
         with patch.object(
             router,
             "async_function_with_fallbacks_common_utils",
@@ -1144,6 +1229,51 @@ async def test_responses_stream_overload_after_output_does_not_fallback(caplog):
         and "stream_committed=True" in record.message
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_midstream_fallback_error_after_output_does_not_fallback():
+    from types import SimpleNamespace
+
+    from litellm.exceptions import MidStreamFallbackError
+
+    router = litellm.Router(model_list=[], fallbacks=[{"primary": ["fallback"]}])
+    bridge_error = MidStreamFallbackError(
+        message="upstream stream failed",
+        model="primary-deployment",
+        llm_provider="chatgpt",
+        generated_content="partial",
+    )
+    primary = _TestResponsesStream(
+        [
+            SimpleNamespace(
+                type="response.created", response=SimpleNamespace(id="primary")
+            ),
+            SimpleNamespace(type="response.output_text.delta", delta="partial"),
+        ],
+        error=bridge_error,
+    )
+
+    with patch.object(
+        router,
+        "async_function_with_fallbacks_common_utils",
+        new=AsyncMock(),
+    ) as mock_fallback:
+        response = router._aresponses_streaming_iterator(
+            model_response=primary,
+            initial_kwargs={"model": "primary", "stream": True},
+        )
+        events = []
+        with pytest.raises(MidStreamFallbackError):
+            async for event in response:
+                events.append(event)
+
+    assert [event.type for event in events] == [
+        "response.created",
+        "response.output_text.delta",
+    ]
+    mock_fallback.assert_not_awaited()
+    assert primary.closed is True
 
 
 @pytest.mark.asyncio

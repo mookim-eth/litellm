@@ -1548,7 +1548,7 @@ class Router:
 
             # Wrap streaming responses so MidStreamFallbackError (raised
             # during iteration) triggers the Router's fallback chain.
-            if isinstance(response, CustomStreamWrapper):
+            if self._supports_midstream_fallback(response):
                 return self._completion_streaming_iterator(
                     model_response=response,
                     messages=messages,
@@ -1739,6 +1739,18 @@ class Router:
                 )
             )
             raise e
+
+    @staticmethod
+    def _supports_midstream_fallback(response: Any) -> bool:
+        """Return whether a stream exposes CustomStreamWrapper fallback semantics.
+
+        Provider post-processing may transparently wrap the CustomStreamWrapper.
+        ChatGPTToolCallNormalizer is one such wrapper and delegates attributes to
+        its ``_stream``; Router must still install the mid-stream fallback layer.
+        """
+        return isinstance(response, CustomStreamWrapper) or isinstance(
+            getattr(response, "_stream", None), CustomStreamWrapper
+        )
 
     @staticmethod
     def _combine_fallback_usage(
@@ -2209,7 +2221,7 @@ class Router:
                 parent_otel_span=parent_otel_span,
             )
 
-            if isinstance(response, CustomStreamWrapper):
+            if self._supports_midstream_fallback(response):
                 return await self._acompletion_streaming_iterator(
                     model_response=response,
                     messages=messages,
@@ -3951,6 +3963,7 @@ class Router:
         initial_kwargs: dict,
     ) -> Any:
         """Apply Router fallbacks to retryable failures inside a Responses SSE stream."""
+        from litellm.exceptions import MidStreamFallbackError
         from litellm.responses.streaming_iterator import (
             BaseResponsesAPIStreamingIterator,
         )
@@ -4033,12 +4046,24 @@ class Router:
                     is_responses_stream_overload = getattr(
                         e, "is_responses_stream_overload", False
                     )
-                    if is_responses_stream_overload:
+                    is_midstream_fallback_error = isinstance(
+                        e, MidStreamFallbackError
+                    )
+                    is_retryable_stream_error = (
+                        is_responses_stream_overload or is_midstream_fallback_error
+                    )
+                    if is_retryable_stream_error:
+                        decision_type = (
+                            "overload"
+                            if is_responses_stream_overload
+                            else "MidStreamFallbackError"
+                        )
                         verbose_router_logger.debug(
-                            "responses stream overload fallback decision: "
+                            "responses stream %s fallback decision: "
                             "model_group=%s stream_committed=%s "
                             "committed_by_event_type=%s observed_event_types=%s "
                             "fallbacks=%s",
+                            decision_type,
                             initial_kwargs.get("model"),
                             stream_committed,
                             committed_by_event_type,
@@ -4046,7 +4071,7 @@ class Router:
                             initial_kwargs.get("fallbacks", router_self.fallbacks),
                         )
                     if not (
-                        is_responses_stream_overload and not stream_committed
+                        is_retryable_stream_error and not stream_committed
                     ):
                         for buffered_item in buffered_events:
                             yield buffered_item
