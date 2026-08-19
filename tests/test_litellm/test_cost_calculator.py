@@ -1,5 +1,7 @@
 import os
 import sys
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 
@@ -12,6 +14,8 @@ from pydantic import BaseModel
 
 import litellm
 from litellm.cost_calculator import (
+    _apply_cost_margin,
+    _get_glm_peak_margin,
     completion_cost,
     handle_realtime_stream_cost_calculation,
     response_cost_calculator,
@@ -1224,6 +1228,115 @@ def test_cost_discount_not_applied_to_other_providers():
     print("✓ Selective discount test passed:")
     print(f"  - OpenAI cost (no discount configured): ${cost_without_discount:.6f}")
     print(f"  - Cost remains unchanged: ${cost_with_selective_discount:.6f}")
+
+
+@pytest.mark.parametrize(
+    ("model", "local_time", "expected_margin"),
+    [
+        ("glm-5.3", datetime(2026, 8, 17, 13, 59, tzinfo=timezone(timedelta(hours=8))), 0.0),
+        ("glm-5.3", datetime(2026, 8, 17, 14, 0, tzinfo=timezone(timedelta(hours=8))), 2.0),
+        ("zai/glm-5.3", datetime(2026, 8, 21, 17, 59, tzinfo=timezone(timedelta(hours=8))), 2.0),
+        ("zai/glm-5.3", datetime(2026, 8, 21, 18, 0, tzinfo=timezone(timedelta(hours=8))), 0.0),
+        ("glm-5-turbo", datetime(2026, 8, 17, 14, 0, tzinfo=timezone(timedelta(hours=8))), 2.0),
+        ("zai/glm-5-turbo", datetime(2026, 8, 22, 15, 0, tzinfo=timezone(timedelta(hours=8))), 0.0),
+        ("glm-5.3", datetime(2026, 8, 22, 15, 0, tzinfo=timezone(timedelta(hours=8))), 0.0),
+        ("glm-5.2", datetime(2026, 8, 17, 15, 0, tzinfo=timezone(timedelta(hours=8))), None),
+    ],
+)
+def test_glm_peak_margin_schedule(model, local_time, expected_margin):
+    assert (
+        _get_glm_peak_margin(model=model, current_time=local_time)
+        == expected_margin
+    )
+
+
+@pytest.mark.parametrize("model", ["zai/glm-5.3", "zai/glm-5-turbo"])
+def test_glm_peak_margin_triples_completion_cost(monkeypatch, model):
+    monkeypatch.setattr(litellm, "cost_margin_config", {})
+    monkeypatch.setitem(
+        litellm.model_cost,
+        model,
+        {
+            "litellm_provider": "zai",
+            "mode": "chat",
+            "input_cost_per_token": 0.0000014,
+            "output_cost_per_token": 0.0000044,
+        },
+    )
+    response = ModelResponse(
+        id="test-id",
+        choices=[],
+        model=model.rsplit("/", 1)[-1],
+        usage=Usage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+    )
+
+    with patch(
+        "litellm.cost_calculator._get_glm_peak_margin", return_value=2.0
+    ):
+        cost = completion_cost(
+            completion_response=response,
+            model=model,
+            custom_llm_provider="zai",
+        )
+
+    base_cost = (100 * 0.0000014) + (50 * 0.0000044)
+    assert cost == pytest.approx(base_cost * 3)
+
+
+def test_glm_5_2_is_not_marked_up_when_provider_reports_glm_5_3(monkeypatch):
+    monkeypatch.setattr(litellm, "cost_margin_config", {})
+    monkeypatch.setitem(
+        litellm.model_cost,
+        "glm-5.2-deployment-id",
+        {
+            "litellm_provider": "zai",
+            "mode": "chat",
+            "input_cost_per_token": 0.0000014,
+            "output_cost_per_token": 0.0000044,
+        },
+    )
+    response = ModelResponse(
+        id="test-id",
+        choices=[],
+        model="glm-5.3",
+        usage=Usage(prompt_tokens=100, completion_tokens=50, total_tokens=150),
+    )
+
+    def _peak_margin_for_model(model, current_time=None):
+        if isinstance(model, str) and model.endswith("glm-5.3"):
+            return 2.0
+        return None
+
+    with patch(
+        "litellm.cost_calculator._get_glm_peak_margin",
+        side_effect=_peak_margin_for_model,
+    ):
+        cost = completion_cost(
+            completion_response=response,
+            model="zai/glm-5.2",
+            custom_llm_provider="zai",
+            custom_pricing=True,
+            router_model_id="glm-5.2-deployment-id",
+        )
+
+    base_cost = (100 * 0.0000014) + (50 * 0.0000044)
+    assert cost == pytest.approx(base_cost)
+
+
+def test_glm_5_3_off_peak_margin_overrides_provider_margin(monkeypatch):
+    monkeypatch.setattr(litellm, "cost_margin_config", {"zai": 0.5})
+    with patch(
+        "litellm.cost_calculator._get_glm_peak_margin", return_value=0.0
+    ):
+        final_cost, margin_percent, _, margin_amount = _apply_cost_margin(
+            base_cost=1.0,
+            custom_llm_provider="zai",
+            model="zai/glm-5.3",
+        )
+
+    assert final_cost == 1.0
+    assert margin_percent == 0.0
+    assert margin_amount == 0.0
 
 
 def test_cost_margin_percentage():

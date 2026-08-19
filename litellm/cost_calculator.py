@@ -2,6 +2,7 @@
 ## File for 'response_cost' calculation in Logging
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, List, Literal, Optional, Tuple, Union, cast
 
@@ -885,9 +886,30 @@ def _apply_cost_discount(
     return base_cost, discount_percent, discount_amount
 
 
+def _get_glm_peak_margin(
+    model: Optional[str], current_time: Optional[datetime] = None
+) -> Optional[float]:
+    """Return the GLM weekday peak margin, or None for other models."""
+    if not isinstance(model, str) or model.rsplit("/", 1)[-1].lower() not in {
+        "glm-5.3",
+        "glm-5-turbo",
+    }:
+        return None
+
+    now = current_time or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    utc_plus_8_now = now.astimezone(timezone(timedelta(hours=8)))
+
+    if utc_plus_8_now.weekday() < 5 and 14 <= utc_plus_8_now.hour < 18:
+        return 2.0
+    return 0.0
+
+
 def _apply_cost_margin(
     base_cost: float,
     custom_llm_provider: Optional[str],
+    model: Optional[str] = None,
 ) -> Tuple[float, float, float, float]:
     """
     Apply provider-specific or global cost margin from module-level config.
@@ -904,20 +926,25 @@ def _apply_cost_margin(
     margin_fixed_amount = 0.0
     margin_total_amount = 0.0
 
-    # Get margin config - check provider-specific first, then global
-    margin_config = None
-    if custom_llm_provider and custom_llm_provider in litellm.cost_margin_config:
-        margin_config = litellm.cost_margin_config[custom_llm_provider]
-        if verbose_logger.isEnabledFor(logging.DEBUG):
-            verbose_logger.debug(
-                f"Found provider-specific margin config for {custom_llm_provider}: {margin_config}"
-            )
-    elif "global" in litellm.cost_margin_config:
-        margin_config = litellm.cost_margin_config["global"]
-        if verbose_logger.isEnabledFor(logging.DEBUG):
-            verbose_logger.debug(f"Using global margin config: {margin_config}")
-    else:
-        if verbose_logger.isEnabledFor(logging.DEBUG):
+    # GLM-5.3 and GLM-5-Turbo use a 200% weekday peak margin (3x final spend)
+    # in UTC+8.
+    # For all other models, retain the configured provider/global behavior.
+    margin_config = _get_glm_peak_margin(model=model)
+    if margin_config is None:
+        if (
+            custom_llm_provider
+            and custom_llm_provider in litellm.cost_margin_config
+        ):
+            margin_config = litellm.cost_margin_config[custom_llm_provider]
+            if verbose_logger.isEnabledFor(logging.DEBUG):
+                verbose_logger.debug(
+                    f"Found provider-specific margin config for {custom_llm_provider}: {margin_config}"
+                )
+        elif "global" in litellm.cost_margin_config:
+            margin_config = litellm.cost_margin_config["global"]
+            if verbose_logger.isEnabledFor(logging.DEBUG):
+                verbose_logger.debug(f"Using global margin config: {margin_config}")
+        elif verbose_logger.isEnabledFor(logging.DEBUG):
             verbose_logger.debug(
                 f"No margin config found. Provider: {custom_llm_provider}, "
                 f"Available configs: {list(litellm.cost_margin_config.keys())}"
@@ -1113,6 +1140,7 @@ def completion_cost(  # noqa: PLR0915
             elif isinstance(cost_per_token_usage_object, dict):
                 service_tier = cost_per_token_usage_object.get("service_tier")
 
+        requested_model = model
         selected_model = _select_model_name_for_cost_calc(
             model=model,
             completion_response=completion_response,
@@ -1394,6 +1422,7 @@ def completion_cost(  # noqa: PLR0915
                     ) = _apply_cost_margin(
                         base_cost=_final_cost,
                         custom_llm_provider=custom_llm_provider,
+                        model=requested_model,
                     )
 
                     # Store cost breakdown in logging object if available
@@ -1576,21 +1605,17 @@ def completion_cost(  # noqa: PLR0915
                     discount_percent = 0.0
                     discount_amount = 0.0
 
-                # Apply margin from module-level config if configured
-                if litellm.cost_margin_config:
-                    (
-                        _final_cost,
-                        margin_percent,
-                        margin_fixed_amount,
-                        margin_total_amount,
-                    ) = _apply_cost_margin(
-                        base_cost=_final_cost,
-                        custom_llm_provider=custom_llm_provider,
-                    )
-                else:
-                    margin_percent = 0.0
-                    margin_fixed_amount = 0.0
-                    margin_total_amount = 0.0
+                # Apply configured margins and the GLM weekday peak margin.
+                (
+                    _final_cost,
+                    margin_percent,
+                    margin_fixed_amount,
+                    margin_total_amount,
+                ) = _apply_cost_margin(
+                    base_cost=_final_cost,
+                    custom_llm_provider=custom_llm_provider,
+                    model=requested_model,
+                )
 
                 # Store cost breakdown in logging object if available
                 if litellm_logging_obj is not None:
