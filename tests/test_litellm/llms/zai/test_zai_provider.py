@@ -59,6 +59,20 @@ def test_zai_chat_api_base_keeps_coding_endpoint_for_native_responses_deployment
     assert api_base == "https://open.bigmodel.cn/api/coding/paas/v4"
 
 
+def test_zai_responses_api_uses_native_endpoint():
+    """Responses uses /api/v1 even when the deployment stores the Coding base."""
+    from litellm.llms.zai.responses.transformation import ZAIResponsesAPIConfig
+
+    config = ZAIResponsesAPIConfig()
+
+    assert (
+        config.get_complete_url(
+            api_base="https://open.bigmodel.cn/api/coding/paas/v4", litellm_params={}
+        )
+        == "https://open.bigmodel.cn/api/v1/responses"
+    )
+
+
 def test_zai_models_in_model_cost():
     """Test that ZAI models are in the model cost map"""
     import os

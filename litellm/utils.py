@@ -8644,6 +8644,12 @@ class ProviderConfigManager:
             if model and "gpt" in model.lower():
                 return litellm.DatabricksResponsesAPIConfig()
             return None
+        elif litellm.LlmProviders.ZAI == provider:
+            from litellm.llms.zai.responses.transformation import (
+                ZAIResponsesAPIConfig,
+            )
+
+            return ZAIResponsesAPIConfig()
         elif litellm.LlmProviders.OPENROUTER == provider:
             return litellm.OpenRouterResponsesAPIConfig()
         elif litellm.LlmProviders.HOSTED_VLLM == provider:
