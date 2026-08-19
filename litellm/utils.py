@@ -2003,6 +2003,10 @@ def client(original_function):  # noqa: PLR0915
             )
 
             return result
+        except asyncio.CancelledError:
+            if logging_obj is not None:
+                await logging_obj.async_cleanup_deployment_resources()
+            raise
         except Exception as e:
             traceback_exception = traceback.format_exc()
             end_time = datetime.datetime.now()
@@ -2084,6 +2088,8 @@ def client(original_function):  # noqa: PLR0915
                     except Exception:
                         pass
 
+            if getattr(e, "is_provider_account_concurrency_limit", False) is True:
+                num_retries = 0
             setattr(
                 e, "num_retries", num_retries
             )  ## IMPORTANT: returns the deployment's num_retries to the router

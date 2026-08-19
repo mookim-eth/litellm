@@ -17,6 +17,7 @@ from typing import (
 )
 
 import httpx
+import anyio
 import orjson
 from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -30,6 +31,7 @@ from litellm.constants import (
     LITELLM_DETAILED_TIMING,
     MAX_PAYLOAD_SIZE_FOR_DEBUG_LOG,
     STREAM_SSE_DATA_PREFIX,
+    STREAM_CLOSE_TIMEOUT_SECONDS,
 )
 from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.litellm_core_utils.dd_tracing import tracer
@@ -1899,6 +1901,29 @@ class ProxyBaseLLMRequestProcessing:
                 code=getattr(e, "status_code", 500),
             )
             yield serialize_error(proxy_exception)
+        finally:
+            # This generator owns the provider response for non-OpenAI proxy
+            # streaming routes (notably /messages). Close it when the client
+            # disconnects as well as on normal completion so deployment-scoped
+            # resources, including concurrency leases, are always released.
+            with anyio.move_on_after(
+                STREAM_CLOSE_TIMEOUT_SECONDS, shield=True
+            ) as cancel_scope:
+                close = getattr(response, "aclose", None)
+                if callable(close):
+                    try:
+                        await close()
+                    except Exception as close_error:
+                        verbose_proxy_logger.debug(
+                            "async_streaming_data_generator: error closing response stream: %s",
+                            close_error,
+                        )
+            if cancel_scope.cancelled_caught:
+                verbose_proxy_logger.warning(
+                    "async_streaming_data_generator: timed out after %.1fs closing response stream type=%s; close will not be retried",
+                    STREAM_CLOSE_TIMEOUT_SECONDS,
+                    type(response).__name__,
+                )
 
     @staticmethod
     async def async_sse_data_generator(

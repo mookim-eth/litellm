@@ -379,6 +379,9 @@ class Authenticator:
             "id_token": id_token,
         }
         auth_data = self._build_auth_record(refreshed)
+        existing_auth_data = self._read_auth_file()
+        if existing_auth_data is not None and "plan_type" in existing_auth_data:
+            auth_data["plan_type"] = existing_auth_data["plan_type"]
         self._write_auth_file(auth_data)
         return refreshed
 

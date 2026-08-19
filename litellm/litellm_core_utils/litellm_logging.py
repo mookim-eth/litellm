@@ -3,6 +3,7 @@
 # Logging function -> log the exact model details + what's being sent | Non-Blocking
 import copy
 import datetime
+import inspect
 import json
 import os
 import re
@@ -365,6 +366,7 @@ class Logging(LiteLLMLoggingBaseClass):
             Any
         ] = []  # for generating complete stream response
         self.log_raw_request_response = log_raw_request_response
+        self._async_deployment_cleanup_callbacks: List[Callable[[], Any]] = []
 
         # Initialize dynamic callbacks
         self.dynamic_input_callbacks: Optional[
@@ -422,6 +424,20 @@ class Logging(LiteLLMLoggingBaseClass):
             "applied_guardrails": applied_guardrails,
             "model": model,
         }
+
+    def add_async_deployment_cleanup_callback(self, callback: Callable[[], Any]) -> None:
+        self._async_deployment_cleanup_callbacks.append(callback)
+
+    async def async_cleanup_deployment_resources(self) -> None:
+        callbacks = self._async_deployment_cleanup_callbacks
+        self._async_deployment_cleanup_callbacks = []
+        for callback in callbacks:
+            try:
+                result = callback()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                verbose_logger.exception("Failed to clean up deployment resource")
 
     def process_dynamic_callbacks(self):
         """
@@ -2479,6 +2495,7 @@ class Logging(LiteLLMLoggingBaseClass):
         """
         Implementing async callbacks, to handle asyncio event loop issues when custom integrations need to use async functions.
         """
+        await self.async_cleanup_deployment_resources()
         print_verbose(
             "Logging Details LiteLLM-Async Success Call, cache_hit={}".format(cache_hit)
         )
@@ -3124,6 +3141,7 @@ class Logging(LiteLLMLoggingBaseClass):
         """
         Implementing async callbacks, to handle asyncio event loop issues when custom integrations need to use async functions.
         """
+        await self.async_cleanup_deployment_resources()
         await self.special_failure_handlers(exception=exception)
         if not self.should_run_logging(
             event_type="async_failure"

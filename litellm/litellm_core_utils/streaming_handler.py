@@ -1,6 +1,7 @@
 import asyncio
 import collections.abc
 import datetime
+import inspect
 import json
 import logging
 import threading
@@ -203,6 +204,14 @@ class CustomStreamWrapper:
         return self
 
     async def aclose(self):
+        if self.logging_obj is not None:
+            cleanup = getattr(
+                self.logging_obj, "async_cleanup_deployment_resources", None
+            )
+            if callable(cleanup):
+                cleanup_result = cleanup()
+                if inspect.isawaitable(cleanup_result):
+                    await cleanup_result
         if self.completion_stream is not None:
             stream_to_close = self.completion_stream
             self.completion_stream = None

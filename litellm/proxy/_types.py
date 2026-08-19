@@ -2242,6 +2242,13 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
     global_max_parallel_requests: Optional[int] = Field(
         None, description="global max parallel requests to allow for a proxy instance."
     )
+    chatgpt_plan_max_parallel_requests: Optional[Dict[str, int]] = Field(
+        None,
+        description=(
+            "Maximum concurrent requests per ChatGPT provider account, keyed by "
+            "the plan_type stored in its auth file. Requests share the limit across models."
+        ),
+    )
     max_request_size_mb: Optional[int] = Field(
         None,
         description="max request size in MB, if a request is larger than this size it will be rejected",

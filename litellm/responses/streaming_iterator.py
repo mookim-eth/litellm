@@ -277,6 +277,14 @@ class BaseResponsesAPIStreamingIterator:
         if self._closed:
             return
         self._closed = True
+        if self.logging_obj is not None:
+            cleanup = getattr(
+                self.logging_obj, "async_cleanup_deployment_resources", None
+            )
+            if callable(cleanup):
+                cleanup_result = cleanup()
+                if inspect.isawaitable(cleanup_result):
+                    await cleanup_result
         response = getattr(self, "response", None)
         try:
             close_fn = (
