@@ -369,6 +369,100 @@ class TestAzureAnthropicCostCalculation:
         assert call_kwargs["prompt_tokens"] == 9
         assert call_kwargs["completion_tokens"] == 2
 
+    def test_streaming_custom_pricing_records_database_cost(self):
+        """A stream should retain the cost calculated from its deployment model_info."""
+        from datetime import datetime
+
+        import litellm
+        from litellm.types.utils import (
+            CompletionTokensDetailsWrapper,
+            ModelResponse,
+            PromptTokensDetailsWrapper,
+            Usage,
+        )
+
+        deployment_id = "glm-5.3-custom-pricing-test"
+        litellm.register_model(
+            model_cost={
+                deployment_id: {
+                    "input_cost_per_token": 1.4e-6,
+                    "output_cost_per_token": 4.4e-6,
+                    "cache_creation_input_token_cost": 0.0,
+                    "cache_read_input_token_cost": 0.26e-6,
+                    "mode": "chat",
+                }
+            }
+        )
+        try:
+            logging_obj = LiteLLMLoggingObj(
+                model="glm-5.3",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=True,
+                call_type="anthropic_messages",
+                start_time=datetime.now(),
+                litellm_call_id="glm-5.3-stream-cost-test",
+                function_id="test",
+            )
+            logging_obj.update_environment_variables(
+                model="glm-5.3",
+                user="",
+                optional_params={},
+                litellm_params={
+                    "litellm_metadata": {
+                        "model_info": {
+                            "id": deployment_id,
+                            "input_cost_per_token": 1.4e-6,
+                            "output_cost_per_token": 4.4e-6,
+                            "cache_read_input_token_cost": 0.26e-6,
+                        }
+                    }
+                },
+                custom_llm_provider="zai",
+            )
+
+            response = ModelResponse(model="glm-5.3")
+            # Anthropic's SSE parser identifies the wire format as Anthropic,
+            # even when the selected deployment is an Anthropic-compatible ZAI
+            # model. The deployment provider must win for cost calculation.
+            response._hidden_params["custom_llm_provider"] = "anthropic"
+            response.usage = Usage(
+                prompt_tokens=89825,
+                completion_tokens=206,
+                total_tokens=90031,
+                server_tool_use={"web_search_requests": 0},  # type: ignore[arg-type]
+                prompt_tokens_details=PromptTokensDetailsWrapper(
+                    cached_tokens=89472,
+                    cache_creation_tokens=0,
+                ),
+                completion_tokens_details=CompletionTokensDetailsWrapper(
+                    text_tokens=206
+                ),
+            )
+
+            kwargs = {}
+            AnthropicPassthroughLoggingHandler._create_anthropic_response_logging_payload(
+                litellm_model_response=response,
+                model="glm-5.3",
+                kwargs=kwargs,
+                start_time=datetime.now(),
+                end_time=datetime.now(),
+                logging_obj=logging_obj,
+            )
+            logging_obj._success_handler_helper_fn(
+                result=response,
+                start_time=datetime.now(),
+                end_time=datetime.now(),
+                cache_hit=False,
+            )
+
+            assert kwargs["response_cost"] == pytest.approx(0.02466332)
+            assert logging_obj.model_call_details["response_cost"] == pytest.approx(
+                0.02466332
+            )
+            assert response._hidden_params["custom_llm_provider"] == "zai"
+        finally:
+            litellm.model_cost.pop(deployment_id, None)
+
 
 
 class TestAnthropicBatchPassthroughCostTracking:

@@ -134,6 +134,17 @@ class AnthropicPassthroughLoggingHandler:
                 )
             )
 
+            if custom_llm_provider and hasattr(
+                litellm_model_response, "_hidden_params"
+            ):
+                # The Anthropic SSE parser labels the assembled response as
+                # "anthropic" even for compatible providers such as ZAI. Cost
+                # calculation treats that hidden value as authoritative, so
+                # restore the deployment's actual provider before pricing it.
+                litellm_model_response._hidden_params[
+                    "custom_llm_provider"
+                ] = custom_llm_provider
+
             try:
                 response_cost = litellm.completion_cost(
                     completion_response=litellm_model_response,
@@ -193,6 +204,9 @@ class AnthropicPassthroughLoggingHandler:
 
             kwargs["response_cost"] = response_cost
             kwargs["model"] = model
+            # The streaming success path reads spend from model_call_details,
+            # not from the handler's local kwargs.
+            logging_obj.model_call_details["response_cost"] = response_cost
             passthrough_logging_payload: Optional[PassthroughStandardLoggingPayload] = (  # type: ignore
                 kwargs.get("passthrough_logging_payload")
             )

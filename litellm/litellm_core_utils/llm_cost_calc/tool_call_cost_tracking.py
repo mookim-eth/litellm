@@ -330,6 +330,16 @@ class StandardBuiltInToolCostTracking:
         return None
 
     @staticmethod
+    def _get_web_search_requests_from_usage(usage: Usage) -> Optional[int]:
+        """Read Anthropic web-search usage from either supported representation."""
+        server_tool_use = getattr(usage, "server_tool_use", None)
+        if isinstance(server_tool_use, dict):
+            value = server_tool_use.get("web_search_requests")
+        else:
+            value = getattr(server_tool_use, "web_search_requests", None)
+        return StandardBuiltInToolCostTracking._safe_convert_to_int(value)
+
+    @staticmethod
     def response_object_includes_web_search_call(
         response_object: Any, usage: Optional[Usage] = None
     ) -> bool:
@@ -366,11 +376,10 @@ class StandardBuiltInToolCostTracking:
                 # Anthropic Claude (direct API and Vertex AI) uses server_tool_use.web_search_requests.
                 # Without this check, Claude ModelResponse always falls through to return False
                 # and _handle_web_search_cost() is never called.
-                if (
-                    hasattr(usage, "server_tool_use")
-                    and usage.server_tool_use is not None
-                    and usage.server_tool_use.web_search_requests is not None
-                ):
+                web_search_requests = StandardBuiltInToolCostTracking._get_web_search_requests_from_usage(
+                    usage
+                )
+                if web_search_requests is not None and web_search_requests > 0:
                     return True
             return False
         elif isinstance(response_object, ResponsesAPIResponse):
@@ -379,11 +388,10 @@ class StandardBuiltInToolCostTracking:
                 response_object=response_object, output_type="web_search_call"
             )
         elif usage is not None:
-            if (
-                hasattr(usage, "server_tool_use")
-                and usage.server_tool_use is not None
-                and usage.server_tool_use.web_search_requests is not None
-            ):
+            web_search_requests = StandardBuiltInToolCostTracking._get_web_search_requests_from_usage(
+                usage
+            )
+            if web_search_requests is not None and web_search_requests > 0:
                 return True
             elif (
                 hasattr(usage, "prompt_tokens_details")

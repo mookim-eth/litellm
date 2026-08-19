@@ -140,6 +140,28 @@ def test_get_cost_for_anthropic_web_search():
 
 
 @pytest.mark.parametrize(
+    ("web_search_requests", "expected"), [(0, False), (1, True)]
+)
+def test_anthropic_web_search_usage_accepts_dict(
+    web_search_requests: int, expected: bool
+):
+    """Streaming usage can preserve server_tool_use as a plain dictionary."""
+    from litellm.types.utils import Usage
+
+    usage = Usage(  # type: ignore[arg-type]
+        server_tool_use={"web_search_requests": web_search_requests}
+    )
+
+    assert (
+        StandardBuiltInToolCostTracking.response_object_includes_web_search_call(
+            response_object=None,
+            usage=usage,
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
     "model", ["gemini/gemini-2.0-flash-001", "gemini-2.0-flash-001"]
 )
 def test_get_cost_for_gemini_web_search(model):

@@ -1905,7 +1905,8 @@ class Logging(LiteLLMLoggingBaseClass):
                     "standard_logging_object"
                 ] = standard_logging_object
             else:
-                self.model_call_details["response_cost"] = None
+                # Preserve a cost already calculated by a pass-through stream.
+                self.model_call_details.setdefault("response_cost", None)
 
             result = self._transform_usage_objects(result=result)
 
