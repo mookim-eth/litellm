@@ -544,7 +544,13 @@ from litellm.types.llms.anthropic import (
     AnthropicResponseContentBlockText,
     AnthropicResponseUsageBlock,
 )
-from litellm.types.llms.openai import HttpxBinaryResponseContent
+from litellm.types.llms.openai import (
+    FunctionCallArgumentsDeltaEvent,
+    FunctionCallArgumentsDoneEvent,
+    HttpxBinaryResponseContent,
+    OutputTextDoneEvent,
+    ResponsesAPIStreamEvents,
+)
 from litellm.types.proxy.control_plane_endpoints import WorkerRegistryEntry
 from litellm.types.proxy.management_endpoints.model_management_endpoints import (
     ModelGroupInfoProxy,
@@ -6450,6 +6456,7 @@ async def async_data_generator(  # noqa: PLR0915
             request_data=request_data
         )
         zai_responses_sequence_number = 0
+        zai_responses_seen_events: set[tuple[str, str]] = set()
         model_mismatch_logged = False
         first_proxy_yield_recorded = False
         # Use a running string instead of list + join to avoid O(n^2) overhead.
@@ -6490,10 +6497,78 @@ async def async_data_generator(  # noqa: PLR0915
             if isinstance(chunk, BaseModel):
                 chunk_type = getattr(chunk, "type", "")
                 chunk_type_value = getattr(chunk_type, "value", str(chunk_type))
-                if (
+                is_zai_responses = (
                     getattr(response, "custom_llm_provider", None) == "zai"
                     and chunk_type_value.startswith("response.")
-                ):
+                )
+                if is_zai_responses:
+                    item_id = str(getattr(chunk, "item_id", "") or "")
+                    if chunk_type_value in (
+                        ResponsesAPIStreamEvents.OUTPUT_TEXT_DONE,
+                        ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA,
+                        ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE,
+                    ):
+                        zai_responses_seen_events.add((chunk_type_value, item_id))
+
+                    if chunk_type_value == ResponsesAPIStreamEvents.RESPONSE_COMPLETED:
+                        completed_response = getattr(chunk, "response", None)
+                        for output_index, item in enumerate(
+                            getattr(completed_response, "output", None) or []
+                        ):
+                            output_type = getattr(item, "type", None)
+                            output_item_id = str(getattr(item, "id", "") or "")
+                            if output_type == "message":
+                                text = "".join(
+                                    str(getattr(part, "text", "") or "")
+                                    for part in getattr(item, "content", None) or []
+                                    if getattr(part, "type", None) == "output_text"
+                                )
+                                done_key = (
+                                    ResponsesAPIStreamEvents.OUTPUT_TEXT_DONE,
+                                    output_item_id,
+                                )
+                                if text and done_key not in zai_responses_seen_events:
+                                    done_event = OutputTextDoneEvent(
+                                        type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DONE,
+                                        item_id=output_item_id,
+                                        output_index=output_index,
+                                        content_index=0,
+                                        text=text,
+                                        sequence_number=zai_responses_sequence_number,
+                                    )
+                                    zai_responses_sequence_number += 1
+                                    yield f"data: {done_event.model_dump_json(exclude_none=True)}\n\n"
+                            elif output_type == "function_call" and output_item_id:
+                                arguments = str(getattr(item, "arguments", "") or "")
+                                delta_key = (
+                                    ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA,
+                                    output_item_id,
+                                )
+                                done_key = (
+                                    ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE,
+                                    output_item_id,
+                                )
+                                if arguments and delta_key not in zai_responses_seen_events:
+                                    delta_event = FunctionCallArgumentsDeltaEvent(
+                                        type=ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA,
+                                        item_id=output_item_id,
+                                        output_index=output_index,
+                                        delta=arguments,
+                                        sequence_number=zai_responses_sequence_number,
+                                    )
+                                    zai_responses_sequence_number += 1
+                                    yield f"data: {delta_event.model_dump_json(exclude_none=True)}\n\n"
+                                if done_key not in zai_responses_seen_events:
+                                    done_event = FunctionCallArgumentsDoneEvent(
+                                        type=ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE,
+                                        item_id=output_item_id,
+                                        output_index=output_index,
+                                        arguments=arguments,
+                                        sequence_number=zai_responses_sequence_number,
+                                    )
+                                    zai_responses_sequence_number += 1
+                                    yield f"data: {done_event.model_dump_json(exclude_none=True)}\n\n"
+
                     setattr(chunk, "sequence_number", zai_responses_sequence_number)
                     zai_responses_sequence_number += 1
                 chunk = chunk.model_dump_json(exclude_none=True, exclude_unset=True)

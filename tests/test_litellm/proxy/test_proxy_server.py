@@ -4507,6 +4507,84 @@ async def test_async_data_generator_preserves_zai_responses_sequence_numbers():
 
 
 @pytest.mark.asyncio
+async def test_async_data_generator_adds_missing_zai_responses_done_events():
+    """Native Z.AI completed payloads are normalized to Codex stream events."""
+    from litellm.proxy._types import UserAPIKeyAuth
+    from litellm.proxy.proxy_server import async_data_generator
+    from litellm.proxy.utils import ProxyLogging
+    from litellm.llms.zai.responses.transformation import ZAIResponsesAPIConfig
+
+    completed = ZAIResponsesAPIConfig().transform_streaming_response(
+        model="glm-5.3",
+        parsed_chunk={
+            "type": "response.completed",
+            "response": {
+                "id": "resp_test",
+                "created_at": 1,
+                "model": "glm-5.3",
+                "object": "response",
+                "output": [
+                    {
+                        "id": "msg_test",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {"type": "output_text", "text": "ok", "annotations": []}
+                        ],
+                    },
+                    {
+                        "id": "fc_test",
+                        "type": "function_call",
+                        "arguments": '{"city":"Tokyo"}',
+                        "call_id": "call_test",
+                        "name": "weather",
+                        "status": "completed",
+                    },
+                ],
+                "status": "completed",
+            },
+        },
+        logging_obj=MagicMock(),
+    )
+
+    async def mock_streaming_iterator(*args, **kwargs):
+        yield completed
+
+    mock_proxy_logging_obj = MagicMock(spec=ProxyLogging)
+    mock_proxy_logging_obj.async_post_call_streaming_iterator_hook = (
+        mock_streaming_iterator
+    )
+    mock_proxy_logging_obj.async_post_call_streaming_hook = AsyncMock(
+        side_effect=lambda **kwargs: kwargs.get("response")
+    )
+    mock_proxy_logging_obj.post_call_failure_hook = AsyncMock()
+    mock_response = MagicMock(custom_llm_provider="zai")
+    mock_response.aclose = AsyncMock()
+
+    with patch("litellm.proxy.proxy_server.proxy_logging_obj", mock_proxy_logging_obj):
+        chunks = [
+            chunk
+            async for chunk in async_data_generator(
+                mock_response,
+                MagicMock(spec=UserAPIKeyAuth),
+                {"model": "glm-5.3", "stream": True},
+            )
+        ]
+
+    payloads = [json.loads(chunk.removeprefix("data: ")) for chunk in chunks[:-1]]
+    assert [payload["type"] for payload in payloads] == [
+        "response.output_text.done",
+        "response.function_call_arguments.delta",
+        "response.function_call_arguments.done",
+        "response.completed",
+    ]
+    assert [payload["sequence_number"] for payload in payloads] == list(
+        range(len(payloads))
+    )
+
+
+@pytest.mark.asyncio
 async def test_async_data_generator_cleanup_on_midstream_error():
     """
     Test that async_data_generator calls response.aclose() via finally block
