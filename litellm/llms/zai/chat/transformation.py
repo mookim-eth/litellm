@@ -17,6 +17,13 @@ class ZAIChatConfig(OpenAIGPTConfig):
         self, api_base: Optional[str], api_key: Optional[str]
     ) -> Tuple[Optional[str], Optional[str]]:
         api_base = api_base or get_secret_str("ZAI_API_BASE") or ZAI_API_BASE
+        # ZAI exposes native Responses at /api/v1/responses, while Chat
+        # Completions for these deployments must continue using the Coding API.
+        if api_base is not None and api_base.rstrip("/").endswith("/api/v1"):
+            api_base = (
+                api_base.rstrip("/")[: -len("/api/v1")]
+                + "/api/coding/paas/v4"
+            )
         dynamic_api_key = api_key or get_secret_str("ZAI_API_KEY")
         return api_base, dynamic_api_key
 

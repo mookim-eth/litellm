@@ -305,6 +305,25 @@ class TestProviderConfigManagerResponsesAPI:
         )
         assert config is not None
 
+    def test_zai_responses_provider_uses_native_endpoint(self):
+        """ZAI resolves to the generic native Responses configuration."""
+        from litellm.types.utils import LlmProviders
+        from litellm.utils import ProviderConfigManager
+
+        config = ProviderConfigManager.get_provider_responses_api_config(
+            provider=LlmProviders.ZAI,
+            model="glm-5.3",
+        )
+
+        assert config is not None
+        assert config.custom_llm_provider == "zai"
+        assert (
+            config.get_complete_url(
+                api_base="https://open.bigmodel.cn/api/v1", litellm_params={}
+            )
+            == "https://open.bigmodel.cn/api/v1/responses"
+        )
+
     def test_python_class_takes_priority_over_json(self):
         """If a provider has both a Python class and JSON config, Python wins"""
         from litellm.llms.openai_like.json_loader import (

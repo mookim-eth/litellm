@@ -101,5 +101,11 @@
     "param_mappings": {
       "max_completion_tokens": "max_tokens"
     }
+  },
+  "zai": {
+    "base_url": "https://open.bigmodel.cn/api/v1",
+    "api_key_env": "ZAI_API_KEY",
+    "api_base_env": "ZAI_API_BASE",
+    "supported_endpoints": ["/v1/responses"]
   }
 }

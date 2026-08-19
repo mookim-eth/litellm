@@ -48,6 +48,17 @@ def test_zai_in_provider_lists():
     assert "zai" in litellm.provider_list
 
 
+def test_zai_chat_api_base_keeps_coding_endpoint_for_native_responses_deployment():
+    """Chat Completions must remain on Coding API when Responses uses /api/v1."""
+    from litellm.llms.zai.chat.transformation import ZAIChatConfig
+
+    api_base, _ = ZAIChatConfig()._get_openai_compatible_provider_info(
+        api_base="https://open.bigmodel.cn/api/v1", api_key="test-key"
+    )
+
+    assert api_base == "https://open.bigmodel.cn/api/coding/paas/v4"
+
+
 def test_zai_models_in_model_cost():
     """Test that ZAI models are in the model cost map"""
     import os
