@@ -23,7 +23,7 @@ export const columns = (
   handleUserClick: (userId: string, openInEditMode?: boolean) => void,
   selectionOptions?: SelectionOptions,
 ): ColumnDef<UserInfo>[] => {
-  // Backend sortable columns: user_id, user_email, created_at, spend, user_alias, user_role
+  // Backend sortable columns: user_id, user_email, created_at, updated_at, spend, user_alias, user_role
   const baseColumns: ColumnDef<UserInfo>[] = [
     {
       header: "User ID",
@@ -128,7 +128,7 @@ export const columns = (
     {
       header: "Updated At",
       accessorKey: "updated_at",
-      enableSorting: false,
+      enableSorting: true,
       cell: ({ row }) => (
         <span className="text-xs">
           {row.original.updated_at ? new Date(row.original.updated_at).toLocaleDateString() : "-"}

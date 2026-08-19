@@ -670,6 +670,7 @@ def test_validate_sort_params():
     assert _validate_sort_params(None, "desc") is None
     assert _validate_sort_params("user_id", "asc") == {"user_id": "asc"}
     assert _validate_sort_params("user_id", "desc") == {"user_id": "desc"}
+    assert _validate_sort_params("updated_at", "desc") == {"updated_at": "desc"}
     with pytest.raises(Exception):
         _validate_sort_params("user_id", "invalid")
 

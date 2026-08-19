@@ -73,6 +73,26 @@ describe("UserDataTable", () => {
     expect(onSortChange).toHaveBeenCalledWith("user_email", "desc");
   });
 
+  it("should allow sorting by updated_at", () => {
+    const onSortChange = vi.fn();
+    const possibleUIRoles = { admin: { ui_label: "Admin" } };
+
+    render(
+      <UserDataTable
+        {...getDefaultProps()}
+        possibleUIRoles={possibleUIRoles}
+        onSortChange={onSortChange}
+        currentSort={{ sortBy: "created_at", sortOrder: "desc" }}
+      />,
+    );
+
+    act(() => {
+      fireEvent.click(screen.getByRole("columnheader", { name: /updated at/i }));
+    });
+
+    expect(onSortChange).toHaveBeenCalledWith("updated_at", "desc");
+  });
+
   it("should show skeleton loaders when isLoading is true", () => {
     render(<UserDataTable {...getDefaultProps()} isLoading={true} />);
 

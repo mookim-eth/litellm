@@ -1764,6 +1764,7 @@ def _validate_sort_params(
         "user_id",
         "user_email",
         "created_at",
+        "updated_at",
         "spend",
         "user_alias",
         "user_role",
@@ -1894,7 +1895,7 @@ async def get_users(
     ),
     sort_by: Optional[str] = fastapi.Query(
         default=None,
-        description="Column to sort by (e.g. 'user_id', 'user_email', 'created_at', 'spend')",
+        description="Column to sort by (e.g. 'user_id', 'user_email', 'created_at', 'updated_at', 'spend')",
     ),
     sort_order: str = fastapi.Query(
         default="asc", description="Sort order ('asc' or 'desc')"
@@ -1928,7 +1929,7 @@ async def get_users(
         page_size: int
             The number of items per page
         sort_by: Optional[str]
-            Column to sort by (e.g. 'user_id', 'user_email', 'created_at', 'spend')
+            Column to sort by (e.g. 'user_id', 'user_email', 'created_at', 'updated_at', 'spend')
         sort_order: Optional[str]
             Sort order ('asc' or 'desc')
     """
