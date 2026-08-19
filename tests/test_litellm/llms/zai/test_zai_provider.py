@@ -73,6 +73,26 @@ def test_zai_responses_api_uses_native_endpoint():
     )
 
 
+def test_zai_responses_streaming_events_include_sequence_number():
+    """Native Z.AI events are serialized with contiguous Responses sequence fields."""
+    from litellm.llms.zai.responses.transformation import ZAIResponsesAPIConfig
+
+    config = ZAIResponsesAPIConfig()
+    event = config.transform_streaming_response(
+        model="glm-5.3",
+        parsed_chunk={
+            "type": "response.output_text.delta",
+            "item_id": "item_1",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "ok",
+        },
+        logging_obj=None,
+    )
+
+    assert event.model_dump(mode="json", exclude_none=True)["sequence_number"] == 0
+
+
 def test_zai_models_in_model_cost():
     """Test that ZAI models are in the model cost map"""
     import os

@@ -28,6 +28,7 @@ class LiteLLMPydanticObjectBase(BaseModel):
 
 class BaseLiteLLMOpenAIResponseObject(BaseModel):
     model_config = ConfigDict(extra="allow", protected_namespaces=())
+    sequence_number: Optional[int] = None
 
     def __getitem__(self, key):
         return self.__dict__[key]
