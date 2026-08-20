@@ -70,6 +70,21 @@ async def test_should_share_limit_across_models_for_one_account(
             None,
         )
 
+    snapshot = await limiter.get_concurrency_snapshot()
+    assert snapshot["storage"] == "local"
+    assert snapshot["total_active"] == 3
+    assert snapshot["accounts"] == [
+        {
+            "account_hash_prefix": limiter._account_key("account-a").split(":")[-1][
+                :12
+            ],
+            "plan_type": "plus",
+            "active": 3,
+            "limit": 3,
+            "remaining": 0,
+        }
+    ]
+
     with pytest.raises(litellm.RateLimitError) as exc_info:
         await limiter.async_pre_call_deployment_hook(
             {
@@ -98,6 +113,7 @@ async def test_should_share_limit_across_models_for_one_account(
     for logging_obj in logging_objects[1:]:
         await logging_obj.async_cleanup_deployment_resources()
     await replacement_logging_obj.async_cleanup_deployment_resources()
+    assert (await limiter.get_concurrency_snapshot())["accounts"] == []
 
 
 @pytest.mark.asyncio

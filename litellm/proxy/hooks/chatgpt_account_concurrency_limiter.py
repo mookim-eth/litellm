@@ -50,6 +50,13 @@ _RELEASE_LEASE_SCRIPT = """
 return redis.call('ZREM', KEYS[1], ARGV[1])
 """
 
+_COUNT_ACTIVE_LEASES_SCRIPT = """
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now)
+return redis.call('ZCARD', key)
+"""
+
 
 @dataclass
 class _ChatGPTAccountLease:
@@ -76,6 +83,7 @@ class ChatGPTAccountConcurrencyLimiter(CustomLogger):
         self._local_lock = asyncio.Lock()
         self._local_leases: Dict[str, set[str]] = {}
         self._auth_metadata_cache: Dict[str, Tuple[int, int, str, str]] = {}
+        self._account_plan_types: Dict[str, str] = {}
         self._warned_missing_plans: set[str] = set()
         self.lease_ttl_seconds = int(
             os.getenv("LITELLM_CHATGPT_ACCOUNT_LEASE_TTL_SECONDS", "300")
@@ -85,6 +93,7 @@ class ChatGPTAccountConcurrencyLimiter(CustomLogger):
             self._acquire_script = None
             self._renew_script = None
             self._release_script = None
+            self._count_active_script = None
         else:
             self._acquire_script = redis_cache.async_register_script(
                 _ACQUIRE_LEASE_SCRIPT
@@ -92,6 +101,9 @@ class ChatGPTAccountConcurrencyLimiter(CustomLogger):
             self._renew_script = redis_cache.async_register_script(_RENEW_LEASE_SCRIPT)
             self._release_script = redis_cache.async_register_script(
                 _RELEASE_LEASE_SCRIPT
+            )
+            self._count_active_script = redis_cache.async_register_script(
+                _COUNT_ACTIVE_LEASES_SCRIPT
             )
 
     @staticmethod
@@ -214,6 +226,52 @@ class ChatGPTAccountConcurrencyLimiter(CustomLogger):
             if not leases:
                 self._local_leases.pop(account_key, None)
 
+    async def get_concurrency_snapshot(self) -> Dict[str, Any]:
+        """Return active provider-account leases without exposing account IDs."""
+        limits = self._get_limits()
+        account_plan_types = dict(self._account_plan_types)
+        active_counts: Dict[str, int] = {}
+
+        if self._count_active_script is not None:
+            now = time.time()
+            for account_key in account_plan_types:
+                count = await self._count_active_script(keys=[account_key], args=[now])
+                active_counts[account_key] = max(0, int(count))
+        else:
+            async with self._local_lock:
+                active_counts = {
+                    account_key: len(leases)
+                    for account_key, leases in self._local_leases.items()
+                }
+
+        accounts: List[Dict[str, Any]] = []
+        for account_key, plan_type in account_plan_types.items():
+            active = active_counts.get(account_key, 0)
+            if active == 0:
+                continue
+            limit = limits.get(plan_type)
+            account_hash = account_key.rsplit(":", 1)[-1]
+            accounts.append(
+                {
+                    "account_hash_prefix": account_hash[:12],
+                    "plan_type": plan_type,
+                    "active": active,
+                    "limit": limit,
+                    "remaining": max(0, limit - active) if limit is not None else None,
+                }
+            )
+
+        accounts.sort(key=lambda item: (-item["active"], item["account_hash_prefix"]))
+        return {
+            "storage": "redis" if self._count_active_script is not None else "local",
+            "lease_ttl_seconds": self.lease_ttl_seconds,
+            "configured_limits": limits,
+            "observed_account_count": len(account_plan_types),
+            "active_account_count": len(accounts),
+            "total_active": sum(item["active"] for item in accounts),
+            "accounts": accounts,
+        }
+
     async def async_filter_deployments(
         self,
         model: str,
@@ -258,6 +316,7 @@ class ChatGPTAccountConcurrencyLimiter(CustomLogger):
             return None
 
         account_key = self._account_key(account_id)
+        self._account_plan_types[account_key] = plan_type
         logging_obj = kwargs.get("litellm_logging_obj")
         if logging_obj is None or not hasattr(
             logging_obj, "add_async_deployment_cleanup_callback"

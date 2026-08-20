@@ -38,6 +38,65 @@ async def test_debug_asyncio_tasks_requires_admin_view():
 
 
 @pytest.mark.asyncio
+async def test_debug_concurrency_limits_requires_admin_view():
+    with pytest.raises(HTTPException) as exc:
+        await debug_utils.get_concurrency_limits(user_api_key_dict=_auth())
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_debug_concurrency_limits_returns_both_limiter_snapshots(monkeypatch):
+    import litellm.proxy.proxy_server as proxy_server
+
+    class _ParallelLimiter:
+        async def get_max_parallel_requests_snapshot(self):
+            return {"storage": "local", "total_active": 1, "counters": []}
+
+    class _ChatGPTLimiter:
+        async def get_concurrency_snapshot(self):
+            return {"storage": "local", "total_active": 2, "accounts": []}
+
+    parallel_limiter = _ParallelLimiter()
+    chatgpt_limiter = _ChatGPTLimiter()
+    fake_proxy_logging = MagicMock()
+    fake_proxy_logging.get_proxy_hook.side_effect = lambda name: {
+        "parallel_request_limiter": parallel_limiter,
+        "chatgpt_account_concurrency_limiter": chatgpt_limiter,
+    }[name]
+    monkeypatch.setattr(proxy_server, "proxy_logging_obj", fake_proxy_logging)
+    monkeypatch.setattr(
+        debug_utils,
+        "_PROXY_MaxParallelRequestsHandler_v3",
+        _ParallelLimiter,
+        raising=False,
+    )
+
+    # The endpoint imports concrete classes inside the function; replace their
+    # modules' names so this test covers endpoint aggregation without creating
+    # live limiter caches.
+    from litellm.proxy.hooks import chatgpt_account_concurrency_limiter
+    from litellm.proxy.hooks import parallel_request_limiter_v3
+
+    monkeypatch.setattr(
+        parallel_request_limiter_v3,
+        "_PROXY_MaxParallelRequestsHandler_v3",
+        _ParallelLimiter,
+    )
+    monkeypatch.setattr(
+        chatgpt_account_concurrency_limiter,
+        "ChatGPTAccountConcurrencyLimiter",
+        _ChatGPTLimiter,
+    )
+
+    result = await debug_utils.get_concurrency_limits(
+        user_api_key_dict=_auth(LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY)
+    )
+
+    assert result["api_key_max_parallel_requests"]["total_active"] == 1
+    assert result["chatgpt_account_concurrency"]["total_active"] == 2
+
+
+@pytest.mark.asyncio
 async def test_team_filter_ui_requires_admin_view(monkeypatch):
     import litellm.proxy.proxy_server as proxy_server
 

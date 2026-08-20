@@ -15,6 +15,7 @@ from typing import (
     List,
     Literal,
     Optional,
+    Tuple,
     TypedDict,
     Union,
     cast,
@@ -168,6 +169,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             self.token_increment_script = None
 
         self.window_size = int(os.getenv("LITELLM_RATE_LIMIT_WINDOW_SIZE", 60))
+        self._observed_max_parallel_limits: Dict[str, Tuple[int, float]] = {}
 
         # Batch rate limiter (lazy loaded)
         self._batch_rate_limiter: Optional[Any] = None
@@ -1331,6 +1333,24 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     is not None
                 ]
                 if max_parallel_counter_keys:
+                    observed_until = (
+                        self._get_current_time().timestamp() + self.window_size
+                    )
+                    for descriptor in descriptors:
+                        max_parallel_limit = (descriptor.get("rate_limit") or {}).get(
+                            "max_parallel_requests"
+                        )
+                        if max_parallel_limit is None:
+                            continue
+                        counter_key = self.create_rate_limit_keys(
+                            key=descriptor["key"],
+                            value=descriptor["value"],
+                            rate_limit_type="max_parallel_requests",
+                        )
+                        self._observed_max_parallel_limits[counter_key] = (
+                            int(max_parallel_limit),
+                            observed_until,
+                        )
                     data[_MAX_PARALLEL_REQUEST_LEASE_KEY] = {
                         "counter_keys": list(dict.fromkeys(max_parallel_counter_keys)),
                         "released": False,
@@ -1348,6 +1368,69 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             else:
                 # add descriptors to request headers
                 data["litellm_proxy_rate_limit_response"] = response
+
+    async def get_max_parallel_requests_snapshot(self) -> Dict[str, Any]:
+        """Return active request-level concurrency counters for diagnostics."""
+        now = self._get_current_time().timestamp()
+        expired_keys = [
+            key
+            for key, (_, observed_until) in self._observed_max_parallel_limits.items()
+            if observed_until <= now
+        ]
+        for key in expired_keys:
+            self._observed_max_parallel_limits.pop(key, None)
+
+        observed_limits = dict(self._observed_max_parallel_limits)
+        counter_keys = list(observed_limits)
+        dual_cache = self.internal_usage_cache.dual_cache
+        cached_values = await dual_cache.in_memory_cache.async_batch_get_cache(
+            counter_keys
+        )
+        redis_values: Dict[str, Any] = {}
+        if dual_cache.redis_cache is not None and counter_keys:
+            redis_values = (
+                await dual_cache.redis_cache.async_batch_get_cache(counter_keys) or {}
+            )
+
+        counters: List[Dict[str, Any]] = []
+        for index, counter_key in enumerate(counter_keys):
+            limit = observed_limits[counter_key][0]
+            cached_value = cached_values[index] if cached_values is not None else None
+            redis_value = redis_values.get(counter_key)
+            value = redis_value if dual_cache.redis_cache is not None else cached_value
+            try:
+                active = max(0, int(value or 0))
+            except (TypeError, ValueError):
+                continue
+            if active == 0:
+                continue
+
+            descriptor = counter_key.removeprefix("{").removesuffix(
+                "}:max_parallel_requests"
+            )
+            scope, _, identifier = descriptor.partition(":")
+            counter = {
+                "scope": scope,
+                "identifier_prefix": identifier[:12],
+                "active": active,
+                "limit": limit,
+                "remaining": max(0, limit - active),
+            }
+            if dual_cache.redis_cache is not None:
+                counter["cached_active"] = max(0, int(cached_value or 0))
+                counter["redis_active"] = active
+            counters.append(counter)
+
+        counters.sort(key=lambda item: (-item["active"], item["identifier_prefix"]))
+        redis_enabled = dual_cache.redis_cache is not None
+        return {
+            "storage": "redis_and_local" if redis_enabled else "local",
+            "window_seconds": self.window_size,
+            "observed_counter_count": len(self._observed_max_parallel_limits),
+            "active_counter_count": len(counters),
+            "total_active": sum(item["active"] for item in counters),
+            "counters": counters,
+        }
 
     def _create_pipeline_operations(
         self,

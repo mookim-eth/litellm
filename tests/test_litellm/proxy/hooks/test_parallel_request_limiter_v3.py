@@ -669,6 +669,18 @@ async def test_pre_call_acquires_max_parallel_request_lease():
     counter_key = f"{{api_key:{api_key}}}:max_parallel_requests"
     assert lease == {"counter_keys": [counter_key], "released": False}
     assert await local_cache.async_get_cache(counter_key) == 1
+    snapshot = await handler.get_max_parallel_requests_snapshot()
+    assert snapshot["storage"] == "local"
+    assert snapshot["total_active"] == 1
+    assert snapshot["counters"] == [
+        {
+            "scope": "api_key",
+            "identifier_prefix": api_key[:12],
+            "active": 1,
+            "limit": 2,
+            "remaining": 1,
+        }
+    ]
 
     await handler.async_post_call_success_hook(
         data=request_data,
@@ -676,6 +688,7 @@ async def test_pre_call_acquires_max_parallel_request_lease():
         response=ModelResponse(choices=[]),
     )
     assert await local_cache.async_get_cache(counter_key) == 0
+    assert (await handler.get_max_parallel_requests_snapshot())["counters"] == []
 
 
 @pytest.mark.asyncio

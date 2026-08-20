@@ -97,6 +97,47 @@ async def get_active_tasks_stats(
     }
 
 
+@router.get("/debug/concurrency-limits")
+async def get_concurrency_limits(
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+) -> Dict[str, Any]:
+    """Return active API-key counters and ChatGPT provider-account leases."""
+    _require_debug_admin(user_api_key_dict)
+
+    from litellm.proxy.hooks.chatgpt_account_concurrency_limiter import (
+        ChatGPTAccountConcurrencyLimiter,
+    )
+    from litellm.proxy.hooks.parallel_request_limiter_v3 import (
+        _PROXY_MaxParallelRequestsHandler_v3,
+    )
+    from litellm.proxy.proxy_server import proxy_logging_obj
+
+    parallel_limiter = proxy_logging_obj.get_proxy_hook("parallel_request_limiter")
+    chatgpt_limiter = proxy_logging_obj.get_proxy_hook(
+        "chatgpt_account_concurrency_limiter"
+    )
+
+    parallel_snapshot: Dict[str, Any] = {"enabled": False}
+    if isinstance(parallel_limiter, _PROXY_MaxParallelRequestsHandler_v3):
+        parallel_snapshot = {
+            "enabled": True,
+            **(await parallel_limiter.get_max_parallel_requests_snapshot()),
+        }
+
+    chatgpt_snapshot: Dict[str, Any] = {"enabled": False}
+    if isinstance(chatgpt_limiter, ChatGPTAccountConcurrencyLimiter):
+        chatgpt_snapshot = {
+            "enabled": True,
+            **(await chatgpt_limiter.get_concurrency_snapshot()),
+        }
+
+    return {
+        "worker_pid": os.getpid(),
+        "api_key_max_parallel_requests": parallel_snapshot,
+        "chatgpt_account_concurrency": chatgpt_snapshot,
+    }
+
+
 if os.environ.get("LITELLM_PROFILE", "false").lower() == "true":
     try:
         import objgraph  # type: ignore
