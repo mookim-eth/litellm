@@ -110,6 +110,7 @@ return results
 # Redis cluster slot count
 REDIS_CLUSTER_SLOTS = 16384
 REDIS_NODE_HASHTAG_NAME = "all_keys"
+_MAX_PARALLEL_REQUEST_LEASE_KEY = "_litellm_proxy_max_parallel_request_lease"
 
 
 class RateLimitDescriptorRateLimitObject(TypedDict, total=False):
@@ -450,6 +451,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         descriptors: List[RateLimitDescriptor],
         parent_otel_span: Optional[Span] = None,
         read_only: bool = False,
+        increment_tracker: Optional[Dict[str, bool]] = None,
     ) -> RateLimitResponse:
         """
         Check if any of the rate limit descriptors should be rate limited.
@@ -461,6 +463,9 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             parent_otel_span: Optional OpenTelemetry span for tracing
             read_only: If True, only check limits without incrementing counters
         """
+
+        if increment_tracker is not None:
+            increment_tracker["incremented"] = False
 
         current_time = self._get_current_time()
         now = current_time.timestamp()
@@ -582,6 +587,9 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 now_int=now_int,
                 window_size=self.window_size,
             )
+
+        if increment_tracker is not None and not read_only:
+            increment_tracker["incremented"] = True
 
         rate_limit_response = self.is_cache_list_over_limit(
             keys_to_fetch, cache_values, key_metadata
@@ -1304,12 +1312,35 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         )
         # Only check rate limits if we have descriptors with actual limits
         if descriptors:
+            increment_tracker: Dict[str, bool] = {}
             response = await self.should_rate_limit(
                 descriptors=descriptors,
                 parent_otel_span=user_api_key_dict.parent_otel_span,
+                increment_tracker=increment_tracker,
             )
 
+            if increment_tracker.get("incremented"):
+                max_parallel_counter_keys = [
+                    self.create_rate_limit_keys(
+                        key=descriptor["key"],
+                        value=descriptor["value"],
+                        rate_limit_type="max_parallel_requests",
+                    )
+                    for descriptor in descriptors
+                    if (descriptor.get("rate_limit") or {}).get("max_parallel_requests")
+                    is not None
+                ]
+                if max_parallel_counter_keys:
+                    data[_MAX_PARALLEL_REQUEST_LEASE_KEY] = {
+                        "counter_keys": list(dict.fromkeys(max_parallel_counter_keys)),
+                        "released": False,
+                    }
+
             if response["overall_code"] == "OVER_LIMIT":
+                # should_rate_limit() atomically increments before checking the
+                # returned value. Undo only this request's max-parallel
+                # increment before rejecting it. RPM counters remain consumed.
+                await self._release_max_parallel_request_lease(data)
                 self._handle_rate_limit_error(
                     response=response,
                     descriptors=descriptors,
@@ -1546,21 +1577,9 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             # Create pipeline operations for TPM increments
             pipeline_operations: List[RedisPipelineIncrementOperation] = []
 
-            # API Key TPM
+            # API Key TPM. max_parallel_requests is released once at the proxy
+            # request boundary, not once per Router provider attempt.
             if user_api_key:
-                # MAX PARALLEL REQUESTS - only support for API Key, just decrement the counter
-                counter_key = self.create_rate_limit_keys(
-                    key="api_key",
-                    value=user_api_key,
-                    rate_limit_type="max_parallel_requests",
-                )
-                pipeline_operations.append(
-                    RedisPipelineIncrementOperation(
-                        key=counter_key,
-                        increment_value=-1,
-                        ttl=self.window_size,
-                    )
-                )
                 pipeline_operations.extend(
                     self._create_pipeline_operations(
                         key="api_key",
@@ -1684,50 +1703,69 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         """
-        Decrement max parallel requests counter for the API Key
+        Provider-attempt failures must not release the proxy request's
+        max_parallel_requests lease. Router retries and fallbacks invoke this
+        callback before the overall request has completed.
         """
-        from litellm.litellm_core_utils.core_helpers import (
-            _get_parent_otel_span_from_kwargs,
-        )
+        return None
+
+    async def _release_max_parallel_request_lease(self, data: dict) -> None:
         from litellm.types.caching import RedisPipelineIncrementOperation
 
-        try:
-            litellm_parent_otel_span: Union[
-                Span, None
-            ] = _get_parent_otel_span_from_kwargs(kwargs)
-            # Get metadata from standard_logging_object - this correctly handles both
-            # 'metadata' and 'litellm_metadata' fields from litellm_params
-            standard_logging_object = kwargs.get("standard_logging_object") or {}
-            standard_logging_metadata = standard_logging_object.get("metadata") or {}
-            user_api_key = standard_logging_metadata.get("user_api_key_hash")
+        lease = data.get(_MAX_PARALLEL_REQUEST_LEASE_KEY)
+        if not isinstance(lease, dict) or lease.get("released") is True:
+            return
 
-            pipeline_operations: List[RedisPipelineIncrementOperation] = []
+        counter_keys = lease.get("counter_keys")
+        if not isinstance(counter_keys, list) or not counter_keys:
+            return
 
-            if user_api_key:
-                # MAX PARALLEL REQUESTS - only support for API Key, just decrement the counter
-                counter_key = self.create_rate_limit_keys(
-                    key="api_key",
-                    value=user_api_key,
-                    rate_limit_type="max_parallel_requests",
-                )
-                pipeline_operations.append(
-                    RedisPipelineIncrementOperation(
-                        key=counter_key,
-                        increment_value=-1,
-                        ttl=self.window_size,
-                    )
-                )
-
-            # Execute all increments in a single pipeline
-            if pipeline_operations:
+        # Mark released before awaiting so concurrent final success/failure/
+        # stream-close paths remain idempotent.
+        lease["released"] = True
+        operations: List[RedisPipelineIncrementOperation] = [
+            {
+                "key": counter_key,
+                "increment_value": -1,
+                "ttl": self.window_size,
+            }
+            for counter_key in counter_keys
+            if isinstance(counter_key, str)
+        ]
+        if operations:
+            try:
                 await self.internal_usage_cache.dual_cache.async_increment_cache_pipeline(
-                    increment_list=pipeline_operations,
-                    litellm_parent_otel_span=litellm_parent_otel_span,
+                    increment_list=operations,
                 )
-        except Exception as e:
-            verbose_proxy_logger.exception(
-                f"Error in rate limit failure event: {str(e)}"
-            )
+            except Exception as e:
+                # Do not turn a completed model response into an application
+                # error. Retrying is unsafe because a partial cache failure may
+                # have already applied the decrement; the counter TTL remains
+                # the final recovery boundary.
+                verbose_proxy_logger.exception(
+                    "Failed to release max_parallel_requests lease: %s", e
+                )
+
+    async def async_post_call_failure_hook(
+        self,
+        request_data: dict,
+        user_api_key_dict: UserAPIKeyAuth,
+        original_exception: Exception,
+        traceback_str: Optional[str] = None,
+    ) -> None:
+        await self._release_max_parallel_request_lease(request_data)
+
+    async def async_post_call_streaming_iterator_hook(
+        self,
+        user_api_key_dict: UserAPIKeyAuth,
+        response: Any,
+        request_data: dict,
+    ):
+        try:
+            async for chunk in response:
+                yield chunk
+        finally:
+            await self._release_max_parallel_request_lease(request_data)
 
     async def async_post_call_success_hook(
         self, data: dict, user_api_key_dict: UserAPIKeyAuth, response
@@ -1736,6 +1774,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         Post-call hook to update rate limit headers in the response.
         """
         try:
+            await self._release_max_parallel_request_lease(data)
             from pydantic import BaseModel
 
             litellm_proxy_rate_limit_response = cast(
