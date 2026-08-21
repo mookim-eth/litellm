@@ -318,6 +318,13 @@ during upstream syncs and when adding new key-management routes:
 - Do not relax these restrictions to a reserved-key denylist without tracing
   every metadata consumer. Key metadata has historically been interpreted as
   callback, guardrail, rate-limit, and route-control configuration.
+- Request-lifecycle state used for rate-limit counters, leases, cleanup
+  callbacks, or authorization decisions must be initialized by the proxy and
+  must never be trusted from an extra field in a client request body. Adding an
+  internal name to `all_litellm_params` only prevents provider passthrough; it
+  does not make that field server-owned. Pop or overwrite any client-supplied
+  value before a hook consumes it, and add a regression test for attempted
+  injection through a normal public inference route.
 - Before changing these controls, run at least:
 
   ```bash
@@ -485,6 +492,34 @@ unhealthy, E2E fails, or production readiness/cutover verification fails, stop
 at that stage and report the blocker. Never continue to production merely
 because earlier stages passed.
 
+Deployment state must be read from the running system, not inferred from Git or
+from an `image:` line alone. The repository HEAD, pushed branch, test container,
+active production container, and inactive blue/green compose entry may
+intentionally be at different commits. Before a handoff or deployment:
+
+```bash
+git status --short --branch
+git rev-parse --short=12 HEAD
+docker inspect --format '{{.Name}} {{.Config.Image}} {{.Image}}' \
+  litellm-litellm-test-1 2>/dev/null || true
+cd /root/litellm
+./deploy-litellm.sh status
+```
+
+Also check `/run/litellm-watchdog/deploy.lock` with non-blocking `flock` before
+editing either compose file or starting a switch. If another process holds the
+lock, do not start a second deployment or edit
+`/root/litellm/docker-compose.yml` or the Traefik routes while state is changing;
+wait for that workflow to finish, then inspect status again. The test service is
+independent on port 4001 with its own PostgreSQL database and can legitimately
+run ahead of production, but it shares the host auth directory and `.env`
+upstream credentials; treat E2E calls as real external calls. Both test and
+production disable automatic Prisma schema updates and schema-diff checks, so
+recreating an image does not apply a database migration. Review and execute any
+required migration explicitly before E2E or cutover. Production traffic is
+determined by Traefik plus the running blue/green container, not by which
+service has the newest compose image entry.
+
 When asked to ship the current repo changes to the local LiteLLM deployment:
 
 1. Inspect the worktree first:
@@ -621,6 +656,21 @@ The host's `cleanup-litellm-images.sh` scans only the exact repositories
 `litellm-internal-*-base` repositories. Normal `docker system prune` retains
 tagged images, but `docker system prune -a` can delete these bases when no
 container references them.
+
+### Production capacity collector
+
+The host service `litellm-capacity-collector.service` runs
+`/root/litellm/litellm-capacity-collector.py` every 30 seconds and appends JSON
+samples to `/var/log/litellm-capacity.jsonl`; it intentionally does not print
+each sample to journald. It follows the active Traefik blue/green backend and
+records process CPU/RSS, readiness and backlog latency, connection counts,
+Traefik request metrics, and (when supported by the active image) admin-only
+`/debug/concurrency-limits` data. A 404 for that diagnostic field means the
+active image predates the endpoint, not that the collector itself is unhealthy.
+Use `systemctl status litellm-capacity-collector.service` and inspect recent
+JSONL records before changing the service. Do not commit this host runtime
+script, its systemd unit, credentials, or collected log into the LiteLLM
+repository.
 
 ### Container hotpatching
 
