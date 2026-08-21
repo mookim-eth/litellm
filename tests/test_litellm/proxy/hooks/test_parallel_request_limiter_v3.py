@@ -692,6 +692,44 @@ async def test_pre_call_acquires_max_parallel_request_lease():
 
 
 @pytest.mark.asyncio
+async def test_pre_call_discards_client_supplied_max_parallel_request_lease():
+    handler = _PROXY_MaxParallelRequestsHandler(
+        internal_usage_cache=InternalUsageCache(DualCache())
+    )
+    attacker_counter_key = "{api_key:attacker-chosen}:max_parallel_requests"
+    request_data = {
+        "model": "gpt-4",
+        _MAX_PARALLEL_REQUEST_LEASE_KEY: {
+            "counter_keys": [attacker_counter_key],
+            "released": False,
+        },
+    }
+    captured_ops = []
+
+    async def mock_pipeline(increment_list, **kwargs):
+        captured_ops.extend(increment_list)
+
+    handler.internal_usage_cache.dual_cache.async_increment_cache_pipeline = (
+        mock_pipeline
+    )
+
+    await handler.async_pre_call_hook(
+        user_api_key_dict=UserAPIKeyAuth(),
+        cache=DualCache(),
+        data=request_data,
+        call_type="acompletion",
+    )
+    await handler.async_post_call_success_hook(
+        data=request_data,
+        user_api_key_dict=UserAPIKeyAuth(),
+        response=ModelResponse(choices=[]),
+    )
+
+    assert _MAX_PARALLEL_REQUEST_LEASE_KEY not in request_data
+    assert captured_ops == []
+
+
+@pytest.mark.asyncio
 async def test_max_parallel_request_lease_releases_on_final_failure():
     handler = _PROXY_MaxParallelRequestsHandler(
         internal_usage_cache=InternalUsageCache(DualCache())

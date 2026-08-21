@@ -1254,6 +1254,10 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         """
         verbose_proxy_logger.debug("Inside Rate Limit Pre-Call Hook")
 
+        # This is proxy-owned request lifecycle state. Never let a public
+        # request supply counter keys that terminal hooks would decrement.
+        data.pop(_MAX_PARALLEL_REQUEST_LEASE_KEY, None)
+
         #########################################################
         # Check if the call type has a specific rate limiter
         # eg. for Batch APIs we need to use the batch rate limiter to read the input file and count the tokens and requests

@@ -13,6 +13,10 @@ def test_untrusted_proxy_control_fields_are_removed():
     data = {
         "proxy_server_request": {"body": {"forged": True}},
         "mock_response": "free response",
+        "_litellm_proxy_max_parallel_request_lease": {
+            "counter_keys": ["{api_key:attacker-chosen}:max_parallel_requests"],
+            "released": False,
+        },
         "metadata": {
             "user_api_key_metadata": {"allow_client_tags": True},
             "disable_global_guardrails": True,
@@ -23,6 +27,7 @@ def test_untrusted_proxy_control_fields_are_removed():
 
     assert "proxy_server_request" not in data
     assert "mock_response" not in data
+    assert "_litellm_proxy_max_parallel_request_lease" not in data
     assert data["metadata"] == {}
 
 
