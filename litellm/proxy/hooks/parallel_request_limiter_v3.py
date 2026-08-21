@@ -1403,7 +1403,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             redis_value = redis_values.get(counter_key)
             value = redis_value if dual_cache.redis_cache is not None else cached_value
             try:
-                active = max(0, int(value or 0))
+                active = int(value or 0)
             except (TypeError, ValueError):
                 continue
             if active == 0:
@@ -1421,7 +1421,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 "remaining": max(0, limit - active),
             }
             if dual_cache.redis_cache is not None:
-                counter["cached_active"] = max(0, int(cached_value or 0))
+                counter["cached_active"] = int(cached_value or 0)
                 counter["redis_active"] = active
             counters.append(counter)
 

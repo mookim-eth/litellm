@@ -690,6 +690,21 @@ async def test_pre_call_acquires_max_parallel_request_lease():
     assert await local_cache.async_get_cache(counter_key) == 0
     assert (await handler.get_max_parallel_requests_snapshot())["counters"] == []
 
+    # Keep impossible negative values visible so diagnostics can detect a
+    # duplicate release instead of silently normalizing the counter to zero.
+    await local_cache.async_set_cache(counter_key, -1)
+    snapshot = await handler.get_max_parallel_requests_snapshot()
+    assert snapshot["total_active"] == -1
+    assert snapshot["counters"] == [
+        {
+            "scope": "api_key",
+            "identifier_prefix": api_key[:12],
+            "active": -1,
+            "limit": 2,
+            "remaining": 3,
+        }
+    ]
+
 
 @pytest.mark.asyncio
 async def test_pre_call_discards_client_supplied_max_parallel_request_lease():
