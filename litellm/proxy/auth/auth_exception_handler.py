@@ -258,7 +258,17 @@ class UserAPIKeyAuthExceptionHandler:
                 )
                 or (
                     isinstance(e, ProxyException)
-                    and e.code == str(status.HTTP_401_UNAUTHORIZED)
+                    and (
+                        e.code == str(status.HTTP_401_UNAUTHORIZED)
+                        or (
+                            e.code == str(status.HTTP_400_BAD_REQUEST)
+                            and e.type
+                            in (
+                                ProxyErrorTypes.expired_key,
+                                ProxyErrorTypes.bad_request_error,
+                            )
+                        )
+                    )
                 )
             )
             if not is_expected_client_error:

@@ -330,6 +330,100 @@ async def test_unauthorized_client_error_does_not_log_exception_traceback(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_type", "message"),
+    [
+        (ProxyErrorTypes.expired_key, "Authentication Error - Expired Key."),
+        (ProxyErrorTypes.bad_request_error, "Invalid request metadata."),
+    ],
+)
+async def test_expected_proxy_http_400_does_not_log_exception_traceback(
+    error_type, message
+):
+    handler = UserAPIKeyAuthExceptionHandler()
+    mock_request = MagicMock()
+    mock_request.headers = {}
+    mock_request.client.host = "203.0.113.5"
+    mock_request.method = "POST"
+    mock_request.url = "http://testserver/v1/responses"
+    mock_request.state = MagicMock()
+    auth_error = ProxyException(
+        message=message,
+        type=error_type,
+        param=None,
+        code=status.HTTP_400_BAD_REQUEST,
+    )
+
+    with patch(
+        "litellm.proxy.proxy_server.general_settings",
+        {"allow_requests_on_db_unavailable": False},
+    ), patch(
+        "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
+        new_callable=AsyncMock,
+        return_value=None,
+    ), patch.object(verbose_proxy_logger, "exception") as mock_exception:
+        with pytest.raises(ProxyException) as exc_info:
+            await handler._handle_authentication_error(
+                auth_error,
+                mock_request,
+                {},
+                "/v1/responses",
+                None,
+                "test-key",
+            )
+
+    assert exc_info.value.code == "400"
+    assert exc_info.value.message == message
+    mock_exception.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_type", "error_code"),
+    [
+        (ProxyErrorTypes.no_db_connection, status.HTTP_400_BAD_REQUEST),
+        (ProxyErrorTypes.bad_request_error, status.HTTP_500_INTERNAL_SERVER_ERROR),
+    ],
+)
+async def test_unexpected_proxy_error_logs_exception_traceback(
+    error_type, error_code
+):
+    handler = UserAPIKeyAuthExceptionHandler()
+    mock_request = MagicMock()
+    mock_request.headers = {}
+    mock_request.client.host = "203.0.113.5"
+    mock_request.method = "POST"
+    mock_request.url = "http://testserver/v1/responses"
+    mock_request.state = MagicMock()
+    auth_error = ProxyException(
+        message="Authentication infrastructure failure.",
+        type=error_type,
+        param=None,
+        code=error_code,
+    )
+
+    with patch(
+        "litellm.proxy.proxy_server.general_settings",
+        {"allow_requests_on_db_unavailable": False},
+    ), patch(
+        "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
+        new_callable=AsyncMock,
+        return_value=None,
+    ), patch.object(verbose_proxy_logger, "exception") as mock_exception:
+        with pytest.raises(ProxyException):
+            await handler._handle_authentication_error(
+                auth_error,
+                mock_request,
+                {},
+                "/v1/responses",
+                None,
+                "test-key",
+            )
+
+    mock_exception.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_forbidden_auth_error_does_not_log_exception_traceback():
     handler = UserAPIKeyAuthExceptionHandler()
     mock_request = MagicMock()
