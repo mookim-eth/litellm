@@ -12164,12 +12164,24 @@ async def fallback_login(request: Request):
         )
 
 
+def _login_failure_response(login_failure: Any) -> JSONResponse:
+    """Return an expected login rejection without routing it through exceptions."""
+    return JSONResponse(
+        content={"error": login_failure.to_dict()},
+        status_code=login_failure.status_code,
+    )
+
+
 @router.post(
     "/login", include_in_schema=False
 )  # hidden since this is a helper for UI sso login
 async def login(request: Request):  # noqa: PLR0915
     global premium_user, general_settings, master_key
-    from litellm.proxy.auth.login_utils import authenticate_user, create_ui_token_object
+    from litellm.proxy.auth.login_utils import (
+        LoginFailure,
+        authenticate_user,
+        create_ui_token_object,
+    )
     from litellm.proxy.utils import get_custom_url
 
     form = await request.form()
@@ -12183,6 +12195,8 @@ async def login(request: Request):  # noqa: PLR0915
         master_key=master_key,
         prisma_client=prisma_client,
     )
+    if isinstance(login_result, LoginFailure):
+        return _login_failure_response(login_result)
 
     # Create UI token object
     returned_ui_token_object = create_ui_token_object(
@@ -12219,7 +12233,11 @@ async def login(request: Request):  # noqa: PLR0915
 )  # hidden helper for UI logins via API
 async def login_v2(request: Request):  # noqa: PLR0915
     global premium_user, general_settings, master_key
-    from litellm.proxy.auth.login_utils import authenticate_user, create_ui_token_object
+    from litellm.proxy.auth.login_utils import (
+        LoginFailure,
+        authenticate_user,
+        create_ui_token_object,
+    )
     from litellm.proxy.utils import get_custom_url
 
     try:
@@ -12233,6 +12251,8 @@ async def login_v2(request: Request):  # noqa: PLR0915
             master_key=master_key,
             prisma_client=prisma_client,
         )
+        if isinstance(login_result, LoginFailure):
+            return _login_failure_response(login_result)
 
         returned_ui_token_object = create_ui_token_object(
             login_result=login_result,
@@ -12291,7 +12311,11 @@ async def login_v2(request: Request):  # noqa: PLR0915
 )  # control-plane login — always returns token in body for cross-origin use
 async def login_v3(request: Request):  # noqa: PLR0915
     global premium_user, general_settings, master_key
-    from litellm.proxy.auth.login_utils import authenticate_user, create_ui_token_object
+    from litellm.proxy.auth.login_utils import (
+        LoginFailure,
+        authenticate_user,
+        create_ui_token_object,
+    )
     from litellm.proxy.utils import get_custom_url
 
     try:
@@ -12313,6 +12337,8 @@ async def login_v3(request: Request):  # noqa: PLR0915
             master_key=master_key,
             prisma_client=prisma_client,
         )
+        if isinstance(login_result, LoginFailure):
+            return _login_failure_response(login_result)
 
         returned_ui_token_object = create_ui_token_object(
             login_result=login_result,

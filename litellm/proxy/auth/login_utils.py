@@ -7,7 +7,7 @@ login endpoints (e.g., /login and /v2/login).
 
 import os
 import secrets
-from typing import Literal, Optional, cast
+from typing import Literal, Optional, Union, cast
 
 from fastapi import HTTPException
 
@@ -102,12 +102,39 @@ class LoginResult:
         self.login_method = login_method
 
 
+class LoginFailure:
+    """Expected authentication rejection returned without raising an exception."""
+
+    message: str
+    status_code: int
+    param: str
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 401,
+        param: str = "invalid_credentials",
+    ):
+        self.message = message
+        self.status_code = status_code
+        self.param = param
+
+    def to_dict(self) -> dict:
+        """Return the OpenAI-compatible error shape used by ProxyException."""
+        return {
+            "message": self.message,
+            "type": ProxyErrorTypes.auth_error.value,
+            "param": self.param,
+            "code": str(self.status_code),
+        }
+
+
 async def authenticate_user(  # noqa: PLR0915
     username: str,
     password: str,
     master_key: Optional[str],
     prisma_client: Optional[PrismaClient],
-) -> LoginResult:
+) -> Union[LoginResult, LoginFailure]:
     """
     Authenticate a user and generate an API key for UI access.
 
@@ -122,10 +149,11 @@ async def authenticate_user(  # noqa: PLR0915
         prisma_client: Prisma database client (optional)
 
     Returns:
-        LoginResult: Object containing authentication data
+        LoginResult: Object containing authentication data on success
+        LoginFailure: Expected authentication rejection
 
     Raises:
-        ProxyException: If authentication fails or required configuration is missing
+        ProxyException: If required configuration or an authentication dependency fails
     """
     if master_key is None:
         raise ProxyException(
@@ -264,11 +292,9 @@ async def authenticate_user(  # noqa: PLR0915
         _password = getattr(_user_row, "password", "unknown")
 
         if _password is None:
-            raise ProxyException(
+            return LoginFailure(
                 message="User has no password set. Please set a password for the user via `/user/update`.",
-                type=ProxyErrorTypes.auth_error,
                 param="password",
-                code=401,
             )
 
         if verify_password(password, _password):
@@ -306,18 +332,12 @@ async def authenticate_user(  # noqa: PLR0915
                 login_method="username_password",
             )
         else:
-            raise ProxyException(
+            return LoginFailure(
                 message=f"Invalid credentials used to access UI.\nNot valid credentials for {username}",
-                type=ProxyErrorTypes.auth_error,
-                param="invalid_credentials",
-                code=401,
             )
     else:
-        raise ProxyException(
+        return LoginFailure(
             message="Invalid credentials used to access UI.\nCheck 'UI_USERNAME', 'UI_PASSWORD' in .env file",
-            type=ProxyErrorTypes.auth_error,
-            param="invalid_credentials",
-            code=401,
         )
 
 

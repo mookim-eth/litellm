@@ -160,6 +160,68 @@ def test_login_v2_returns_json_on_proxy_exception(monkeypatch):
     assert data["error"]["type"] == "auth_error"
 
 
+def test_should_return_expected_login_v2_failure_without_logging_exception(
+    monkeypatch,
+):
+    """Expected credential rejection returns 401 without an exception traceback."""
+    from litellm.proxy.auth.login_utils import LoginFailure
+
+    mock_prisma_client = MagicMock()
+    monkeypatch.setattr(
+        "litellm.proxy.auth.login_utils.authenticate_user",
+        AsyncMock(return_value=LoginFailure(message="Invalid credentials")),
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.master_key", "test-master-key")
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mock_logger_exception = MagicMock()
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.verbose_proxy_logger.exception",
+        mock_logger_exception,
+    )
+
+    response = TestClient(app).post(
+        "/v2/login",
+        json={"username": "alice", "password": "wrong"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "error": {
+            "message": "Invalid credentials",
+            "type": "auth_error",
+            "param": "invalid_credentials",
+            "code": "401",
+        }
+    }
+    mock_logger_exception.assert_not_called()
+
+
+def test_should_return_expected_login_failure_without_creating_token(monkeypatch):
+    """The form login returns the same 401 shape without entering token creation."""
+    from litellm.proxy.auth.login_utils import LoginFailure
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.login_utils.authenticate_user",
+        AsyncMock(return_value=LoginFailure(message="Invalid credentials")),
+    )
+    mock_create_ui_token_object = MagicMock()
+    monkeypatch.setattr(
+        "litellm.proxy.auth.login_utils.create_ui_token_object",
+        mock_create_ui_token_object,
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.master_key", "test-master-key")
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", MagicMock())
+
+    response = TestClient(app).post(
+        "/login",
+        data={"username": "alice", "password": "wrong"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "401"
+    mock_create_ui_token_object.assert_not_called()
+
+
 def test_login_v2_returns_json_on_http_exception(monkeypatch):
     """Test that /v2/login converts HTTPException to JSON error response"""
     from fastapi import HTTPException
@@ -442,6 +504,38 @@ def test_login_v3_returns_json_on_proxy_exception(monkeypatch):
     assert "error" in data
     assert data["error"]["message"] == "Invalid credentials"
     assert data["error"]["type"] == "auth_error"
+
+
+def test_should_return_expected_login_v3_failure_without_logging_exception(
+    monkeypatch,
+):
+    """Control-plane login rejects bad credentials without an exception traceback."""
+    from litellm.proxy.auth.login_utils import LoginFailure
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.login_utils.authenticate_user",
+        AsyncMock(return_value=LoginFailure(message="Invalid credentials")),
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.master_key", "test-master-key")
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.general_settings",
+        {"control_plane_url": "https://cp.example.com"},
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", MagicMock())
+    mock_logger_exception = MagicMock()
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.verbose_proxy_logger.exception",
+        mock_logger_exception,
+    )
+
+    response = TestClient(app).post(
+        "/v3/login",
+        json={"username": "alice", "password": "wrong"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "401"
+    mock_logger_exception.assert_not_called()
 
 
 def test_fallback_login_has_no_deprecation_banner(client_no_auth):

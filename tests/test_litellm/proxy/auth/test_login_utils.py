@@ -19,6 +19,7 @@ from litellm.proxy._types import (
     hash_token,
 )
 from litellm.proxy.auth.login_utils import (
+    LoginFailure,
     LoginResult,
     authenticate_user,
     get_ui_credentials,
@@ -173,17 +174,16 @@ async def test_authenticate_user_invalid_credentials():
     mock_prisma_client.db.litellm_usertable.find_first = AsyncMock(return_value=None)
 
     with patch.dict(os.environ, {"UI_USERNAME": ui_username, "UI_PASSWORD": "correct-password"}):
-        with pytest.raises(ProxyException) as exc_info:
-            await authenticate_user(
-                username=ui_username,
-                password=wrong_password,
-                master_key=master_key,
-                prisma_client=mock_prisma_client,
-            )
+        result = await authenticate_user(
+            username=ui_username,
+            password=wrong_password,
+            master_key=master_key,
+            prisma_client=mock_prisma_client,
+        )
 
-        assert exc_info.value.type == ProxyErrorTypes.auth_error
-        assert exc_info.value.code == "401"
-        assert "Invalid credentials" in exc_info.value.message
+        assert isinstance(result, LoginFailure)
+        assert result.status_code == 401
+        assert "Invalid credentials" in result.message
 
 
 @pytest.mark.asyncio
@@ -233,17 +233,45 @@ async def test_authenticate_user_wrong_password():
             "UI_PASSWORD": "admin-password",
         },
     ):
-        with pytest.raises(ProxyException) as exc_info:
-            await authenticate_user(
-                username=user_email,
-                password=wrong_password,
-                master_key=master_key,
-                prisma_client=mock_prisma_client,
-            )
+        result = await authenticate_user(
+            username=user_email,
+            password=wrong_password,
+            master_key=master_key,
+            prisma_client=mock_prisma_client,
+        )
 
-        assert exc_info.value.type == ProxyErrorTypes.auth_error
-        assert exc_info.value.code == "401"
-        assert "Invalid credentials" in exc_info.value.message
+        assert isinstance(result, LoginFailure)
+        assert result.status_code == 401
+        assert "Invalid credentials" in result.message
+
+
+@pytest.mark.asyncio
+async def test_authenticate_user_without_password_returns_login_failure():
+    """A database user without a password is an expected login rejection."""
+    mock_user = MagicMock()
+    mock_user.user_id = "test-user-123"
+    mock_user.user_email = "test@example.com"
+    mock_user.password = None
+    mock_user.user_role = LitellmUserRoles.INTERNAL_USER
+    mock_prisma_client = MagicMock()
+    mock_prisma_client.db.litellm_usertable.find_first = AsyncMock(
+        return_value=mock_user
+    )
+
+    with patch.dict(
+        os.environ,
+        {"UI_USERNAME": "admin", "UI_PASSWORD": "admin-password"},
+    ):
+        result = await authenticate_user(
+            username="test@example.com",
+            password="password",
+            master_key="sk-1234",
+            prisma_client=mock_prisma_client,
+        )
+
+    assert isinstance(result, LoginFailure)
+    assert result.status_code == 401
+    assert result.param == "password"
 
 
 @pytest.mark.asyncio
