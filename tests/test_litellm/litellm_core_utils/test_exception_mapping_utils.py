@@ -1,6 +1,7 @@
 import os
 import sys
 
+import httpx
 import pytest
 
 import litellm
@@ -14,6 +15,30 @@ from litellm.litellm_core_utils.exception_mapping_utils import (
     exception_type,
     extract_and_raise_litellm_exception,
 )
+from litellm.llms.openai.common_utils import OpenAIError
+
+
+def test_chatgpt_biological_safety_rejection_maps_to_content_policy_violation():
+    request = httpx.Request("POST", "https://chatgpt.example.com/responses")
+    original_exception = OpenAIError(
+        status_code=500,
+        message=(
+            "This content was flagged for possible biological risk. "
+            "Please rephrase the request."
+        ),
+        response=httpx.Response(status_code=200, request=request),
+    )
+
+    with pytest.raises(litellm.ContentPolicyViolationError) as exc_info:
+        exception_type(
+            model="gpt-test",
+            original_exception=original_exception,
+            custom_llm_provider="chatgpt",
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.code == "content_policy_violation"
+    assert exc_info.value.type == "invalid_request_error"
 
 # Test cases for is_error_str_context_window_exceeded
 # Tuple format: (error_message, expected_result)
