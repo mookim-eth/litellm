@@ -538,6 +538,14 @@ class HttpPassThroughEndpointHelpers(BasePassthroughUtils):
             metadata=_metadata,
         )
 
+        # Client-supplied metadata must not override the authenticated identity.
+        # Re-apply these fields after merging request metadata and header tags.
+        _metadata.update(
+            LiteLLMProxyRequestSetup.get_sanitized_user_information_from_key(
+                user_api_key_dict=user_api_key_dict
+            )
+        )
+
         kwargs = {
             "litellm_params": {
                 **litellm_params_in_body,  # type: ignore
