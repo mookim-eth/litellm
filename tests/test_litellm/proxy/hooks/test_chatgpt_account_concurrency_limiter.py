@@ -45,7 +45,7 @@ def configured_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(
         proxy_server.general_settings,
         "chatgpt_plan_max_parallel_requests",
-        {"plus": 3, "k12": 3, "team": 5, "pro": 20},
+        {"plus": 3, "k12": 3, "team": 5, "pro": 15},
     )
 
 
@@ -181,7 +181,7 @@ async def test_should_acquire_only_once_for_nested_wrappers(
 
 
 @pytest.mark.asyncio
-async def test_should_allow_twenty_concurrent_requests_for_pro_plan(
+async def test_should_allow_fifteen_concurrent_requests_for_pro_plan(
     tmp_path: Path, configured_limits: None
 ) -> None:
     auth_file = tmp_path / "pro.json"
@@ -189,7 +189,7 @@ async def test_should_allow_twenty_concurrent_requests_for_pro_plan(
     limiter = ChatGPTAccountConcurrencyLimiter(_FakeInternalUsageCache())
     logging_objects = []
 
-    for _ in range(20):
+    for _ in range(15):
         logging_obj = _logging_obj()
         logging_objects.append(logging_obj)
         await limiter.async_pre_call_deployment_hook(
