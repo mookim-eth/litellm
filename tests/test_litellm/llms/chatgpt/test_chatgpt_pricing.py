@@ -6,7 +6,7 @@ import pytest
 from litellm.litellm_core_utils.llm_cost_calc.utils import generic_cost_per_token
 from litellm import completion_cost
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
-from litellm.types.utils import Usage
+from litellm.types.utils import PromptTokensDetailsWrapper, Usage
 from litellm.utils import _invalidate_model_cost_lowercase_map
 
 
@@ -137,6 +137,69 @@ def test_chatgpt_gpt_5_5_cached_input_cost_calculation():
 
     assert round(prompt_cost, 12) == round(expected_prompt_cost, 12)
     assert round(completion_cost, 12) == round(expected_completion_cost, 12)
+
+
+def test_chatgpt_gpt_6_astra_pricing_for_deployment_alias():
+    _load_local_model_cost_map()
+
+    model_info = litellm.get_model_info(
+        model="chatgpt/gpt-6-astra-1",
+        custom_llm_provider="chatgpt",
+    )
+
+    assert model_info["input_cost_per_token"] == 1e-05
+    assert model_info["cache_read_input_token_cost"] == 1e-06
+    assert model_info["cache_creation_input_token_cost"] == 1.25e-05
+    assert model_info["output_cost_per_token"] == 5e-05
+    assert model_info["input_cost_per_token_above_272k_tokens"] == 2e-05
+    assert model_info["cache_read_input_token_cost_above_272k_tokens"] == 2e-06
+    assert model_info["cache_creation_input_token_cost_above_272k_tokens"] == 2.5e-05
+    assert model_info["output_cost_per_token_above_272k_tokens"] == 7.5e-05
+
+
+@pytest.mark.parametrize(
+    ("prompt_tokens", "input_cost", "cache_read_cost", "cache_write_cost", "output_cost"),
+    [
+        (272000, 1e-05, 1e-06, 1.25e-05, 5e-05),
+        (272001, 2e-05, 2e-06, 2.5e-05, 7.5e-05),
+    ],
+)
+def test_chatgpt_gpt_6_astra_cached_pricing(
+    prompt_tokens: int,
+    input_cost: float,
+    cache_read_cost: float,
+    cache_write_cost: float,
+    output_cost: float,
+):
+    _load_local_model_cost_map()
+
+    cache_read_tokens = 100000
+    cache_write_tokens = 50000
+    uncached_tokens = prompt_tokens - cache_read_tokens - cache_write_tokens
+    usage = Usage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=1000,
+        total_tokens=prompt_tokens + 1000,
+        prompt_tokens_details=PromptTokensDetailsWrapper(
+            cached_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_write_tokens,
+            text_tokens=uncached_tokens,
+        ),
+    )
+
+    prompt_cost, completion_cost = generic_cost_per_token(
+        model="chatgpt/gpt-6-astra",
+        usage=usage,
+        custom_llm_provider="chatgpt",
+    )
+
+    expected_prompt_cost = (
+        uncached_tokens * input_cost
+        + cache_read_tokens * cache_read_cost
+        + cache_write_tokens * cache_write_cost
+    )
+    assert prompt_cost == pytest.approx(expected_prompt_cost)
+    assert completion_cost == pytest.approx(1000 * output_cost)
 
 
 @pytest.mark.parametrize(

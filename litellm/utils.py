@@ -5841,6 +5841,9 @@ def _get_model_info_helper(  # noqa: PLR0915
                 cache_creation_input_token_cost_above_200k_tokens=_model_info.get(
                     "cache_creation_input_token_cost_above_200k_tokens", None
                 ),
+                cache_creation_input_token_cost_above_272k_tokens=_model_info.get(
+                    "cache_creation_input_token_cost_above_272k_tokens", None
+                ),
                 cache_read_input_token_cost=_model_info.get(
                     "cache_read_input_token_cost", None
                 ),
