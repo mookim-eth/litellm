@@ -3,6 +3,7 @@ Unit Tests for the max parallel request limiter v3 for the proxy
 """
 
 import asyncio
+import copy
 import os
 import sys
 import time
@@ -33,6 +34,12 @@ class TimeController:
 
     def advance(self, seconds: float) -> None:
         self._current += timedelta(seconds=seconds)
+
+
+def _register_test_lease(handler, counter_key):
+    lease_id = "test-lease-" + str(id(counter_key))
+    handler._active_max_parallel_request_leases[lease_id] = [counter_key]
+    return lease_id
 
 
 @pytest.mark.parametrize(
@@ -610,30 +617,27 @@ async def test_max_parallel_request_lease_survives_attempt_failure_and_releases_
     )
     counter_key = "{api_key:test-key}:max_parallel_requests"
     request_data = {
-        _MAX_PARALLEL_REQUEST_LEASE_KEY: {
-            "counter_keys": [counter_key],
-            "released": False,
-        }
+        _MAX_PARALLEL_REQUEST_LEASE_KEY: _register_test_lease(handler, counter_key)
     }
-    captured_ops = []
-
-    async def mock_pipeline(increment_list, **kwargs):
-        captured_ops.extend(increment_list)
-
-    handler.internal_usage_cache.dual_cache.async_increment_cache_pipeline = (
-        mock_pipeline
+    await handler.internal_usage_cache.async_set_cache(
+        key=counter_key,
+        value=1,
+        ttl=60,
+        litellm_parent_otel_span=None,
+        local_only=True,
     )
 
     # A primary deployment failure followed by a fallback must retain the slot.
     await handler.async_log_failure_event({}, None, None, None)
-    assert captured_ops == []
 
     await handler.async_post_call_success_hook(
         data=request_data,
         user_api_key_dict=UserAPIKeyAuth(),
         response=ModelResponse(choices=[]),
     )
-    assert captured_ops == [{"key": counter_key, "increment_value": -1, "ttl": 60}]
+    assert await handler.internal_usage_cache.async_get_cache(
+        key=counter_key, litellm_parent_otel_span=None, local_only=True
+    ) == 0
 
     # Competing/duplicate terminal callbacks cannot decrement it again.
     await handler.async_post_call_failure_hook(
@@ -646,7 +650,9 @@ async def test_max_parallel_request_lease_survives_attempt_failure_and_releases_
         user_api_key_dict=UserAPIKeyAuth(),
         response=ModelResponse(choices=[]),
     )
-    assert len(captured_ops) == 1
+    assert await handler.internal_usage_cache.async_get_cache(
+        key=counter_key, litellm_parent_otel_span=None, local_only=True
+    ) == 0
 
 
 @pytest.mark.asyncio
@@ -655,6 +661,7 @@ async def test_pre_call_acquires_max_parallel_request_lease():
     handler = _PROXY_MaxParallelRequestsHandler(
         internal_usage_cache=InternalUsageCache(local_cache)
     )
+    assert handler.parallel_release_script is None
     api_key = hash_token("sk-acquire-lease")
     request_data = {"model": "gpt-4"}
 
@@ -667,7 +674,7 @@ async def test_pre_call_acquires_max_parallel_request_lease():
 
     lease = request_data[_MAX_PARALLEL_REQUEST_LEASE_KEY]
     counter_key = f"{{api_key:{api_key}}}:max_parallel_requests"
-    assert lease == {"counter_keys": [counter_key], "released": False}
+    assert isinstance(lease, str)
     assert await local_cache.async_get_cache(counter_key) == 1
     snapshot = await handler.get_max_parallel_requests_snapshot()
     assert snapshot["storage"] == "local"
@@ -751,18 +758,14 @@ async def test_max_parallel_request_lease_releases_on_final_failure():
     )
     counter_key = "{api_key:test-key}:max_parallel_requests"
     request_data = {
-        _MAX_PARALLEL_REQUEST_LEASE_KEY: {
-            "counter_keys": [counter_key],
-            "released": False,
-        }
+        _MAX_PARALLEL_REQUEST_LEASE_KEY: _register_test_lease(handler, counter_key)
     }
-    captured_ops = []
-
-    async def mock_pipeline(increment_list, **kwargs):
-        captured_ops.extend(increment_list)
-
-    handler.internal_usage_cache.dual_cache.async_increment_cache_pipeline = (
-        mock_pipeline
+    await handler.internal_usage_cache.async_set_cache(
+        key=counter_key,
+        value=1,
+        ttl=60,
+        litellm_parent_otel_span=None,
+        local_only=True,
     )
 
     await handler.async_post_call_failure_hook(
@@ -771,7 +774,9 @@ async def test_max_parallel_request_lease_releases_on_final_failure():
         original_exception=RuntimeError("all fallbacks failed"),
     )
 
-    assert captured_ops == [{"key": counter_key, "increment_value": -1, "ttl": 60}]
+    assert await handler.internal_usage_cache.async_get_cache(
+        key=counter_key, litellm_parent_otel_span=None, local_only=True
+    ) == 0
 
 
 @pytest.mark.asyncio
@@ -784,24 +789,21 @@ async def test_max_parallel_request_lease_releases_when_stream_closes(
     )
     counter_key = "{api_key:test-key}:max_parallel_requests"
     request_data = {
-        _MAX_PARALLEL_REQUEST_LEASE_KEY: {
-            "counter_keys": [counter_key],
-            "released": False,
-        }
+        _MAX_PARALLEL_REQUEST_LEASE_KEY: _register_test_lease(handler, counter_key)
     }
-    captured_ops = []
-
-    async def mock_pipeline(increment_list, **kwargs):
-        captured_ops.extend(increment_list)
+    await handler.internal_usage_cache.async_set_cache(
+        key=counter_key,
+        value=1,
+        ttl=60,
+        litellm_parent_otel_span=None,
+        local_only=True,
+    )
 
     async def stream():
         yield "first"
         if raise_during_stream:
             raise RuntimeError("stream failed")
 
-    handler.internal_usage_cache.dual_cache.async_increment_cache_pipeline = (
-        mock_pipeline
-    )
     wrapped_stream = handler.async_post_call_streaming_iterator_hook(
         user_api_key_dict=UserAPIKeyAuth(),
         response=stream(),
@@ -815,7 +817,9 @@ async def test_max_parallel_request_lease_releases_when_stream_closes(
     else:
         assert [chunk async for chunk in wrapped_stream] == ["first"]
 
-    assert captured_ops == [{"key": counter_key, "increment_value": -1, "ttl": 60}]
+    assert await handler.internal_usage_cache.async_get_cache(
+        key=counter_key, litellm_parent_otel_span=None, local_only=True
+    ) == 0
 
 
 @pytest.mark.asyncio
@@ -851,6 +855,14 @@ async def test_incremented_over_limit_request_releases_its_own_lease(monkeypatch
         "async_increment_cache_pipeline",
         mock_pipeline,
     )
+    counter_key = f"{{api_key:{api_key}}}:max_parallel_requests"
+    await handler.internal_usage_cache.async_set_cache(
+        key=counter_key,
+        value=1,
+        ttl=60,
+        litellm_parent_otel_span=None,
+        local_only=True,
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         await handler.async_pre_call_hook(
@@ -861,13 +873,136 @@ async def test_incremented_over_limit_request_releases_its_own_lease(monkeypatch
         )
 
     assert exc_info.value.status_code == 429
-    assert captured_ops == [
-        {
-            "key": f"{{api_key:{api_key}}}:max_parallel_requests",
-            "increment_value": -1,
-            "ttl": 60,
-        }
-    ]
+    assert captured_ops == []
+    assert await handler.internal_usage_cache.async_get_cache(
+        key=counter_key, litellm_parent_otel_span=None, local_only=True
+    ) == 0
+
+
+@pytest.mark.asyncio
+async def test_max_parallel_release_is_idempotent_across_deepcopy_and_expiry():
+    local_cache = DualCache()
+    handler = _PROXY_MaxParallelRequestsHandler(
+        internal_usage_cache=InternalUsageCache(local_cache)
+    )
+    api_key = hash_token("sk-deepcopy-lease")
+    request_data = {"model": "gpt-4"}
+    await handler.async_pre_call_hook(
+        user_api_key_dict=UserAPIKeyAuth(api_key=api_key, max_parallel_requests=2),
+        cache=local_cache,
+        data=request_data,
+        call_type="acompletion",
+    )
+    counter_key = f"{{api_key:{api_key}}}:max_parallel_requests"
+    copied_data = copy.deepcopy(request_data)
+
+    # A terminal callback may receive a deep-copied request body. Only the
+    # first callback is allowed to consume the lease.
+    await handler.async_post_call_success_hook(
+        data=copied_data,
+        user_api_key_dict=UserAPIKeyAuth(),
+        response=ModelResponse(choices=[]),
+    )
+    await handler.async_post_call_failure_hook(
+        request_data=request_data,
+        user_api_key_dict=UserAPIKeyAuth(),
+        original_exception=RuntimeError("duplicate terminal callback"),
+    )
+    assert await local_cache.async_get_cache(counter_key) == 0
+
+    # A separate lease released after its counter expires must not recreate the
+    # counter as -1.
+    late_request_data = {"model": "gpt-4"}
+    await handler.async_pre_call_hook(
+        user_api_key_dict=UserAPIKeyAuth(api_key=api_key, max_parallel_requests=2),
+        cache=local_cache,
+        data=late_request_data,
+        call_type="acompletion",
+    )
+    local_cache.delete_cache(counter_key)
+    await handler.async_post_call_failure_hook(
+        request_data=copy.deepcopy(late_request_data),
+        user_api_key_dict=UserAPIKeyAuth(),
+        original_exception=RuntimeError("late callback"),
+    )
+    assert await local_cache.async_get_cache(counter_key) is None
+
+    # Existing corrupted local values are repaired to zero on the next release.
+    repair_request_data = {"model": "gpt-4"}
+    await handler.async_pre_call_hook(
+        user_api_key_dict=UserAPIKeyAuth(api_key=api_key, max_parallel_requests=2),
+        cache=local_cache,
+        data=repair_request_data,
+        call_type="acompletion",
+    )
+    await local_cache.async_set_cache(
+        key=counter_key,
+        value=-3,
+        ttl=60,
+        litellm_parent_otel_span=None,
+        local_only=True,
+    )
+    await handler.async_post_call_failure_hook(
+        request_data=repair_request_data,
+        user_api_key_dict=UserAPIKeyAuth(),
+        original_exception=RuntimeError("repair corrupted counter"),
+    )
+    assert await local_cache.async_get_cache(counter_key) == 0
+
+
+@pytest.mark.asyncio
+async def test_local_max_parallel_counter_is_bounded_under_concurrent_requests():
+    """The production (non-Redis) cache must admit at most N live requests."""
+    local_cache = DualCache()
+    handler = _PROXY_MaxParallelRequestsHandler(
+        internal_usage_cache=InternalUsageCache(local_cache)
+    )
+    api_key = hash_token("sk-local-concurrency")
+
+    async def acquire_and_hold():
+        data = {"model": "gpt-4"}
+        await handler.async_pre_call_hook(
+            user_api_key_dict=UserAPIKeyAuth(
+                api_key=api_key, max_parallel_requests=2
+            ),
+            cache=local_cache,
+            data=data,
+            call_type="acompletion",
+        )
+        return data
+
+    leases = await asyncio.gather(acquire_and_hold(), acquire_and_hold())
+    counter_key = f"{{api_key:{api_key}}}:max_parallel_requests"
+    assert await local_cache.async_get_cache(counter_key) == 2
+
+    with pytest.raises(HTTPException):
+        await acquire_and_hold()
+
+    await asyncio.gather(
+        *[
+            handler.async_post_call_success_hook(
+                data=data,
+                user_api_key_dict=UserAPIKeyAuth(),
+                response=ModelResponse(choices=[]),
+            )
+            for data in leases
+        ]
+    )
+    assert await local_cache.async_get_cache(counter_key) == 0
+
+    # Releasing each request again (as can happen when success/failure hooks
+    # race) remains a no-op and cannot drive the local counter negative.
+    await asyncio.gather(
+        *[
+            handler.async_post_call_failure_hook(
+                request_data=data,
+                user_api_key_dict=UserAPIKeyAuth(),
+                original_exception=RuntimeError("duplicate release"),
+            )
+            for data in leases
+        ]
+    )
+    assert await local_cache.async_get_cache(counter_key) == 0
 
 
 @pytest.mark.asyncio

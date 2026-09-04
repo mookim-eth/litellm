@@ -6,6 +6,8 @@ This is currently in development and not yet ready for production.
 
 import binascii
 import os
+import threading
+import uuid
 from datetime import datetime
 from typing import (
     TYPE_CHECKING,
@@ -108,6 +110,31 @@ end
 return results
 """
 
+PARALLEL_RELEASE_SCRIPT = """
+local results = {}
+for i = 1, #KEYS do
+    local key = KEYS[i]
+    local current = redis.call('GET', key)
+    if current and tonumber(current) > 0 then
+        local new_value = redis.call('DECRBY', key, 1)
+        table.insert(results, new_value)
+    elseif current then
+        -- Repair a previously corrupted negative value without extending its
+        -- lifetime. A later release must never preserve a negative gauge.
+        local remaining_ttl = redis.call('TTL', key)
+        redis.call('SET', key, '0')
+        if remaining_ttl > 0 then
+            redis.call('EXPIRE', key, remaining_ttl)
+        end
+        table.insert(results, 0)
+    else
+        -- A missing/expired or already-zero counter must not be recreated as -1.
+        table.insert(results, 0)
+    end
+end
+return results
+"""
+
 # Redis cluster slot count
 REDIS_CLUSTER_SLOTS = 16384
 REDIS_NODE_HASHTAG_NAME = "all_keys"
@@ -164,12 +191,23 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     TOKEN_INCREMENT_SCRIPT
                 )
             )
+            self.parallel_release_script = (
+                self.internal_usage_cache.dual_cache.redis_cache.async_register_script(
+                    PARALLEL_RELEASE_SCRIPT
+                )
+            )
         else:
             self.batch_rate_limiter_script = None
             self.token_increment_script = None
+            self.parallel_release_script = None
 
         self.window_size = int(os.getenv("LITELLM_RATE_LIMIT_WINDOW_SIZE", 60))
         self._observed_max_parallel_limits: Dict[str, Tuple[int, float]] = {}
+        # Request bodies are copied by guardrail/logging/provider paths. Keep
+        # release state outside the body so every copy resolves to the same
+        # request lease. The ID is only a reference; counter keys stay here.
+        self._active_max_parallel_request_leases: Dict[str, List[str]] = {}
+        self._max_parallel_request_leases_lock = threading.Lock()
 
         # Batch rate limiter (lazy loaded)
         self._batch_rate_limiter: Optional[Any] = None
@@ -1254,8 +1292,19 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         """
         verbose_proxy_logger.debug("Inside Rate Limit Pre-Call Hook")
 
-        # This is proxy-owned request lifecycle state. Never let a public
-        # request supply counter keys that terminal hooks would decrement.
+        # This is proxy-owned request lifecycle state. Preserve a lease that
+        # this handler already admitted (pre-call can be re-entered by some
+        # callback paths), but never accept a client-supplied lease reference.
+        existing_lease_id = data.get(_MAX_PARALLEL_REQUEST_LEASE_KEY)
+        with self._max_parallel_request_leases_lock:
+            known_lease = (
+                isinstance(existing_lease_id, str)
+                and existing_lease_id in self._active_max_parallel_request_leases
+            )
+        if known_lease:
+            # A repeated pre-call for the same proxy request must not reserve
+            # another slot or replace the original lease.
+            return
         data.pop(_MAX_PARALLEL_REQUEST_LEASE_KEY, None)
 
         #########################################################
@@ -1337,6 +1386,11 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     is not None
                 ]
                 if max_parallel_counter_keys:
+                    lease_id = uuid.uuid4().hex
+                    with self._max_parallel_request_leases_lock:
+                        self._active_max_parallel_request_leases[lease_id] = list(
+                            dict.fromkeys(max_parallel_counter_keys)
+                        )
                     observed_until = (
                         self._get_current_time().timestamp() + self.window_size
                     )
@@ -1355,10 +1409,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                             int(max_parallel_limit),
                             observed_until,
                         )
-                    data[_MAX_PARALLEL_REQUEST_LEASE_KEY] = {
-                        "counter_keys": list(dict.fromkeys(max_parallel_counter_keys)),
-                        "released": False,
-                    }
+                    data[_MAX_PARALLEL_REQUEST_LEASE_KEY] = lease_id
 
             if response["overall_code"] == "OVER_LIMIT":
                 # should_rate_limit() atomically increments before checking the
@@ -1797,41 +1848,56 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         return None
 
     async def _release_max_parallel_request_lease(self, data: dict) -> None:
-        from litellm.types.caching import RedisPipelineIncrementOperation
-
-        lease = data.get(_MAX_PARALLEL_REQUEST_LEASE_KEY)
-        if not isinstance(lease, dict) or lease.get("released") is True:
+        lease_id = data.get(_MAX_PARALLEL_REQUEST_LEASE_KEY)
+        if not isinstance(lease_id, str):
             return
 
-        counter_keys = lease.get("counter_keys")
-        if not isinstance(counter_keys, list) or not counter_keys:
+        # Claim before the first await. Duplicate terminal callbacks and
+        # deep-copied request bodies therefore become no-ops.
+        with self._max_parallel_request_leases_lock:
+            counter_keys = self._active_max_parallel_request_leases.pop(lease_id, None)
+        if counter_keys is None:
             return
 
-        # Mark released before awaiting so concurrent final success/failure/
-        # stream-close paths remain idempotent.
-        lease["released"] = True
-        operations: List[RedisPipelineIncrementOperation] = [
-            {
-                "key": counter_key,
-                "increment_value": -1,
-                "ttl": self.window_size,
-            }
-            for counter_key in counter_keys
-            if isinstance(counter_key, str)
-        ]
-        if operations:
-            try:
-                await self.internal_usage_cache.dual_cache.async_increment_cache_pipeline(
-                    increment_list=operations,
+        valid_counter_keys = [key for key in counter_keys if isinstance(key, str)]
+        if not valid_counter_keys:
+            return
+
+        dual_cache = self.internal_usage_cache.dual_cache
+        # Keep the local mirror from going below zero and do not recreate an
+        # expired key. This path is intentionally sequential per key; the
+        # request lease claim above guarantees it runs at most once.
+        if dual_cache.in_memory_cache is not None:
+            for counter_key in valid_counter_keys:
+                current = await self.internal_usage_cache.async_get_cache(
+                    key=counter_key, litellm_parent_otel_span=None, local_only=True
                 )
-            except Exception as e:
-                # Do not turn a completed model response into an application
-                # error. Retrying is unsafe because a partial cache failure may
-                # have already applied the decrement; the counter TTL remains
-                # the final recovery boundary.
-                verbose_proxy_logger.exception(
-                    "Failed to release max_parallel_requests lease: %s", e
-                )
+                if current is not None:
+                    await self.internal_usage_cache.async_set_cache(
+                        key=counter_key,
+                        value=max(int(current) - 1, 0),
+                        ttl=self.window_size,
+                        litellm_parent_otel_span=None,
+                        local_only=True,
+                    )
+
+        # Redis release is atomic and floor-protected. Grouping preserves
+        # Redis Cluster hash-slot requirements.
+        if self.parallel_release_script is not None:
+            for _hash_tag, group_keys in self._group_keys_by_hash_tag(
+                valid_counter_keys
+            ).items():
+                try:
+                    await self.parallel_release_script(
+                        keys=group_keys,
+                        args=[],
+                    )
+                except Exception as e:
+                    # The request is already claimed; retrying could release a
+                    # later request's slot. Let the counter TTL recover safely.
+                    verbose_proxy_logger.exception(
+                        "Failed to release max_parallel_requests lease: %s", e
+                    )
 
     async def async_post_call_failure_hook(
         self,
