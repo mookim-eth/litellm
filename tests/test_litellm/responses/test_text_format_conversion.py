@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 
@@ -11,7 +10,6 @@ sys.path.insert(
 
 import litellm
 from litellm.types.llms.openai import (
-    IncompleteDetails,
     ResponseAPIUsage,
     ResponsesAPIResponse,
 )
@@ -34,7 +32,7 @@ class TestTextFormatConversion:
         Test that when text_format parameter is passed to litellm.aresponses,
         it gets converted to text parameter in the raw API call to OpenAI.
         """
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import patch
 
         class TestResponse(BaseModel):
             """Test Pydantic model for structured output"""
@@ -107,13 +105,15 @@ class TestTextFormatConversion:
             fake_stream=False,
             litellm_metadata=None,
             shared_session=None,
+            provider_headers_timeout_seconds=None,
+            provider_sse_event_timeout_seconds=None,
             _is_async=False,
         ):
             # Capture the request parameters
             captured_request["model"] = model
             captured_request["input"] = input
             captured_request["params"] = response_api_optional_request_params
-            
+
             # Return a mock ResponsesAPIResponse wrapped in a coroutine if async
             async def async_response():
                 return ResponsesAPIResponse(
@@ -132,7 +132,7 @@ class TestTextFormatConversion:
                     error=None,
                     incomplete_details=None,
                 )
-            
+
             if _is_async:
                 return async_response()
             else:
@@ -161,14 +161,11 @@ class TestTextFormatConversion:
             litellm.set_verbose = True
 
             # Call aresponses with text_format parameter
-            response = await litellm.aresponses(
+            await litellm.aresponses(
                 input="What is the capital of France?",
                 text_format=TestResponse,
                 **base_completion_call_args,
             )
-
-            # Verify the captured request
-            print("Captured request:", json.dumps(captured_request, indent=4, default=str))
 
             # Validate that text_format was converted to text parameter
             assert (
@@ -204,6 +201,3 @@ class TestTextFormatConversion:
 
             # Validate other request parameters
             assert captured_request["input"] == "What is the capital of France?"
-
-            # Validate the response
-            print("Response:", json.dumps(response, indent=4, default=str))

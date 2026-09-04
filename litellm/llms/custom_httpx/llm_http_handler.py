@@ -2385,6 +2385,7 @@ class BaseLLMHTTPHandler:
             logging_obj=logging_obj,
             model=model,
             custom_llm_provider=custom_llm_provider,
+            slow_warning_seconds=provider_headers_timeout_seconds,
         )
 
         ## LOGGING
@@ -2416,11 +2417,12 @@ class BaseLLMHTTPHandler:
                 )
             except asyncio.TimeoutError as timeout_error:
                 verbose_proxy_logger.warning(
-                    "Responses provider headers timeout model=%s provider=%s timeout_seconds=%s call_id=%s",
+                    "litellm_responses_provider_headers_timeout request_id=%s "
+                    "model=%s provider=%s timeout_seconds=%s error_type=Timeout",
+                    getattr(logging_obj, "litellm_call_id", None),
                     model,
                     custom_llm_provider,
                     provider_headers_timeout_seconds,
-                    getattr(logging_obj, "litellm_call_id", None),
                 )
                 raise litellm.Timeout(
                     message=(

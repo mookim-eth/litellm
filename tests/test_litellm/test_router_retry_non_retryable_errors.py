@@ -88,6 +88,60 @@ def _base_kwargs():
 
 
 @pytest.mark.asyncio
+async def test_retry_warning_contains_request_and_error_context():
+    router = _create_router(num_retries=2)
+    call_count = 0
+    request_kwargs = _base_kwargs()
+    request_kwargs["litellm_call_id"] = "retry-request-id"
+    request_kwargs["metadata"] = {"model_info": {"id": "deployment-id"}}
+
+    async def mock_make_call(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise _make_rate_limit_error("provider overloaded")
+        return "success"
+
+    with patch.object(router, "make_call", side_effect=mock_make_call), \
+         patch.object(router, "_async_get_healthy_deployments",
+                      return_value=(["d1", "d2"], ["d1", "d2"])), \
+         patch.object(router, "_time_to_sleep_before_retry", return_value=0), \
+         patch.object(router, "log_retry", side_effect=lambda kwargs, e: kwargs), \
+         patch("litellm.router.verbose_router_logger") as mock_logger:
+        response = await router.async_function_with_retries(
+            num_retries=2,
+            **request_kwargs,
+        )
+
+    assert response == "success"
+    mock_logger.warning.assert_called_once()
+    log_args = mock_logger.warning.call_args.args
+    rendered_log = log_args[0] % log_args[1:]
+    assert "request_id=retry-request-id" in rendered_log
+    assert "deployment_id=deployment-id" in rendered_log
+    assert "attempted_retries=1" in rendered_log
+    assert "error_type=RateLimitError" in rendered_log
+    assert "provider overloaded" in rendered_log
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_initial_error_does_not_log_retry():
+    router = _create_router(num_retries=2)
+
+    with patch.object(router, "make_call", side_effect=_make_bad_request_error()), \
+         patch.object(router, "_async_get_healthy_deployments",
+                      return_value=(["d1", "d2"], ["d1", "d2"])), \
+         patch("litellm.router.verbose_router_logger") as mock_logger:
+        with pytest.raises(litellm.BadRequestError):
+            await router.async_function_with_retries(
+                num_retries=2,
+                **_base_kwargs(),
+            )
+
+    mock_logger.warning.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_non_retryable_error_in_retry_loop_raises_immediately():
     """
     When a non-retryable error (400 ContextWindowExceeded) occurs inside the

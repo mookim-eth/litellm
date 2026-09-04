@@ -227,6 +227,45 @@ class TestBaseResponsesAPIStreamingIterator:
         logger.warning.assert_called_once()
         assert "headers_to_first_byte_ms" in logger.warning.call_args.args[0]
 
+    def test_slow_ttft_warning_logs_once_without_interrupting_stream(
+        self, monkeypatch
+    ):
+        from litellm.responses.streaming_iterator import (
+            _log_slow_stream_ttft_if_needed,
+            initialize_stream_ttft_trace,
+            mark_stream_ttft_trace,
+        )
+
+        monkeypatch.setenv("LITELLM_STREAM_TTFT_TRACE_ENABLED", "false")
+        mock_logging_obj = Mock()
+        mock_logging_obj.litellm_call_id = "slow-request-id"
+        mock_logging_obj.model_call_details = {}
+        request_data = {}
+        initialize_stream_ttft_trace(
+            request_data,
+            logging_obj=mock_logging_obj,
+            model="gpt-test",
+            custom_llm_provider="openai",
+            slow_warning_seconds=0.001,
+        )
+        mark_stream_ttft_trace(request_data, "provider_headers_received")
+        trace = request_data["_litellm_stream_ttft_trace"]
+        trace["handler_start"] -= 1
+
+        with patch(
+            "litellm.responses.streaming_iterator.verbose_proxy_logger"
+        ) as logger:
+            _log_slow_stream_ttft_if_needed(trace)
+            _log_slow_stream_ttft_if_needed(trace)
+
+        logger.warning.assert_called_once()
+        log_args = logger.warning.call_args.args
+        assert "litellm_stream_ttft_waiting request_id=%s" in log_args[0]
+        assert "error_type=SlowTTFT" in log_args[0]
+        assert log_args[1] == "slow-request-id"
+        assert log_args[6] == "provider_first_byte"
+        assert trace["slow_warning_logged"] is True
+
     @pytest.mark.asyncio
     async def test_async_iterator_still_coalesces_output_text_deltas(self):
         """SSE byte decoding must retain the local output-text coalescing behavior."""

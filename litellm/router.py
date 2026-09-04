@@ -5982,6 +5982,14 @@ class Router:
                 all_deployments=_all_deployments,
             )
 
+            self._log_retry_attempt(
+                kwargs=kwargs,
+                error=original_exception,
+                attempted_retries=1,
+                max_retries=num_retries,
+                retry_after=retry_after,
+                model_group=model_group,
+            )
             await asyncio.sleep(retry_after)
 
             for current_attempt in range(num_retries):
@@ -6047,6 +6055,15 @@ class Router:
                         healthy_deployments=_healthy_deployments,
                         all_deployments=_all_deployments,
                     )
+                    if remaining_retries > 0:
+                        self._log_retry_attempt(
+                            kwargs=kwargs,
+                            error=e,
+                            attempted_retries=current_attempt + 2,
+                            max_retries=num_retries,
+                            retry_after=_timeout,
+                            model_group=model_group,
+                        )
                     await asyncio.sleep(_timeout)
 
             if type(original_exception) in litellm.LITELLM_EXCEPTION_TYPES:
@@ -6611,6 +6628,49 @@ class Router:
             return kwargs
         except Exception as e:
             raise e
+
+    @staticmethod
+    def _log_retry_attempt(
+        *,
+        kwargs: dict,
+        error: Exception,
+        attempted_retries: int,
+        max_retries: int,
+        retry_after: Union[int, float],
+        model_group: Optional[str],
+    ) -> None:
+        """Log a retry that is about to run without exposing request contents."""
+        metadata = kwargs.get("litellm_metadata", kwargs.get("metadata")) or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        model_info = metadata.get("model_info") or kwargs.get("model_info") or {}
+        deployment_id = (
+            model_info.get("id") if isinstance(model_info, dict) else None
+        )
+        request_id = (
+            kwargs.get("litellm_call_id")
+            or metadata.get("litellm_call_id")
+            or kwargs.get("litellm_trace_id", "unknown")
+        )
+        status_code = getattr(error, "status_code", None)
+        if status_code is None:
+            response = getattr(error, "response", None)
+            status_code = getattr(response, "status_code", None)
+        error_message = str(error).replace("\n", "\\n")[:2000]
+        verbose_router_logger.warning(
+            "litellm_retry request_id=%s model_group=%s deployment_id=%s "
+            "attempted_retries=%s max_retries=%s retry_after_seconds=%s "
+            "error_type=%s status_code=%s error=%s",
+            request_id,
+            model_group or metadata.get("model_group") or kwargs.get("model"),
+            deployment_id,
+            attempted_retries,
+            max_retries,
+            round(float(retry_after), 3),
+            type(error).__name__,
+            status_code,
+            error_message,
+        )
 
     def _update_usage(
         self, deployment_id: str, parent_otel_span: Optional[Span]

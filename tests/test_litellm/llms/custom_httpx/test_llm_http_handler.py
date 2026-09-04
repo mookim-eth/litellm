@@ -68,7 +68,11 @@ async def test_responses_provider_headers_timeout_cancels_post():
     logging_obj.model_call_details = {}
     logging_obj.litellm_call_id = "timeout-test"
 
-    with pytest.raises(litellm.Timeout, match="provider HTTP response headers"):
+    with patch(
+        "litellm.llms.custom_httpx.llm_http_handler.verbose_proxy_logger"
+    ) as mock_logger, pytest.raises(
+        litellm.Timeout, match="provider HTTP response headers"
+    ):
         await handler.async_response_api_handler(
             model="test-model",
             input="hello",
@@ -84,6 +88,11 @@ async def test_responses_provider_headers_timeout_cancels_post():
         )
 
     assert cancelled.is_set()
+    mock_logger.warning.assert_called_once()
+    log_args = mock_logger.warning.call_args.args
+    assert "request_id=%s" in log_args[0]
+    assert "error_type=Timeout" in log_args[0]
+    assert log_args[1] == "timeout-test"
 
 
 @pytest.mark.asyncio

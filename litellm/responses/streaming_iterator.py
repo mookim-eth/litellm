@@ -72,14 +72,15 @@ def initialize_stream_ttft_trace(
     logging_obj: LiteLLMLoggingObj,
     model: str,
     custom_llm_provider: Optional[str],
+    slow_warning_seconds: Optional[float] = None,
 ) -> None:
     """Attach monotonic timestamps used to explain slow Responses TTFT."""
-    if not _stream_ttft_trace_enabled():
+    if not _stream_ttft_trace_enabled() and slow_warning_seconds is None:
         return
     model_call_details = getattr(logging_obj, "model_call_details", {})
     if not isinstance(model_call_details, dict):
         model_call_details = {}
-    request_data[_STREAM_TTFT_TRACE_KEY] = {
+    trace: Dict[str, Any] = {
         "handler_start": time.monotonic(),
         "call_id": getattr(logging_obj, "litellm_call_id", None)
         or model_call_details.get("litellm_call_id"),
@@ -87,6 +88,9 @@ def initialize_stream_ttft_trace(
         "provider": custom_llm_provider,
         "event_loop_lag_max_ms": 0.0,
     }
+    if slow_warning_seconds is not None and slow_warning_seconds > 0:
+        trace["slow_warning_duration_ms"] = slow_warning_seconds * 1000
+    request_data[_STREAM_TTFT_TRACE_KEY] = trace
 
 
 def mark_stream_ttft_trace(request_data: Dict[str, Any], stage: str) -> None:
@@ -105,6 +109,42 @@ def _duration_between_ms(
     ):
         return None
     return round(max(0.0, end_value - start_value) * 1000, 2)
+
+
+def _log_slow_stream_ttft_if_needed(trace: Dict[str, Any]) -> None:
+    """Emit one in-progress TTFT warning without interrupting the stream."""
+    if trace.get("slow_warning_logged") is True or "proxy_first_yield" in trace:
+        return
+    handler_start = trace.get("handler_start")
+    if not isinstance(handler_start, (int, float)):
+        return
+    warning_duration_ms = trace.get(
+        "slow_warning_duration_ms", _stream_ttft_trace_min_duration_ms()
+    )
+    if not isinstance(warning_duration_ms, (int, float)):
+        return
+    elapsed_ms = max(0.0, time.monotonic() - handler_start) * 1000
+    if elapsed_ms < warning_duration_ms:
+        return
+
+    if "provider_first_raw_byte" not in trace:
+        waiting_for = "provider_first_byte"
+    elif "provider_first_sse_event" not in trace:
+        waiting_for = "provider_first_sse_event"
+    else:
+        waiting_for = "proxy_first_yield"
+    trace["slow_warning_logged"] = True
+    verbose_proxy_logger.warning(
+        "litellm_stream_ttft_waiting request_id=%s model=%s provider=%s "
+        "elapsed_ms=%s warning_threshold_ms=%s waiting_for=%s "
+        "error_type=SlowTTFT",
+        trace.get("call_id"),
+        trace.get("model"),
+        trace.get("provider"),
+        round(elapsed_ms, 2),
+        round(float(warning_duration_ms), 2),
+        waiting_for,
+    )
 
 
 class BaseResponsesAPIStreamingIterator:
@@ -793,6 +833,7 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                 trace["event_loop_lag_max_ms"] = max(
                     float(trace.get("event_loop_lag_max_ms", 0.0)), lag_ms
                 )
+                _log_slow_stream_ttft_if_needed(trace)
         except asyncio.CancelledError:
             raise
 
