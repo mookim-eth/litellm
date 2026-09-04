@@ -369,6 +369,41 @@ class TestAzureAnthropicCostCalculation:
         assert call_kwargs["prompt_tokens"] == 9
         assert call_kwargs["completion_tokens"] == 2
 
+    def test_glm_5_3_uses_zai_pricing_for_anthropic_passthrough(self):
+        """ZAI's Anthropic-compatible GLM-5.3 responses must resolve to ZAI pricing."""
+        from datetime import datetime
+        from unittest.mock import patch
+
+        from litellm.types.utils import ModelResponse, Usage
+
+        logging_obj = self._create_mock_logging_obj(
+            model="glm-5.3", custom_llm_provider="zai"
+        )
+        logging_obj.call_type = "anthropic_messages"
+        response = ModelResponse(model="glm-5.3")
+        response.usage = Usage(
+            prompt_tokens=100,
+            completion_tokens=10,
+            total_tokens=110,
+            cache_read_input_tokens=50,
+        )
+
+        with patch("litellm.completion_cost", return_value=0.0), patch(
+            "litellm.cost_per_token", return_value=(0.00014, 0.000044)
+        ) as mock_cost:
+            result = AnthropicPassthroughLoggingHandler._create_anthropic_response_logging_payload(
+                litellm_model_response=response,
+                model="glm-5.3",
+                kwargs={},
+                start_time=datetime.now(),
+                end_time=datetime.now(),
+                logging_obj=logging_obj,
+            )
+
+        assert result["response_cost"] == pytest.approx(0.000184)
+        assert mock_cost.call_args.kwargs["model"] == "zai/glm-5.3"
+        assert mock_cost.call_args.kwargs["custom_llm_provider"] == "zai"
+
     def test_streaming_custom_pricing_records_database_cost(self):
         """A stream should retain the cost calculated from its deployment model_info."""
         from datetime import datetime
