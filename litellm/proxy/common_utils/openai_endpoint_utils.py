@@ -28,6 +28,13 @@ def remove_sensitive_info_from_deployment(
     """
     deployment_dict["litellm_params"].pop("api_key", None)
     deployment_dict["litellm_params"].pop("client_secret", None)
+    # Auth file paths are credentials too.  Returning a masked path (for example
+    # ``/roo********************json``) is dangerous because the UI includes
+    # the returned litellm params when saving an edited model, which can then
+    # persist the masked value as the runtime path.  Omit it like api_key so
+    # callers can display the deployment safely while updates preserve the
+    # existing server-side value.
+    deployment_dict["litellm_params"].pop("chatgpt_auth_file_path", None)
     deployment_dict["litellm_params"].pop("vertex_credentials", None)
     deployment_dict["litellm_params"].pop("aws_access_key_id", None)
     deployment_dict["litellm_params"].pop("aws_secret_access_key", None)

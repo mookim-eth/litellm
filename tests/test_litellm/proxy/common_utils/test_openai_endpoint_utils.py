@@ -25,6 +25,7 @@ from litellm.proxy.common_utils.openai_endpoint_utils import remove_sensitive_in
                         "model": "openai/gpt-4",
                         "api_key": "sk-sensitive-key-123",
                         "client_secret": "~v8Q4W:Zp9gJ-3sTqX5aB@LkR2mNfYdC",
+                        "chatgpt_auth_file_path": "/root/litellm/auth/auth.json",
                         "vertex_credentials": {"type": "service_account"},
                         "aws_access_key_id": "AKIA123456789",
                         "aws_secret_access_key": "secret-access-key",
@@ -119,3 +120,18 @@ def test_remove_sensitive_info_from_deployment_with_excluded_keys():
     
     # api_key should still be removed (popped) regardless of excluded_keys
     assert "api_key" not in sanitized_config["litellm_params"]
+
+
+def test_remove_sensitive_info_from_deployment_omits_chatgpt_auth_file_path():
+    """Auth file paths must not be returned as masked values that can be saved back."""
+    model_config = {
+        "model_name": "codex-model",
+        "litellm_params": {
+            "model": "chatgpt/gpt-5.3-codex",
+            "chatgpt_auth_file_path": "/root/litellm/auth/auth.json",
+        },
+    }
+
+    sanitized_config = remove_sensitive_info_from_deployment(model_config)
+
+    assert "chatgpt_auth_file_path" not in sanitized_config["litellm_params"]
