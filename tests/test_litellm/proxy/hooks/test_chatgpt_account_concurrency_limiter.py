@@ -97,7 +97,8 @@ async def test_should_share_limit_across_models_for_one_account(
 
     assert exc_info.value.num_retries == 0
     assert getattr(exc_info.value, "skip_deployment_cooldown") is True
-    assert exc_info.value.response.headers["retry-after"] == "0"
+    assert "Please retry in 10 seconds." in str(exc_info.value)
+    assert exc_info.value.response.headers["retry-after"] == "10"
 
     await logging_objects[0].async_cleanup_deployment_resources()
     replacement_logging_obj = _logging_obj()

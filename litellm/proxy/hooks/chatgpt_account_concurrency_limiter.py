@@ -342,13 +342,13 @@ class ChatGPTAccountConcurrencyLimiter(CustomLogger):
             error = litellm.RateLimitError(
                 message=(
                     "ChatGPT provider account concurrency limit reached for "
-                    f"plan_type={plan_type}; limit={limit}"
+                    f"plan_type={plan_type}; limit={limit}. Please retry in 10 seconds."
                 ),
                 llm_provider="chatgpt",
                 model=str(kwargs.get("model") or ""),
                 response=httpx.Response(
                     status_code=429,
-                    headers={"retry-after": "0"},
+                    headers={"retry-after": "10"},
                     request=httpx.Request("POST", "https://chatgpt.com/backend-api/"),
                 ),
                 num_retries=0,
