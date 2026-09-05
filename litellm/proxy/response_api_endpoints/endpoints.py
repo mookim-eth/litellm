@@ -9,6 +9,7 @@ from starlette.responses import StreamingResponse
 from starlette.websockets import WebSocket
 
 from litellm._logging import verbose_proxy_logger
+from litellm.exceptions import RateLimitError
 from litellm.integrations.custom_guardrail import ModifyResponseException
 from litellm.proxy._types import *
 from litellm.proxy.auth.user_api_key_auth import (
@@ -55,18 +56,15 @@ def _should_return_codex_concurrency_retry(
     )
 
 
-def _codex_concurrency_retry_response(
-    *, mapped_error: Optional[Exception] = None
+def _codex_retry_response(
+    *, message: str, mapped_error: Optional[Exception] = None
 ) -> StreamingResponse:
     error_event = {
         "type": "response.failed",
         "response": {
             "error": {
                 "code": "rate_limit_exceeded",
-                "message": (
-                    "Concurrency limit reached. Please try again in "
-                    f"{CODEX_CONCURRENCY_RETRY_DELAY_SECONDS}s."
-                ),
+                "message": message,
             }
         },
     }
@@ -101,9 +99,23 @@ async def _handle_responses_api_exception(
     proxy_logging_obj: Any,
     version: Optional[str],
 ):
-    return_codex_retry = _should_return_codex_concurrency_retry(
-        request=request, data=data, error=error
-    )
+    retry_message = None
+    if _should_return_codex_concurrency_retry(request=request, data=data, error=error):
+        retry_message = (
+            "Concurrency limit reached. Please try again in "
+            f"{CODEX_CONCURRENCY_RETRY_DELAY_SECONDS}s."
+        )
+    elif (
+        "codex" in request.headers.get("user-agent", "").lower()
+        and data.get("stream") is True
+        and isinstance(error, RateLimitError)
+        and error.llm_provider == "chatgpt"
+        and not getattr(error, "is_provider_account_concurrency_limit", False)
+    ):
+        # The router has already exhausted/skipped fallbacks. HTTP 429s arrive
+        # here before SSE starts, so the streaming overload handler cannot map
+        # them. Codex parses this exact phrase in a rate_limit_exceeded event.
+        retry_message = "Rate limit exceeded. Please try again in 10 seconds."
     try:
         mapped_error = await processor._handle_llm_api_exception(
             e=error,
@@ -112,12 +124,22 @@ async def _handle_responses_api_exception(
             version=version,
         )
     except Exception as mapped_error:
-        if return_codex_retry:
-            return _codex_concurrency_retry_response(mapped_error=mapped_error)
+        if (
+            retry_message is not None
+            and isinstance(mapped_error, ProxyException)
+            and mapped_error.code == "429"
+        ):
+            return _codex_retry_response(
+                message=retry_message, mapped_error=mapped_error
+            )
         raise
 
-    if return_codex_retry:
-        return _codex_concurrency_retry_response(mapped_error=mapped_error)
+    if (
+        retry_message is not None
+        and isinstance(mapped_error, ProxyException)
+        and mapped_error.code == "429"
+    ):
+        return _codex_retry_response(message=retry_message, mapped_error=mapped_error)
     raise mapped_error
 
 
