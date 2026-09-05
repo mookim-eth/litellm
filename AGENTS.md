@@ -471,8 +471,11 @@ check pass.
    Wait for both container health and `/health/readiness` on port 4001.
 5. Run a real end-to-end request against `http://127.0.0.1:4001` that exercises
    the changed behavior, plus adjacent compatibility paths identified during
-   review. For Responses changes, run the applicable text, single-tool, and
-   parallel-tool modes from `/root/litellm/responses-e2e.py`. For auth, budget,
+   review. For Responses changes, first select a model currently advertised by
+   the test `/model/info` endpoint and supported by its configured upstream;
+   do not assume `gpt-5.4` remains available. Run the applicable text,
+   single-tool, and parallel-tool modes from `/root/litellm/responses-e2e.py`.
+   For auth, budget,
    key-management, UI, or other changes, exercise the corresponding public API
    or browser flow against the test database and verify both the response and
    relevant logs. Never print credentials in commands or reports.
