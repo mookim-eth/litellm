@@ -2,6 +2,7 @@ import os
 from typing import Literal, Union
 
 from . import *
+from .astra_team_access import AstraTeamAccess
 from .cache_control_check import _PROXY_CacheControlCheck
 from .chatgpt_account_concurrency_limiter import ChatGPTAccountConcurrencyLimiter
 from .litellm_skills import SkillsInjectionHook
@@ -21,6 +22,7 @@ except ImportError:
 
 # List of all available hooks that can be enabled
 PROXY_HOOKS = {
+    "astra_team_access": AstraTeamAccess,
     "max_budget_limiter": _PROXY_MaxBudgetLimiter,
     "parallel_request_limiter": _PROXY_MaxParallelRequestsHandler_v3,
     "cache_control_check": _PROXY_CacheControlCheck,

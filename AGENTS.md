@@ -293,6 +293,20 @@ tests before dropping local coverage.
 The following controls are intentional security boundaries. Preserve them
 during upstream syncs and when adding new key-management routes:
 
+- Astra inference has an additional team-membership gate in
+  `litellm/proxy/hooks/astra_team_access.py`. The authenticated user must be a
+  member of `astra_team` (ID `3880a488-52e7-44cc-9d91-a679452027f8`), or the
+  authenticated key must belong to that team. This applies to `gpt-6-astra`,
+  `gpt-6-astra-1`, and `gpt-6-astra-2`, including provider-prefixed backend names
+  and resolved alias/deployment/fallback calls. It is additive to existing
+  model authorization: `all-proxy-models`, empty allowlists, and admin roles
+  do not bypass it. Missing/blocked teams or unavailable membership data fail
+  closed. Keep the team ID stable; recreating the team requires an explicit
+  policy update. Preserve both proxy pre-call and deployment-hook checks and
+  the server-owned logging-object identity; do not authorize from request
+  `user`, metadata, or a client-supplied membership flag. Astra authorization
+  reads current Team membership through Prisma, bypassing the general Team
+  cache so membership removal is not delayed by stale cached membership.
 - Non-`proxy_admin` callers must not set virtual-key `metadata`, including
   explicit `null` or empty mappings. Presence is security-significant because
   update/regenerate paths can use empty values to clear an existing policy.
