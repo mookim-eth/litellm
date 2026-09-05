@@ -7572,6 +7572,26 @@ class ProxyStartupEvent:
 
 
 #### API ENDPOINTS ####
+_PUBLIC_V1_MODEL_NAMES = frozenset(
+    {
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-6-astra",
+        "gpt-5.4-mini",
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+        "codex-auto-review",
+        "gpt-5.3-codex-spark",
+    }
+)
+
+
+def _is_public_v1_model(model_name: str) -> bool:
+    return model_name in _PUBLIC_V1_MODEL_NAMES or model_name.startswith(
+        ("glm-", "grok-")
+    )
+
+
 @router.get(
     "/v1/models", dependencies=[Depends(user_api_key_auth)], tags=["model management"]
 )
@@ -7672,6 +7692,10 @@ async def model_list(
             )
             model_data.append(model_info)
 
+        model_data = [
+            model for model in model_data if _is_public_v1_model(model.get("id", ""))
+        ]
+
         return dict(
             data=model_data,
             object="list",
@@ -7704,6 +7728,10 @@ async def model_list(
             llm_router=llm_router,
         )
         model_data.append(model_info)
+
+    model_data = [
+        model for model in model_data if _is_public_v1_model(model.get("id", ""))
+    ]
 
     return dict(
         data=model_data,

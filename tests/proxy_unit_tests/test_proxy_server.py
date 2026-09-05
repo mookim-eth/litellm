@@ -2055,6 +2055,22 @@ async def test_gemini_pass_through_endpoint():
     print(resp.body)
 
 
+@pytest.mark.parametrize(
+    ("model_name", "expected"),
+    [
+        ("gpt-5.6-sol", True),
+        ("glm-5.3", True),
+        ("grok-4.5", True),
+        ("gpt-5.6-sol-1", False),
+        ("oczen/deepseek-v4-flash", False),
+    ],
+)
+def test_public_v1_model_allowlist(model_name, expected):
+    from litellm.proxy.proxy_server import _is_public_v1_model
+
+    assert _is_public_v1_model(model_name) is expected
+
+
 @pytest.mark.parametrize("hidden", [True, False])
 @pytest.mark.asyncio
 @pytest.mark.skip(reason="Requires reliable external DB connection (prisma).")
