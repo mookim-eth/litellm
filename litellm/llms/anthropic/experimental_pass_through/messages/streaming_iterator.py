@@ -26,7 +26,10 @@ class BaseAnthropicMessagesStreamingIterator:
     ):
         self.litellm_logging_obj = litellm_logging_obj
         self.request_body = request_body
-        self.start_time = datetime.now()
+        # The logging object is created before the HTTP request is made.  Keep
+        # that timestamp so connection and upstream waiting time are included
+        # in TTFT; creating a new timestamp here would under-report it.
+        self.start_time = getattr(litellm_logging_obj, "start_time", None) or datetime.now()
 
     async def _handle_streaming_logging(self, collected_chunks: List[bytes]):
         """Handle the logging after all chunks have been collected."""
@@ -68,6 +71,7 @@ class BaseAnthropicMessagesStreamingIterator:
             start_time=self.start_time,
             passthrough_success_handler_obj=GLOBAL_PASS_THROUGH_SUCCESS_HANDLER_OBJ,
             url_route="/v1/messages",
+            stamp_first_content_only=True,
         )
 
     def _convert_chunk_to_sse_format(self, chunk: Union[dict, Any]) -> bytes:

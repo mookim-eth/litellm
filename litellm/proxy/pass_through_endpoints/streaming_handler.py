@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime
 from typing import List, Optional
 
@@ -50,6 +51,7 @@ class PassThroughStreamingHandler:
         start_time: datetime,
         passthrough_success_handler_obj: PassThroughEndpointLogging,
         url_route: str,
+        stamp_first_content_only: bool = False,
     ):
         """
         - Yields chunks from the response
@@ -58,6 +60,7 @@ class PassThroughStreamingHandler:
         """
         try:
             raw_bytes: List[bytes] = []
+            sse_buffer = b""
             # Extract model name for cost injection
             model_name = PassThroughStreamingHandler._extract_model_for_cost_injection(
                 request_body=request_body,
@@ -68,9 +71,18 @@ class PassThroughStreamingHandler:
 
             async for chunk in response.aiter_bytes():
                 raw_bytes.append(chunk)
-                PassThroughStreamingHandler._stamp_first_chunk_if_needed(
-                    litellm_logging_obj
-                )
+                if stamp_first_content_only:
+                    sse_buffer += chunk
+                    # Anthropic SSE events are separated by a blank line.
+                    while b"\n\n" in sse_buffer or b"\r\n\r\n" in sse_buffer:
+                        separator = b"\r\n\r\n" if b"\r\n\r\n" in sse_buffer else b"\n\n"
+                        event, sse_buffer = sse_buffer.split(separator, 1)
+                        if PassThroughStreamingHandler._anthropic_event_has_content(event):
+                            PassThroughStreamingHandler._stamp_first_chunk_if_needed(litellm_logging_obj)
+                            stamp_first_content_only = False
+                            break
+                else:
+                    PassThroughStreamingHandler._stamp_first_chunk_if_needed(litellm_logging_obj)
                 if (
                     getattr(litellm, "include_cost_in_streaming_usage", False)
                     and model_name
@@ -110,6 +122,27 @@ class PassThroughStreamingHandler:
         except Exception as e:
             verbose_proxy_logger.error(f"Error in chunk_processor: {str(e)}")
             raise
+
+    @staticmethod
+    def _anthropic_event_has_content(event: bytes) -> bool:
+        """Return whether an Anthropic SSE event contains generated content."""
+        data_lines = [line[5:].lstrip() for line in event.splitlines() if line.startswith(b"data:")]
+        if not data_lines:
+            # Preserve behavior for non-SSE/raw streams.
+            return bool(event.strip()) and b"event:" not in event
+        try:
+            payload = json.loads(b"\n".join(data_lines))
+        except (TypeError, ValueError):
+            return False
+        event_type = payload.get("type") if isinstance(payload, dict) else None
+        if event_type in {"content_block_delta", "content_block_start"}:
+            return True
+        if event_type == "message_delta":
+            delta = payload.get("delta")
+            return isinstance(delta, dict) and any(
+                key in delta for key in ("text", "thinking", "stop_reason")
+            )
+        return False
 
     @staticmethod
     async def _route_streaming_logging_to_handler(

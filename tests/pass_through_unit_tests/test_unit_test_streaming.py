@@ -142,6 +142,41 @@ async def test_chunk_processor_stamps_completion_start_time_once():
     assert isinstance(stamped, datetime)
 
 
+@pytest.mark.asyncio
+async def test_chunk_processor_skips_anthropic_message_start_for_ttft():
+    response = AsyncMock(spec=httpx.Response)
+
+    async def mock_aiter_bytes():
+        yield b'event: message_start\ndata: {"type":"message_start"}\n\n'
+        yield b'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n'
+
+    response.aiter_bytes = mock_aiter_bytes
+    logging_obj = MagicMock(spec=LiteLLMLoggingObj)
+    logging_obj.completion_start_time = None
+    logging_obj._update_completion_start_time.side_effect = lambda **kw: setattr(
+        logging_obj, "completion_start_time", kw["completion_start_time"]
+    )
+
+    with patch.object(PassThroughStreamingHandler, "_route_streaming_logging_to_handler", new=AsyncMock()):
+        chunks = [
+            chunk
+            async for chunk in PassThroughStreamingHandler.chunk_processor(
+                response=response,
+                request_body={"model": "glm-5.3"},
+                litellm_logging_obj=logging_obj,
+                endpoint_type=EndpointType.ANTHROPIC,
+                start_time=datetime.now(),
+                passthrough_success_handler_obj=MagicMock(),
+                url_route="/v1/messages",
+                stamp_first_content_only=True,
+            )
+        ]
+        await asyncio.sleep(0)
+
+    assert len(chunks) == 2
+    logging_obj._update_completion_start_time.assert_called_once()
+
+
 def test_convert_raw_bytes_to_str_lines():
     """
     Test that the _convert_raw_bytes_to_str_lines method correctly converts raw bytes to a list of strings
