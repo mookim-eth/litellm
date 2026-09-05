@@ -35,6 +35,9 @@ from litellm.constants import (
 )
 from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.litellm_core_utils.dd_tracing import tracer
+from litellm.litellm_core_utils.content_safety_logging import (
+    write_content_safety_event,
+)
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.llm_response_utils.get_headers import (
     get_response_headers,
@@ -535,6 +538,21 @@ def _log_incomplete_response_event(error: Exception, request_data: dict) -> bool
         request_input = request_data.get("messages")
     if reason != "content_filter":
         request_input = None
+    metadata = request_data.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    write_content_safety_event(
+        event_type="content_filter" if reason == "content_filter" else "incomplete",
+        request_id=request_data.get("litellm_call_id"),
+        model=request_data.get("model"),
+        reason=reason,
+        request_input=request_input,
+        provider=request_data.get("custom_llm_provider"),
+        upstream_event=event,
+        status_code=getattr(error, "status_code", None),
+        key_alias=metadata.get("user_api_key_alias"),
+        user_id=metadata.get("user_api_key_user_id"),
+    )
     verbose_proxy_logger.warning(
         "litellm.proxy.proxy_server._handle_llm_api_exception(): "
         "upstream returned an incomplete response - request_id=%s model=%s "
@@ -552,6 +570,27 @@ def _log_expected_llm_api_exception(error: Exception, request_data: dict) -> boo
     if _log_incomplete_response_event(error, request_data):
         return True
     if isinstance(error, litellm.ContentPolicyViolationError):
+        error_text = str(error)
+        event_type = (
+            "biological_risk"
+            if "biological risk" in error_text.lower()
+            else "content_filter"
+        )
+        metadata = request_data.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        write_content_safety_event(
+            event_type=event_type,
+            request_id=request_data.get("litellm_call_id"),
+            model=request_data.get("model"),
+            reason=event_type,
+            request_input=request_data.get("input") or request_data.get("messages"),
+            provider=request_data.get("custom_llm_provider"),
+            status_code=getattr(error, "status_code", None),
+            upstream_error=error_text,
+            key_alias=metadata.get("user_api_key_alias"),
+            user_id=metadata.get("user_api_key_user_id"),
+        )
         verbose_proxy_logger.warning(
             "litellm.proxy.proxy_server._handle_llm_api_exception(): "
             "upstream content filter blocked request - request_id=%s model=%s "

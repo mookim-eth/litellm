@@ -1,0 +1,13 @@
+# Install as /etc/logrotate.d/litellm-content-safety on hosts that mount
+# /var/log/litellm/content-safety into the LiteLLM containers.
+/var/log/litellm/content-safety/*.jsonl {
+    daily
+    maxsize 100M
+    rotate 180
+    compress
+    delaycompress
+    missingok
+    notifempty
+    su root root
+    create 0640 root root
+}

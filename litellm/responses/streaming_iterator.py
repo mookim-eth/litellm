@@ -20,6 +20,9 @@ from litellm.constants import (
 )
 from litellm.litellm_core_utils.asyncify import run_async_function
 from litellm.litellm_core_utils.core_helpers import process_response_headers
+from litellm.litellm_core_utils.content_safety_logging import (
+    write_content_safety_event,
+)
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
 from litellm.litellm_core_utils.llm_response_utils.get_api_base import get_api_base
@@ -225,6 +228,23 @@ class BaseResponsesAPIStreamingIterator:
             response, "incomplete_details"
         )
         reason = self._get_response_field(incomplete_details, "reason") or "unknown"
+        request_input = self.request_data.get("input")
+        if request_input is None:
+            request_input = self.request_data.get("messages")
+        metadata = self.request_data.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        write_content_safety_event(
+            event_type="content_filter" if reason == "content_filter" else "incomplete",
+            request_id=getattr(self.logging_obj, "litellm_call_id", None),
+            model=self.model,
+            reason=reason,
+            request_input=request_input if reason == "content_filter" else None,
+            provider=getattr(self, "custom_llm_provider", None),
+            key_alias=metadata.get("user_api_key_alias"),
+            user_id=metadata.get("user_api_key_user_id"),
+            upstream_event=chunk,
+        )
         if reason != "content_filter":
             verbose_proxy_logger.warning(
                 "litellm.responses: upstream returned an incomplete streaming "
@@ -236,9 +256,6 @@ class BaseResponsesAPIStreamingIterator:
             )
             return
 
-        request_input = self.request_data.get("input")
-        if request_input is None:
-            request_input = self.request_data.get("messages")
         verbose_proxy_logger.warning(
             "litellm.responses: upstream content filter blocked streaming request - "
             "request_id=%s model=%s reason=%s event=%r request_input=%r",
