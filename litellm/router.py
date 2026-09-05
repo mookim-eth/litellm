@@ -5912,6 +5912,7 @@ class Router:
         except Exception as e:
             current_attempt = None
             original_exception = e
+            self._raise_on_chatgpt_upstream_rate_limit(e, kwargs, model_group)
             deployment_num_retries = getattr(e, "num_retries", None)
 
             if deployment_num_retries is not None and isinstance(
@@ -6015,6 +6016,7 @@ class Router:
                     # Always track the latest error so we raise the most
                     # recent exception instead of the first one.
                     original_exception = e
+                    self._raise_on_chatgpt_upstream_rate_limit(e, kwargs, model_group)
 
                     ## LOGGING
                     kwargs = self.log_retry(kwargs=kwargs, e=e)
@@ -6079,6 +6081,35 @@ class Router:
                 setattr(original_exception, "num_retries", actual_retries_attempted)
 
             raise original_exception
+
+    @staticmethod
+    def _raise_on_chatgpt_upstream_rate_limit(
+        error: Exception, kwargs: dict, model_group: Optional[str]
+    ) -> None:
+        # Use configured ChatGPT account fallbacks instead of sleeping/retrying
+        # this group, even when a retry policy would otherwise request retries.
+        if not (
+            isinstance(error, litellm.RateLimitError)
+            and error.llm_provider == "chatgpt"
+            and not getattr(error, "is_provider_account_concurrency_limit", False)
+        ):
+            return
+        metadata = kwargs.get("litellm_metadata", kwargs.get("metadata")) or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        request_id = (
+            kwargs.get("litellm_call_id")
+            or metadata.get("litellm_call_id")
+            or kwargs.get("litellm_trace_id", "unknown")
+        )
+        verbose_router_logger.warning(
+            "litellm_rate_limit_fallback request_id=%s model_group=%s "
+            "error_type=%s status_code=429 action=skip_same_group_retry",
+            request_id,
+            model_group,
+            type(error).__name__,
+        )
+        raise error
 
     async def make_call(self, original_function: Any, *args, **kwargs):
         """

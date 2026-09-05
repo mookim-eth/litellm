@@ -615,3 +615,77 @@ async def test_should_fallback_without_retrying_a_saturated_account(
     await request_logging_obj.async_cleanup_deployment_resources()
     for logging_obj in held_logging_objects:
         await logging_obj.async_cleanup_deployment_resources()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_should_release_http_429_account_before_immediate_fallback(
+    tmp_path: Path, configured_limits: None, monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
+    first_auth = tmp_path / "first.json"
+    second_auth = tmp_path / "second.json"
+    _write_auth_file(first_auth, "first-account", "pro")
+    _write_auth_file(second_auth, "second-account", "pro")
+    limiter = ChatGPTAccountConcurrencyLimiter(_FakeInternalUsageCache())
+    monkeypatch.setattr(litellm, "callbacks", [limiter])
+    acquired_second = asyncio.Event()
+    finish_second = asyncio.Event()
+    original_hook = limiter.async_pre_call_deployment_hook
+    attempts = []
+
+    async def observe_hook(kwargs, call_type):
+        await original_hook(kwargs, call_type)
+        path = kwargs.get("chatgpt_auth_file_path")
+        attempts.append(path)
+        if path == str(second_auth):
+            acquired_second.set()
+            await finish_second.wait()
+
+    monkeypatch.setattr(limiter, "async_pre_call_deployment_hook", observe_hook)
+    router = Router(
+        model_list=[
+            {
+                "model_name": name,
+                "litellm_params": {
+                    "model": "chatgpt/mock",
+                    "chatgpt_auth_file_path": str(auth),
+                    "mock_response": mock_response,
+                },
+            }
+            for name, auth, mock_response in [
+                ("primary", first_auth, "litellm.RateLimitError"),
+                ("secondary", second_auth, "secondary response"),
+            ]
+        ],
+        fallbacks=[{"primary": ["secondary"]}],
+        num_retries=2,
+    )
+    logging_obj = _logging_obj()
+    with patch.object(
+        router, "_time_to_sleep_before_retry",
+        side_effect=AssertionError("ChatGPT 429 must not calculate backoff"),
+    ):
+        call = asyncio.create_task(router.acompletion(
+            model="primary", messages=[{"role": "user", "content": "hello"}],
+            stream=stream, litellm_logging_obj=logging_obj,
+        ))
+        try:
+            await asyncio.wait_for(acquired_second.wait(), timeout=5)
+            snapshot = await limiter.get_concurrency_snapshot()
+            assert snapshot["storage"] == "local"
+            assert snapshot["total_active"] == 1
+            assert snapshot["accounts"][0]["account_hash_prefix"] == (
+                limiter._account_key("second-account").split(":")[-1][:12]
+            )
+            assert attempts == [str(first_auth), str(second_auth)]
+        finally:
+            finish_second.set()
+            response = await call
+        if stream:
+            chunks = [chunk async for chunk in response]
+            assert chunks
+            await response.aclose()
+        else:
+            assert response.choices[0].message.content == "secondary response"
+        await logging_obj.async_cleanup_deployment_resources()
+    assert (await limiter.get_concurrency_snapshot())["total_active"] == 0
