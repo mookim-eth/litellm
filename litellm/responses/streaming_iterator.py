@@ -169,6 +169,10 @@ class BaseResponsesAPIStreamingIterator:
         self.response = response
         self.model = model
         self.logging_obj = logging_obj
+        # Fallbacks reuse Logging; an old stream must never clean up a new lease.
+        self._deployment_cleanup_callbacks = list(
+            getattr(logging_obj, "_async_deployment_cleanup_callbacks", [])
+        )
         self.finished = False
         self.responses_api_provider_config = responses_api_provider_config
         self.completed_response: Optional[ResponsesAPIStreamingResponse] = None
@@ -322,7 +326,7 @@ class BaseResponsesAPIStreamingIterator:
                 self.logging_obj, "async_cleanup_deployment_resources", None
             )
             if callable(cleanup):
-                cleanup_result = cleanup()
+                cleanup_result = cleanup(callbacks=self._deployment_cleanup_callbacks)
                 if inspect.isawaitable(cleanup_result):
                     await cleanup_result
         response = getattr(self, "response", None)
@@ -729,6 +733,7 @@ class BaseResponsesAPIStreamingIterator:
                         traceback_exception=traceback_exception,
                         start_time=self.start_time,
                         end_time=end_time,
+                        deployment_cleanup_callbacks=self._deployment_cleanup_callbacks,
                     )
                 )
             except RuntimeError:
@@ -738,6 +743,7 @@ class BaseResponsesAPIStreamingIterator:
                     traceback_exception=traceback_exception,
                     start_time=self.start_time,
                     end_time=end_time,
+                    deployment_cleanup_callbacks=self._deployment_cleanup_callbacks,
                 )
         except Exception:
             pass
@@ -1090,6 +1096,7 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                     start_time=self.start_time,
                     end_time=end_time,
                     cache_hit=None,
+                    deployment_cleanup_callbacks=self._deployment_cleanup_callbacks,
                 )
             )
         except RuntimeError:
@@ -1099,6 +1106,7 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                 start_time=self.start_time,
                 end_time=end_time,
                 cache_hit=None,
+                deployment_cleanup_callbacks=self._deployment_cleanup_callbacks,
             )
 
         try:
@@ -1219,6 +1227,7 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             start_time=self.start_time,
             end_time=end_time,
             cache_hit=None,
+            deployment_cleanup_callbacks=self._deployment_cleanup_callbacks,
         )
 
         executor.submit(

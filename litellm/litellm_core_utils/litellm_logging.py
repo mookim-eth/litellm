@@ -428,9 +428,27 @@ class Logging(LiteLLMLoggingBaseClass):
     def add_async_deployment_cleanup_callback(self, callback: Callable[[], Any]) -> None:
         self._async_deployment_cleanup_callbacks.append(callback)
 
-    async def async_cleanup_deployment_resources(self) -> None:
-        callbacks = self._async_deployment_cleanup_callbacks
-        self._async_deployment_cleanup_callbacks = []
+    async def async_cleanup_deployment_resources(
+        self, callbacks: Optional[List[Callable[[], Any]]] = None
+    ) -> None:
+        """Run deployment cleanup callbacks, optionally scoped to one attempt."""
+        if callbacks is None:
+            callbacks = self._async_deployment_cleanup_callbacks
+            self._async_deployment_cleanup_callbacks = []
+        else:
+            selected = {id(callback) for callback in callbacks}
+            callbacks = [
+                callback
+                for callback in self._async_deployment_cleanup_callbacks
+                if id(callback) in selected
+            ]
+            # Claim callbacks before awaiting, so delayed logging and repeated
+            # stream closes cannot run cleanup again after a retry acquires a lease.
+            self._async_deployment_cleanup_callbacks = [
+                callback
+                for callback in self._async_deployment_cleanup_callbacks
+                if id(callback) not in selected
+            ]
         for callback in callbacks:
             try:
                 result = callback()
@@ -2496,7 +2514,9 @@ class Logging(LiteLLMLoggingBaseClass):
         """
         Implementing async callbacks, to handle asyncio event loop issues when custom integrations need to use async functions.
         """
-        await self.async_cleanup_deployment_resources()
+        await self.async_cleanup_deployment_resources(
+            callbacks=kwargs.pop("deployment_cleanup_callbacks", None)
+        )
         print_verbose(
             "Logging Details LiteLLM-Async Success Call, cache_hit={}".format(cache_hit)
         )
@@ -3137,12 +3157,19 @@ class Logging(LiteLLMLoggingBaseClass):
             )
 
     async def async_failure_handler(
-        self, exception, traceback_exception, start_time=None, end_time=None
+        self,
+        exception,
+        traceback_exception,
+        start_time=None,
+        end_time=None,
+        deployment_cleanup_callbacks: Optional[List[Callable[[], Any]]] = None,
     ):
         """
         Implementing async callbacks, to handle asyncio event loop issues when custom integrations need to use async functions.
         """
-        await self.async_cleanup_deployment_resources()
+        await self.async_cleanup_deployment_resources(
+            callbacks=deployment_cleanup_callbacks
+        )
         await self.special_failure_handlers(exception=exception)
         if not self.should_run_logging(
             event_type="async_failure"

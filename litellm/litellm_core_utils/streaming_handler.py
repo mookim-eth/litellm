@@ -112,6 +112,10 @@ class CustomStreamWrapper:
         self.make_call = make_call
         self.custom_llm_provider = custom_llm_provider
         self.logging_obj: LiteLLMLoggingObject = logging_obj
+        # Fallbacks reuse Logging; capture only this streaming attempt's cleanup.
+        self._deployment_cleanup_callbacks = list(
+            getattr(logging_obj, "_async_deployment_cleanup_callbacks", [])
+        )
         self.completion_stream = completion_stream
         self.sent_first_chunk = False
         self.sent_last_chunk = False
@@ -209,7 +213,7 @@ class CustomStreamWrapper:
                 self.logging_obj, "async_cleanup_deployment_resources", None
             )
             if callable(cleanup):
-                cleanup_result = cleanup()
+                cleanup_result = cleanup(callbacks=self._deployment_cleanup_callbacks)
                 if inspect.isawaitable(cleanup_result):
                     await cleanup_result
         if self.completion_stream is not None:
@@ -1809,7 +1813,11 @@ class CustomStreamWrapper:
         if self.logging_loop is not None:
             future = asyncio.run_coroutine_threadsafe(
                 self.logging_obj.async_success_handler(
-                    processed_chunk, None, None, cache_hit
+                    processed_chunk,
+                    None,
+                    None,
+                    cache_hit,
+                    deployment_cleanup_callbacks=self._deployment_cleanup_callbacks,
                 ),
                 loop=self.logging_loop,
             )
@@ -1817,7 +1825,11 @@ class CustomStreamWrapper:
         else:
             asyncio.run(
                 self.logging_obj.async_success_handler(
-                    processed_chunk, None, None, cache_hit
+                    processed_chunk,
+                    None,
+                    None,
+                    cache_hit,
+                    deployment_cleanup_callbacks=self._deployment_cleanup_callbacks,
                 )
             )
         ## SYNC LOGGING
@@ -2218,6 +2230,7 @@ class CustomStreamWrapper:
                             cache_hit=cache_hit,
                             start_time=None,
                             end_time=None,
+                            deployment_cleanup_callbacks=self._deployment_cleanup_callbacks,
                         )
                     )
 
@@ -2248,7 +2261,11 @@ class CustomStreamWrapper:
                 ).start()  # log response
                 # Handle any exceptions that might occur during streaming
                 asyncio.create_task(
-                    self.logging_obj.async_failure_handler(e, traceback_exception)
+                    self.logging_obj.async_failure_handler(
+                        e,
+                        traceback_exception,
+                        deployment_cleanup_callbacks=self._deployment_cleanup_callbacks,
+                    )
                 )
             raise e
         except Exception as e:
@@ -2261,7 +2278,11 @@ class CustomStreamWrapper:
                 ).start()  # log response
                 # Handle any exceptions that might occur during streaming
                 asyncio.create_task(
-                    self.logging_obj.async_failure_handler(e, traceback_exception)  # type: ignore
+                    self.logging_obj.async_failure_handler(
+                        e,
+                        traceback_exception,
+                        deployment_cleanup_callbacks=self._deployment_cleanup_callbacks,
+                    )
                 )
             self._handle_stream_fallback_error(e)
 

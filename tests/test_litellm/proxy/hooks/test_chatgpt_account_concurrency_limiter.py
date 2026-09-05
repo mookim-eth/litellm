@@ -2,15 +2,24 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import httpx
 import pytest
 
 import litellm
 from litellm import Router
+from litellm.exceptions import MidStreamFallbackError
 from litellm.litellm_core_utils.litellm_logging import Logging
+from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
 from litellm.proxy.hooks.chatgpt_account_concurrency_limiter import (
     ChatGPTAccountConcurrencyLimiter,
+)
+from litellm.responses.streaming_iterator import (
+    ResponsesAPIStreamingIterator,
+    SyncResponsesAPIStreamingIterator,
 )
 
 
@@ -268,6 +277,172 @@ async def test_should_run_deployment_cleanup_only_once() -> None:
     )
 
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_should_scope_cleanup_to_the_streaming_attempt() -> None:
+    logging_obj = _logging_obj()
+    released = []
+
+    async def release_first() -> None:
+        released.append("first")
+
+    async def release_second() -> None:
+        released.append("second")
+
+    logging_obj.add_async_deployment_cleanup_callback(release_first)
+    logging_obj.add_async_deployment_cleanup_callback(release_second)
+
+    await logging_obj.async_failure_handler(
+        RuntimeError("attempt failed"),
+        "traceback",
+        deployment_cleanup_callbacks=[release_first],
+    )
+
+    assert released == ["first"]
+    # Closing/logging the same attempt again must not invoke its callback twice.
+    await asyncio.gather(
+        logging_obj.async_cleanup_deployment_resources(callbacks=[release_first]),
+        logging_obj.async_cleanup_deployment_resources(callbacks=[release_first]),
+    )
+    assert released == ["first"]
+    await logging_obj.async_cleanup_deployment_resources()
+    assert released == ["first", "second"]
+
+
+def _attempt_stream(logging_obj: Logging, stream_kind: str):
+    if stream_kind.startswith("responses"):
+        iterator = (
+            SyncResponsesAPIStreamingIterator
+            if stream_kind == "responses_sync"
+            else ResponsesAPIStreamingIterator
+        )
+        return iterator(
+            response=httpx.Response(200),
+            model="chatgpt/gpt-5.4",
+            responses_api_provider_config=MagicMock(),
+            logging_obj=logging_obj,
+        )
+    return CustomStreamWrapper(
+        completion_stream=iter([]),
+        model="chatgpt/gpt-5.4",
+        custom_llm_provider="chatgpt",
+        logging_obj=logging_obj,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream_kind", ["responses", "responses_sync", "chat"])
+@pytest.mark.parametrize("next_account", ["account-a", "account-b"])
+@pytest.mark.parametrize("outcome", ["failure", "success", "timeout"])
+async def test_should_keep_next_attempt_lease_during_delayed_stream_logging(  # noqa: PLR0915
+    tmp_path: Path,
+    configured_limits: None,
+    stream_kind: str,
+    next_account: str,
+    outcome: str,
+) -> None:
+    """Replay old logging after fallback/retry has acquired its local lease."""
+    auth_file = tmp_path / "first.json"
+    next_auth_file = tmp_path / "next.json"
+    _write_auth_file(auth_file, "account-a", "pro")
+    _write_auth_file(next_auth_file, next_account, "pro")
+    limiter = ChatGPTAccountConcurrencyLimiter(_FakeInternalUsageCache())
+    logging_obj = _logging_obj()
+    # Cleanup must still execute when logging's other callbacks are deduplicated.
+    logging_obj.has_run_logging(event_type="async_success")
+    logging_obj.has_run_logging(event_type="async_failure")
+    logging_obj.handle_sync_failure_callbacks_for_async_calls = MagicMock()
+    logging_obj.handle_sync_success_callbacks_for_async_calls = MagicMock()
+    logging_obj.failure_handler = MagicMock()
+    logging_obj.success_handler = MagicMock()
+    kwargs = {
+        "model": "chatgpt/gpt-5.4",
+        "chatgpt_auth_file_path": str(auth_file),
+        "litellm_logging_obj": logging_obj,
+    }
+    await limiter.async_pre_call_deployment_hook(kwargs, None)
+    first_stream = _attempt_stream(logging_obj, stream_kind)
+    queued = []
+    error = (
+        httpx.ReadTimeout("no first event")
+        if outcome == "timeout"
+        else litellm.RateLimitError(
+            message="server_is_overloaded", llm_provider="chatgpt", model="gpt-5.4"
+        )
+    )
+
+    if stream_kind.startswith("responses"):
+        with patch(
+            "litellm.responses.streaming_iterator.GLOBAL_LOGGING_WORKER.ensure_initialized_and_enqueue",
+            side_effect=lambda async_coroutine: queued.append(async_coroutine),
+        ), patch(
+            "litellm.responses.streaming_iterator.run_async_function",
+            side_effect=lambda async_function, **kw: queued.append(async_function(**kw)),
+        ):
+            if outcome == "success":
+                first_stream._handle_logging_completed_response()
+            else:
+                first_stream._handle_failure(error)
+    else:
+        async def failed_stream():
+            raise error
+            yield  # pragma: no cover
+
+        if outcome == "success":
+            first_stream.sent_last_chunk = True
+        else:
+            first_stream.completion_stream = failed_stream()
+        with patch(
+            "litellm.litellm_core_utils.streaming_handler.asyncio.create_task",
+            side_effect=queued.append,
+        ):
+            expected = (
+                StopAsyncIteration if outcome == "success"
+                else httpx.ReadTimeout if outcome == "timeout"
+                else MidStreamFallbackError
+            )
+            with pytest.raises(expected):
+                await first_stream.__anext__()
+
+    assert len(queued) == 1
+    await first_stream.aclose()
+    assert (await limiter.get_concurrency_snapshot())["total_active"] == 0
+
+    # Router uses the same Logging instance for the new account/attempt.
+    kwargs["chatgpt_auth_file_path"] = str(next_auth_file)
+    await limiter.async_pre_call_deployment_hook(kwargs, None)
+    next_stream = _attempt_stream(logging_obj, stream_kind)
+    before = await limiter.get_concurrency_snapshot()
+    assert before["storage"] == "local"
+    assert before["total_active"] == 1
+    try:
+        await queued[0]
+        await first_stream.aclose()
+        assert await limiter.get_concurrency_snapshot() == before
+        # Old cleanup must not clear same-account dedup state, either.
+        await limiter.async_pre_call_deployment_hook(kwargs, None)
+        assert await limiter.get_concurrency_snapshot() == before
+    finally:
+        await next_stream.aclose()
+    assert (await limiter.get_concurrency_snapshot())["total_active"] == 0
+    assert not logging_obj._async_deployment_cleanup_callbacks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream_kind", ["responses", "chat"])
+async def test_should_not_clean_future_lease_from_stream_without_lease(
+    stream_kind: str,
+) -> None:
+    logging_obj = _logging_obj()
+    first_stream = _attempt_stream(logging_obj, stream_kind)
+    released = MagicMock()
+    logging_obj.add_async_deployment_cleanup_callback(released)
+    next_stream = _attempt_stream(logging_obj, stream_kind)
+    await first_stream.aclose()
+    released.assert_not_called()
+    await next_stream.aclose()
+    released.assert_called_once_with()
 
 
 @pytest.mark.asyncio
