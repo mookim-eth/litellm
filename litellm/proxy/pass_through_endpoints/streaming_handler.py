@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from datetime import datetime
 from typing import List, Optional
 
@@ -34,13 +35,10 @@ class PassThroughStreamingHandler:
         update_completion_start_time = getattr(
             litellm_logging_obj, "_update_completion_start_time", None
         )
-        if (
-            getattr(litellm_logging_obj, "completion_start_time", None) is None
-            and callable(update_completion_start_time)
-        ):
-            update_completion_start_time(
-                completion_start_time=datetime.now()
-            )
+        if getattr(
+            litellm_logging_obj, "completion_start_time", None
+        ) is None and callable(update_completion_start_time):
+            update_completion_start_time(completion_start_time=datetime.now())
 
     @staticmethod
     async def chunk_processor(
@@ -71,18 +69,31 @@ class PassThroughStreamingHandler:
 
             async for chunk in response.aiter_bytes():
                 raw_bytes.append(chunk)
-                if stamp_first_content_only:
+                if (
+                    stamp_first_content_only
+                    and litellm_logging_obj.completion_start_time is None
+                ):
                     sse_buffer += chunk
-                    # Anthropic SSE events are separated by a blank line.
-                    while b"\n\n" in sse_buffer or b"\r\n\r\n" in sse_buffer:
-                        separator = b"\r\n\r\n" if b"\r\n\r\n" in sse_buffer else b"\n\n"
-                        event, sse_buffer = sse_buffer.split(separator, 1)
-                        if PassThroughStreamingHandler._anthropic_event_has_content(event):
-                            PassThroughStreamingHandler._stamp_first_chunk_if_needed(litellm_logging_obj)
-                            stamp_first_content_only = False
+                    # Observe complete SSE events without buffering delivery to
+                    # the client. Network chunks may split UTF-8 or separators,
+                    # or contain multiple events with different line endings.
+                    while (
+                        boundary := re.search(rb"\r\n\r\n|\n\n|\r\r", sse_buffer)
+                    ) is not None:
+                        event = sse_buffer[: boundary.start()]
+                        sse_buffer = sse_buffer[boundary.end() :]
+                        if PassThroughStreamingHandler._anthropic_event_has_content(
+                            event
+                        ):
+                            PassThroughStreamingHandler._stamp_first_chunk_if_needed(
+                                litellm_logging_obj
+                            )
+                            sse_buffer = b""
                             break
-                else:
-                    PassThroughStreamingHandler._stamp_first_chunk_if_needed(litellm_logging_obj)
+                elif not stamp_first_content_only:
+                    PassThroughStreamingHandler._stamp_first_chunk_if_needed(
+                        litellm_logging_obj
+                    )
                 if (
                     getattr(litellm, "include_cost_in_streaming_usage", False)
                     and model_name
@@ -126,23 +137,29 @@ class PassThroughStreamingHandler:
     @staticmethod
     def _anthropic_event_has_content(event: bytes) -> bool:
         """Return whether an Anthropic SSE event contains generated content."""
-        data_lines = [line[5:].lstrip() for line in event.splitlines() if line.startswith(b"data:")]
+        data_lines = [
+            line[5:].lstrip()
+            for line in event.splitlines()
+            if line.startswith(b"data:")
+        ]
         if not data_lines:
-            # Preserve behavior for non-SSE/raw streams.
-            return bool(event.strip()) and b"event:" not in event
+            return False
         try:
             payload = json.loads(b"\n".join(data_lines))
         except (TypeError, ValueError):
             return False
         event_type = payload.get("type") if isinstance(payload, dict) else None
-        if event_type in {"content_block_delta", "content_block_start"}:
-            return True
-        if event_type == "message_delta":
-            delta = payload.get("delta")
-            return isinstance(delta, dict) and any(
-                key in delta for key in ("text", "thinking", "stop_reason")
-            )
-        return False
+        if event_type == "content_block_delta":
+            content = payload.get("delta")
+            fields = ("text", "thinking", "partial_json")
+        elif event_type == "content_block_start":
+            content = payload.get("content_block")
+            fields = ("text", "thinking", "input", "data")
+        else:
+            return False
+        # Empty block starts, signatures, usage, stop reasons and pings are not
+        # tokens. Providers may put initial content directly on a block start.
+        return isinstance(content, dict) and any(content.get(key) for key in fields)
 
     @staticmethod
     async def _route_streaming_logging_to_handler(

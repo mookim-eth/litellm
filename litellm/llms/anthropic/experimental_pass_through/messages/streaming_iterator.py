@@ -29,7 +29,7 @@ class BaseAnthropicMessagesStreamingIterator:
         # The logging object is created before the HTTP request is made.  Keep
         # that timestamp so connection and upstream waiting time are included
         # in TTFT; creating a new timestamp here would under-report it.
-        self.start_time = getattr(litellm_logging_obj, "start_time", None) or datetime.now()
+        self.start_time = litellm_logging_obj.start_time
 
     async def _handle_streaming_logging(self, collected_chunks: List[bytes]):
         """Handle the logging after all chunks have been collected."""
