@@ -262,6 +262,41 @@ class TestModelManagementAuthChecks:
             )
         assert "403" in str(exc_info.value)
 
+    def test_can_user_attach_credential_requires_proxy_admin(self):
+        with pytest.raises(Exception) as exc_info:
+            ModelManagementAuthChecks.can_user_attach_credential(
+                litellm_params=LiteLLM_Params(
+                    model="test_model", litellm_credential_name="credential-a"
+                ),
+                user_api_key_dict=self.team_admin_user,
+            )
+        assert exc_info.value.code == "403"
+
+    def test_can_user_attach_credential_allows_unchanged_credential(self):
+        assert (
+            ModelManagementAuthChecks.can_user_attach_credential(
+                litellm_params=LiteLLM_Params(
+                    model="test_model", litellm_credential_name="credential-a"
+                ),
+                user_api_key_dict=self.team_admin_user,
+                existing_litellm_params=LiteLLM_Params(
+                    model="test_model", litellm_credential_name="credential-a"
+                ),
+            )
+            is True
+        )
+
+    def test_can_user_attach_credential_allows_proxy_admin(self):
+        assert (
+            ModelManagementAuthChecks.can_user_attach_credential(
+                litellm_params=LiteLLM_Params(
+                    model="test_model", litellm_credential_name="credential-a"
+                ),
+                user_api_key_dict=self.admin_user,
+            )
+            is True
+        )
+
 
 class MockModelTable:
     def __init__(self, model_aliases: Dict[str, str], include: Optional[dict] = None):
