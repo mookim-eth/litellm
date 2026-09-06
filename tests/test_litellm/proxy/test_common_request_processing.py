@@ -18,6 +18,7 @@ from litellm.proxy.common_request_processing import (
     _extract_error_from_sse_chunk,
     _get_cost_breakdown_from_logging_obj,
     _has_attribute_error_in_chain,
+    _is_expected_astra_team_denial,
     _is_expected_max_parallel_requests_limit,
     _is_azure_model_router_request,
     _override_openai_response_model,
@@ -2323,6 +2324,65 @@ class TestExpectedRateLimitLogging:
         exc = HTTPException(status_code=429, detail="provider quota exceeded")
 
         assert _is_expected_max_parallel_requests_limit(exc) is False
+
+
+class TestExpectedAstraTeamDenialLogging:
+    def test_should_recognize_astra_team_access_denial(self):
+        exc = HTTPException(
+            status_code=403,
+            detail=(
+                "Astra requires the authenticated user or API key to belong to "
+                "astra_team."
+            ),
+        )
+
+        assert _is_expected_astra_team_denial(exc) is True
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            HTTPException(status_code=401, detail="Astra requires astra_team."),
+            HTTPException(status_code=403, detail="another authorization failure"),
+            ValueError(
+                "Astra requires the authenticated user or API key to belong to "
+                "astra_team."
+            ),
+        ],
+    )
+    def test_should_not_suppress_unrelated_authorization_errors(self, exc):
+        assert _is_expected_astra_team_denial(exc) is False
+
+
+@pytest.mark.asyncio
+async def test_should_log_astra_team_denial_without_traceback(caplog):
+    processor = ProxyBaseLLMRequestProcessing(
+        data={"litellm_call_id": "request-astra-denied", "model": "gpt-6-astra"}
+    )
+    proxy_logging_obj = MagicMock()
+    proxy_logging_obj.post_call_failure_hook = AsyncMock(return_value=None)
+    proxy_logging_obj.post_call_response_headers_hook = AsyncMock(return_value={})
+    error = HTTPException(
+        status_code=403,
+        detail=(
+            "Astra requires the authenticated user or API key to belong to "
+            "astra_team."
+        ),
+    )
+
+    with caplog.at_level("WARNING", logger="LiteLLM Proxy"):
+        with pytest.raises(Exception):
+            await processor._handle_llm_api_exception(
+                e=error,
+                user_api_key_dict=ProxyUserAPIKeyAuth(api_key="sk-test"),
+                proxy_logging_obj=proxy_logging_obj,
+            )
+
+    assert any(
+        "expected Astra team access denial" in record.message
+        and "request_id=request-astra-denied" in record.message
+        for record in caplog.records
+    )
+    assert not any(record.exc_info for record in caplog.records)
 
 
 @pytest.mark.asyncio

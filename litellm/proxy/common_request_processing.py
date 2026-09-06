@@ -508,6 +508,18 @@ def _is_expected_max_parallel_requests_limit(e: Exception) -> bool:
     )
 
 
+def _is_expected_astra_team_denial(e: Exception) -> bool:
+    """Recognize the deliberate 403 emitted by the Astra access hook."""
+    if not isinstance(e, HTTPException) or getattr(e, "status_code", None) != 403:
+        return False
+    detail = getattr(e, "detail", None)
+    return (
+        isinstance(detail, str)
+        and detail.strip().lower()
+        == "astra requires the authenticated user or api key to belong to astra_team."
+    )
+
+
 def _get_incomplete_response_event(error: Exception) -> Optional[dict]:
     response = getattr(error, "response", None)
     body_text = getattr(response, "text", "") if response is not None else ""
@@ -605,6 +617,14 @@ def _log_expected_llm_api_exception(error: Exception, request_data: dict) -> boo
             "litellm.proxy.proxy_server._handle_llm_api_exception(): "
             "expected max_parallel_requests rate limit - %s",
             str(error),
+        )
+        return True
+    if _is_expected_astra_team_denial(error):
+        verbose_proxy_logger.warning(
+            "litellm.proxy.proxy_server._handle_llm_api_exception(): "
+            "expected Astra team access denial - request_id=%s model=%s",
+            request_data.get("litellm_call_id"),
+            request_data.get("model"),
         )
         return True
     return False
