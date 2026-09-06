@@ -4,6 +4,7 @@ Tests for the LoggingWorker class to ensure graceful shutdown handling.
 
 import asyncio
 import contextvars
+import inspect
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -360,3 +361,22 @@ class TestLoggingWorker:
         assert worker2._bound_loop is not None
 
         await worker2.stop()
+
+    @pytest.mark.asyncio
+    async def test_event_loop_change_closes_pending_coroutines(self):
+        """Pending logging coroutines are closed when their event loop is gone."""
+        worker = LoggingWorker(timeout=1.0, max_queue_size=10)
+        worker._ensure_queue()
+
+        async def pending_log():
+            pass
+
+        coroutine = pending_log()
+        worker.enqueue(coroutine)
+        worker._bound_loop = None
+
+        worker._ensure_queue()
+
+        assert inspect.getcoroutinestate(coroutine) == inspect.CORO_CLOSED
+        assert worker._queue is not None
+        assert worker._queue.empty()

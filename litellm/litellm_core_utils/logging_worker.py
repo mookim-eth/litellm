@@ -71,6 +71,10 @@ class LoggingWorker:
             verbose_logger.debug(
                 "LoggingWorker: Event loop changed, reinitializing queue and worker"
             )
+            # Pending coroutine objects cannot run on the old loop once it has
+            # gone away. Close them before dropping the queue so Python does not
+            # report them as never awaited.
+            self._close_queued_coroutines()
             # Clear old state - these are bound to the old loop
             self._queue = None
             self._sem = None
@@ -80,6 +84,21 @@ class LoggingWorker:
         if self._queue is None:
             self._queue = asyncio.Queue(maxsize=self.max_queue_size)
             self._bound_loop = current_loop
+
+    def _close_queued_coroutines(self) -> None:
+        """Close pending coroutines before discarding an event-loop-bound queue."""
+        if self._queue is None:
+            return
+
+        while True:
+            try:
+                task = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            try:
+                task["coroutine"].close()
+            finally:
+                self._queue.task_done()
 
     def start(self) -> None:
         """Start the logging worker. Idempotent - safe to call multiple times."""
