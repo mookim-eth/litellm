@@ -152,6 +152,33 @@ class TestBaseResponsesAPIStreamingIterator:
     def test_effective_output_matches_router_commit_events(self, event, expected):
         assert BaseResponsesAPIStreamingIterator.is_effective_output(event) is expected
 
+    @pytest.mark.parametrize("event_type", ["response.output_item.added", "response.output_item.done"])
+    @pytest.mark.parametrize("as_object", [False, True])
+    @pytest.mark.parametrize("item_type", ["reasoning", "message"])
+    @pytest.mark.parametrize("encrypted_content", [None, "", "opaque", 123])
+    def test_encrypted_reasoning_is_effective_output(
+        self, event_type, as_object, item_type, encrypted_content
+    ):
+        item = {"type": item_type, "summary": [], "encrypted_content": encrypted_content}
+        event = {"type": event_type, "item": item}
+        if as_object:
+            event = SimpleNamespace(type=event_type, item=SimpleNamespace(**item))
+        expected = item_type == "reasoning" and encrypted_content == "opaque"
+        assert BaseResponsesAPIStreamingIterator.is_effective_output(event) is expected
+
+    def test_encrypted_reasoning_stamps_completion_start_time(self):
+        from litellm.responses.streaming_iterator import MockResponsesAPIStreamingIterator
+
+        logging_obj = Mock(spec=LiteLLMLoggingObj)
+        logging_obj.completion_start_time = None
+        iterator = object.__new__(MockResponsesAPIStreamingIterator)
+        iterator.logging_obj = logging_obj
+        iterator._record_effective_output_time({
+            "type": "response.output_item.done",
+            "item": {"type": "reasoning", "summary": [], "encrypted_content": "opaque"},
+        })
+        logging_obj._update_completion_start_time.assert_called_once()
+
     def test_mock_iterator_stamps_first_effective_output(self):
         from litellm.responses.streaming_iterator import (
             MockResponsesAPIStreamingIterator,

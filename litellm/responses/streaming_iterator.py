@@ -248,6 +248,13 @@ class BaseResponsesAPIStreamingIterator:
         if field(output_item, "arguments") or field(output_item, "input"):
             return True
         if output_item is not None:
+            encrypted_content = field(output_item, "encrypted_content")
+            if (
+                field(output_item, "type") == "reasoning"
+                and isinstance(encrypted_content, str)
+                and encrypted_content
+            ):
+                return True
             if (
                 event_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE
                 and field(output_item, "type") == "function_call"

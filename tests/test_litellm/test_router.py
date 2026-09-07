@@ -1058,7 +1058,7 @@ async def test_responses_stream_overload_before_output_uses_fallback():
             ),
             SimpleNamespace(
                 type="response.output_item.done",
-                item={"type": "reasoning", "summary": [], "encrypted_content": "opaque"},
+                item={"type": "reasoning", "summary": [], "encrypted_content": ""},
             ),
             SimpleNamespace(
                 type="response.content_part.added",
@@ -1191,7 +1191,7 @@ async def test_responses_stream_midstream_fallback_error_before_output_uses_fall
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "committing_event", ["response.output_text.delta", "response.output_item.done"]
+    "committing_event", ["response.output_text.delta", "response.output_item.done", "response.output_item.added"]
 )
 async def test_responses_stream_overload_after_output_does_not_fallback(
     caplog, committing_event
@@ -1215,7 +1215,11 @@ async def test_responses_stream_overload_after_output_does_not_fallback(
                 if committing_event == "response.output_text.delta"
                 else SimpleNamespace(
                     type=committing_event,
-                    item={"type": "message", "content": [{"text": "partial"}]},
+                    item=(
+                        {"type": "reasoning", "summary": [], "encrypted_content": "opaque"}
+                        if committing_event == "response.output_item.added"
+                        else {"type": "message", "content": [{"text": "partial"}]}
+                    ),
                 )
             ),
         ],
@@ -1560,6 +1564,14 @@ async def test_responses_status_events_do_not_reset_effective_output_deadline():
         {"type": "response.reasoning_summary_text.delta", "delta": "thinking"},
         {"type": "response.function_call_arguments.delta", "delta": "{"},
         {"type": "response.refusal.done", "refusal": "no"},
+        {
+            "type": "response.output_item.added",
+            "item": {"type": "reasoning", "summary": [], "encrypted_content": "opaque"},
+        },
+        {
+            "type": "response.output_item.done",
+            "item": {"type": "reasoning", "summary": [], "encrypted_content": "opaque"},
+        },
         {
             "type": "response.output_item.done",
             "item": {"type": "function_call", "name": "run", "arguments": ""},
