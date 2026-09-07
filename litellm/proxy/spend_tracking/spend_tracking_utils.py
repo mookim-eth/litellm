@@ -14,6 +14,8 @@ from litellm._logging import verbose_proxy_logger
 from litellm.constants import (
     LITELLM_TRUNCATED_PAYLOAD_FIELD,
     LITELLM_TRUNCATION_DB_SAFEGUARD_NOTE,
+    ROUTER_ALL_ATTEMPTS_PROVIDER_CONCURRENCY_LIMITED_METADATA_KEY,
+    RouterProviderConcurrencyAttemptState,
 )
 from litellm.constants import (
     MAX_STRING_LENGTH_PROMPT_IN_DB as DEFAULT_MAX_STRING_LENGTH_PROMPT_IN_DB,
@@ -149,6 +151,16 @@ def _get_spend_logs_metadata(
     clean_metadata["cold_storage_object_key"] = cold_storage_object_key
     clean_metadata["litellm_overhead_time_ms"] = litellm_overhead_time_ms
     clean_metadata["cost_breakdown"] = cost_breakdown
+    attempt_state = metadata.get(
+        ROUTER_ALL_ATTEMPTS_PROVIDER_CONCURRENCY_LIMITED_METADATA_KEY
+    )
+    if (
+        isinstance(attempt_state, RouterProviderConcurrencyAttemptState)
+        and attempt_state.all_attempts_locally_rejected is True
+    ):
+        # No provider request was sent: this is a local ChatGPT subscription
+        # concurrency rejection, not a retried upstream inference request.
+        clean_metadata["attempted_retries"] = -1
 
     return clean_metadata
 

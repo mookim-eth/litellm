@@ -58,6 +58,8 @@ from litellm.constants import (
     DEFAULT_HEALTH_CHECK_INTERVAL,
     DEFAULT_HEALTH_CHECK_STALENESS_MULTIPLIER,
     DEFAULT_MAX_LRU_CACHE_SIZE,
+    ROUTER_ALL_ATTEMPTS_PROVIDER_CONCURRENCY_LIMITED_METADATA_KEY,
+    RouterProviderConcurrencyAttemptState,
 )
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.asyncify import run_async_function
@@ -5997,12 +5999,23 @@ class Router:
         _metadata["max_retries"] = (
             num_retries  # Updated after overrides in exception handler
         )
+        attempt_state = _metadata.get(
+            ROUTER_ALL_ATTEMPTS_PROVIDER_CONCURRENCY_LIMITED_METADATA_KEY
+        )
+        # This state is proxy-owned. Replace a request-supplied value rather
+        # than trusting it to label a request as locally rejected.
+        if not isinstance(attempt_state, RouterProviderConcurrencyAttemptState):
+            attempt_state = RouterProviderConcurrencyAttemptState()
+            _metadata[ROUTER_ALL_ATTEMPTS_PROVIDER_CONCURRENCY_LIMITED_METADATA_KEY] = (
+                attempt_state
+            )
         try:
             self._handle_mock_testing_rate_limit_error(
                 model_group=model_group, kwargs=kwargs
             )
             # if the function call is successful, no exception will be raised and we'll break out of the loop
             response = await self.make_call(original_function, *args, **kwargs)
+            self._mark_provider_attempt_reached_upstream(attempt_state)
             response = add_retry_headers_to_response(
                 response=response, attempted_retries=0, max_retries=None
             )
@@ -6010,6 +6023,7 @@ class Router:
         except Exception as e:
             current_attempt = None
             original_exception = e
+            self._record_provider_account_concurrency_limit_state(attempt_state, e)
             self._raise_on_chatgpt_upstream_rate_limit(e, kwargs, model_group)
             deployment_num_retries = getattr(e, "num_retries", None)
 
@@ -6100,6 +6114,7 @@ class Router:
                     _metadata["max_retries"] = num_retries
                     # if the function call is successful, no exception will be raised and we'll break out of the loop
                     response = await self.make_call(original_function, *args, **kwargs)
+                    self._mark_provider_attempt_reached_upstream(attempt_state)
                     if coroutine_checker.is_async_callable(
                         response
                     ):  # async errors are often returned as coroutines
@@ -6116,6 +6131,9 @@ class Router:
                     # Always track the latest error so we raise the most
                     # recent exception instead of the first one.
                     original_exception = e
+                    self._record_provider_account_concurrency_limit_state(
+                        attempt_state, e
+                    )
                     self._raise_on_chatgpt_upstream_rate_limit(e, kwargs, model_group)
 
                     ## LOGGING
@@ -6181,6 +6199,27 @@ class Router:
                 setattr(original_exception, "num_retries", actual_retries_attempted)
 
             raise original_exception
+
+    @staticmethod
+    def _record_provider_account_concurrency_limit_state(
+        attempt_state: RouterProviderConcurrencyAttemptState, error: Exception
+    ) -> None:
+        """Track whether every attempt was stopped before an upstream call."""
+        locally_rejected = bool(
+            getattr(error, "is_provider_account_concurrency_limit", False)
+        )
+        prior_state = attempt_state.all_attempts_locally_rejected
+        if prior_state is None:
+            attempt_state.all_attempts_locally_rejected = locally_rejected
+        elif prior_state is True and not locally_rejected:
+            attempt_state.all_attempts_locally_rejected = False
+
+    @staticmethod
+    def _mark_provider_attempt_reached_upstream(
+        attempt_state: RouterProviderConcurrencyAttemptState,
+    ) -> None:
+        """A completed provider call means this was not solely local rejection."""
+        attempt_state.all_attempts_locally_rejected = False
 
     @staticmethod
     def _raise_on_chatgpt_upstream_rate_limit(

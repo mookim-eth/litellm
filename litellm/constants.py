@@ -1,7 +1,7 @@
 import math
 import os
 import sys
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 from litellm.litellm_core_utils.env_utils import get_env_int
 
@@ -29,6 +29,20 @@ AZURE_DEFAULT_RESPONSES_API_VERSION = str(
     os.getenv("AZURE_DEFAULT_RESPONSES_API_VERSION", "preview")
 )
 ROUTER_MAX_FALLBACKS = int(os.getenv("ROUTER_MAX_FALLBACKS", 5))
+
+
+class RouterProviderConcurrencyAttemptState:
+    """Server-owned state for subscription concurrency rejections in one request."""
+
+    def __init__(self) -> None:
+        self.all_attempts_locally_rejected: Optional[bool] = None
+
+
+# Server-owned Router state. It intentionally stores an instance rather than a
+# request-controlled boolean, so callers cannot forge retries=-1 in SpendLogs.
+ROUTER_ALL_ATTEMPTS_PROVIDER_CONCURRENCY_LIMITED_METADATA_KEY = (
+    "_litellm_all_router_attempts_provider_account_concurrency_limited"
+)
 DEFAULT_BATCH_SIZE = int(os.getenv("DEFAULT_BATCH_SIZE", 512))
 DEFAULT_FLUSH_INTERVAL_SECONDS = int(os.getenv("DEFAULT_FLUSH_INTERVAL_SECONDS", 5))
 DEFAULT_S3_FLUSH_INTERVAL_SECONDS = int(

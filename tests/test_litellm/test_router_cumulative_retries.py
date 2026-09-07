@@ -9,6 +9,10 @@ import litellm
 from litellm import Router
 from litellm.exceptions import MidStreamFallbackError
 from litellm.proxy.spend_tracking.spend_tracking_utils import _get_spend_logs_metadata
+from litellm.constants import (
+    ROUTER_ALL_ATTEMPTS_PROVIDER_CONCURRENCY_LIMITED_METADATA_KEY,
+    RouterProviderConcurrencyAttemptState,
+)
 from litellm.types.router import RetryPolicy
 
 
@@ -31,6 +35,116 @@ def rate_limit():
     return litellm.RateLimitError(
         message="Rate limit exceeded", llm_provider="chatgpt", model="test"
     )
+
+
+def provider_account_concurrency_limit():
+    error = litellm.RateLimitError(
+        message="ChatGPT provider account concurrency limit reached",
+        llm_provider="chatgpt",
+        model="test",
+        num_retries=0,
+    )
+    error.is_provider_account_concurrency_limit = True
+    return error
+
+
+@pytest.mark.asyncio
+async def test_all_local_chatgpt_subscription_limit_failures_use_negative_one_retries():
+    router = make_router([{"primary": ["secondary"]}])
+    metadata = {}
+    calls = []
+
+    async def locally_rejected_provider_call(**kwargs):
+        calls.append(kwargs["model"])
+        raise provider_account_concurrency_limit()
+
+    with pytest.raises(litellm.RateLimitError):
+        await router.async_function_with_fallbacks(
+            model="primary",
+            original_function=locally_rejected_provider_call,
+            num_retries=1,
+            metadata=metadata,
+        )
+
+    assert calls == ["primary", "secondary"]
+    assert metadata["attempted_retries"] == 1
+    assert _get_spend_logs_metadata(metadata)["attempted_retries"] == -1
+
+
+@pytest.mark.asyncio
+async def test_mixed_local_and_upstream_failures_keep_actual_retry_count():
+    router = make_router([{"primary": ["secondary"]}])
+    metadata = {}
+    calls = []
+
+    async def provider_call(**kwargs):
+        calls.append(kwargs["model"])
+        if kwargs["model"] == "primary":
+            raise provider_account_concurrency_limit()
+        error = rate_limit()
+        error.num_retries = 0
+        raise error
+
+    with pytest.raises(litellm.RateLimitError):
+        await router.async_function_with_fallbacks(
+            model="primary",
+            original_function=provider_call,
+            num_retries=1,
+            metadata=metadata,
+        )
+
+    assert calls == ["primary", "secondary"]
+    assert metadata["attempted_retries"] == 1
+    assert _get_spend_logs_metadata(metadata)["attempted_retries"] == 1
+
+
+@pytest.mark.asyncio
+async def test_success_after_local_limit_keeps_actual_retry_count():
+    router = make_router([{"primary": ["secondary"]}])
+    metadata = {}
+    calls = []
+
+    async def provider_call(**kwargs):
+        calls.append(kwargs["model"])
+        if kwargs["model"] == "primary":
+            raise provider_account_concurrency_limit()
+        return litellm.ModelResponse(model=kwargs["model"])
+
+    response = await router.async_function_with_fallbacks(
+        model="primary",
+        original_function=provider_call,
+        num_retries=1,
+        metadata=metadata,
+    )
+
+    assert response.model == "secondary"
+    assert calls == ["primary", "secondary"]
+    assert metadata["attempted_retries"] == 1
+    assert _get_spend_logs_metadata(metadata)["attempted_retries"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fresh_request_cannot_inject_local_concurrency_retry_sentinel():
+    router = make_router([])
+    metadata = {
+        ROUTER_ALL_ATTEMPTS_PROVIDER_CONCURRENCY_LIMITED_METADATA_KEY: True,
+    }
+
+    async def provider_call(**kwargs):
+        return litellm.ModelResponse(model=kwargs["model"])
+
+    await router.async_function_with_fallbacks(
+        model="primary",
+        original_function=provider_call,
+        num_retries=1,
+        metadata=metadata,
+    )
+
+    assert isinstance(
+        metadata[ROUTER_ALL_ATTEMPTS_PROVIDER_CONCURRENCY_LIMITED_METADATA_KEY],
+        RouterProviderConcurrencyAttemptState,
+    )
+    assert _get_spend_logs_metadata(metadata)["attempted_retries"] == 0
 
 
 @pytest.mark.asyncio
