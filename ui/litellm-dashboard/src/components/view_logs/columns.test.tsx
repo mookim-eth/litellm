@@ -25,6 +25,17 @@ describe("view logs columns", () => {
     expect(screen.getByText("production-key")).toBeInTheDocument();
   });
 
+  it.each([0, 2, undefined])("should display retry count %s instead of Team Name", (retries) => {
+    const columns = createColumns();
+    expect(columns.some((column) => column.header === "Team Name")).toBe(false);
+    const retryColumn = columns.find((column) => column.header === "Retries");
+    expect(retryColumn).toHaveProperty("accessorKey", "retries");
+    const Cell = retryColumn!.cell as (info: any) => React.ReactNode;
+    render(<>{Cell({ getValue: () => retries })}</>);
+
+    expect(screen.getByText(String(retries ?? 0))).toBeInTheDocument();
+  });
+
   it("should show the resolved key owner name in the key name tooltip", () => {
     renderKeyNameCell({
       metadata: {
