@@ -4149,13 +4149,19 @@ class Router:
                                         )
                                         or "",
                                     )
-                                    raise MidStreamFallbackError(
+                                    ttft_timeout_error = MidStreamFallbackError(
                                         message=str(error),
                                         model=error.model,
                                         llm_provider=error.llm_provider,
                                         original_exception=error,
                                         is_pre_first_chunk=True,
-                                    ) from timeout_error
+                                    )
+                                    setattr(
+                                        ttft_timeout_error,
+                                        "is_responses_ttft_timeout",
+                                        True,
+                                    )
+                                    raise ttft_timeout_error from timeout_error
                             else:
                                 item = await provider_iterator.__anext__()
                         except StopAsyncIteration:
@@ -5884,17 +5890,25 @@ class Router:
 
                 return response
         except Exception as new_exception:
-            parent_otel_span = _get_parent_otel_span_from_kwargs(kwargs)
-            verbose_router_logger.error(
-                "litellm.router.py::async_function_with_fallbacks() - Error occurred while trying to do fallbacks - {}\n{}\n\nDebug Information:\nCooldown Deployments={}".format(
-                    str(new_exception),
-                    traceback.format_exc(),
-                    await _async_get_cooldown_deployments_with_debug_info(
-                        litellm_router_instance=self,
-                        parent_otel_span=parent_otel_span,
-                    ),
+            if getattr(new_exception, "is_responses_ttft_timeout", False):
+                verbose_router_logger.warning(
+                    "litellm_responses_ttft_fallback_exhausted "
+                    "model_group=%s status_code=%s",
+                    original_model_group,
+                    getattr(new_exception, "status_code", None),
                 )
-            )
+            else:
+                parent_otel_span = _get_parent_otel_span_from_kwargs(kwargs)
+                verbose_router_logger.error(
+                    "litellm.router.py::async_function_with_fallbacks() - Error occurred while trying to do fallbacks - {}\n{}\n\nDebug Information:\nCooldown Deployments={}".format(
+                        str(new_exception),
+                        traceback.format_exc(),
+                        await _async_get_cooldown_deployments_with_debug_info(
+                            litellm_router_instance=self,
+                            parent_otel_span=parent_otel_span,
+                        ),
+                    )
+                )
             fallback_failure_exception_str = str(new_exception)
 
         if hasattr(original_exception, "message"):

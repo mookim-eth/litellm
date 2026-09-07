@@ -1503,6 +1503,7 @@ async def test_responses_effective_output_timeout_closes_before_fallback(
         assert isinstance(error, MidStreamFallbackError)
         assert isinstance(error.original_exception, litellm.Timeout)
         assert error.is_pre_first_chunk
+        assert getattr(error, "is_responses_ttft_timeout", False) is True
         return _TestResponsesStream([fallback_event])
 
     with caplog.at_level("WARNING"), patch.object(
@@ -2461,6 +2462,61 @@ async def test_async_function_with_fallbacks_common_utils():
             args=(),
             kwargs={},  # No model key
         )
+
+
+@pytest.mark.asyncio
+async def test_responses_ttft_fallback_exhaustion_logs_warning_without_traceback(
+    caplog,
+):
+    from litellm.exceptions import MidStreamFallbackError
+
+    router = litellm.Router(model_list=[])
+    original_error = MidStreamFallbackError(
+        message="Timed out waiting for the first effective Responses output",
+        model="primary-deployment",
+        llm_provider="chatgpt",
+        is_pre_first_chunk=True,
+    )
+    original_error.is_responses_ttft_timeout = True
+    secret = "sensitive-fallback-api-key"
+    fallback_error = MidStreamFallbackError(
+        message=(
+            "Timed out waiting for the first effective Responses output " + secret
+        ),
+        model="fallback-deployment",
+        llm_provider="chatgpt",
+        is_pre_first_chunk=True,
+    )
+    fallback_error.is_responses_ttft_timeout = True
+
+    with caplog.at_level("WARNING", logger="LiteLLM Router"), patch(
+        "litellm.router.run_async_fallback",
+        new=AsyncMock(side_effect=fallback_error),
+    ):
+        with pytest.raises(MidStreamFallbackError) as exc_info:
+            await router.async_function_with_fallbacks_common_utils(
+                e=original_error,
+                disable_fallbacks=False,
+                fallbacks=[{"primary": [{"model": "fallback", "api_key": secret}]}],
+                context_window_fallbacks=None,
+                content_policy_fallbacks=None,
+                model_group="primary",
+                args=(),
+                kwargs={"model": "primary"},
+            )
+
+    assert exc_info.value is original_error
+    records = [
+        record
+        for record in caplog.records
+        if "litellm_responses_ttft_fallback_exhausted" in record.message
+    ]
+    assert len(records) == 1
+    assert records[0].levelname == "WARNING"
+    assert records[0].exc_info is None
+    assert "Traceback" not in caplog.text
+    assert secret not in caplog.text
+    assert not any(record.levelname == "ERROR" for record in caplog.records)
 
 
 @pytest.mark.asyncio

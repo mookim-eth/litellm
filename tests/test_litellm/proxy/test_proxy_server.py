@@ -4726,6 +4726,65 @@ async def test_async_data_generator_cleanup_on_midstream_error():
 
 
 @pytest.mark.asyncio
+async def test_async_data_generator_logs_responses_ttft_without_traceback(caplog):
+    from litellm.exceptions import MidStreamFallbackError
+    from litellm.proxy._types import UserAPIKeyAuth
+    from litellm.proxy.proxy_server import async_data_generator
+    from litellm.proxy.utils import ProxyLogging
+
+    ttft_error = MidStreamFallbackError(
+        message="Timed out waiting for the first effective Responses output",
+        model="test-deployment",
+        llm_provider="chatgpt",
+        is_pre_first_chunk=True,
+    )
+    ttft_error.is_responses_ttft_timeout = True
+
+    async def mock_streaming_iterator_with_timeout(*args, **kwargs):
+        raise ttft_error
+        yield  # pragma: no cover
+
+    mock_proxy_logging_obj = MagicMock(spec=ProxyLogging)
+    mock_proxy_logging_obj.async_post_call_streaming_iterator_hook = (
+        mock_streaming_iterator_with_timeout
+    )
+    mock_proxy_logging_obj.post_call_failure_hook = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.aclose = AsyncMock()
+
+    with caplog.at_level("WARNING", logger="LiteLLM Proxy"), patch(
+        "litellm.proxy.proxy_server.proxy_logging_obj", mock_proxy_logging_obj
+    ):
+        chunks = [
+            chunk
+            async for chunk in async_data_generator(
+                mock_response,
+                MagicMock(spec=UserAPIKeyAuth),
+                {
+                    "model": "test-model",
+                    "stream": True,
+                    "litellm_call_id": "test-request-id",
+                },
+            )
+        ]
+
+    assert len(chunks) == 1
+    assert "Timed out waiting for the first effective Responses output" in chunks[0]
+    records = [
+        record
+        for record in caplog.records
+        if "litellm_responses_ttft_timeout" in record.message
+    ]
+    assert len(records) == 1
+    assert records[0].levelname == "WARNING"
+    assert records[0].exc_info is None
+    assert "Traceback" not in caplog.text
+    assert not any(record.levelname == "ERROR" for record in caplog.records)
+    mock_proxy_logging_obj.post_call_failure_hook.assert_awaited_once()
+    mock_response.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_async_data_generator_maps_responses_overload_to_retryable_event():
     """An exhausted Responses overload must be retryable by Codex."""
     from litellm.proxy._types import UserAPIKeyAuth

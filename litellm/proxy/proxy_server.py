@@ -6594,11 +6594,20 @@ async def async_data_generator(  # noqa: PLR0915
         done_message = "[DONE]"
         yield f"data: {done_message}\n\n"
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.async_data_generator(): Exception occured - {}".format(
-                str(e)
+        if getattr(e, "is_responses_ttft_timeout", False):
+            verbose_proxy_logger.warning(
+                "litellm_responses_ttft_timeout request_id=%s model_group=%s "
+                "status_code=%s action=return_stream_error",
+                request_data.get("litellm_call_id"),
+                request_data.get("model"),
+                getattr(e, "status_code", None),
             )
-        )
+        else:
+            verbose_proxy_logger.exception(
+                "litellm.proxy.proxy_server.async_data_generator(): Exception occured - {}".format(
+                    str(e)
+                )
+            )
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict,
             original_exception=e,
@@ -6632,8 +6641,9 @@ async def async_data_generator(  # noqa: PLR0915
             error_msg = str(e)
         else:
             # Only include the error message, not the traceback.
-            # The traceback is already logged above via verbose_proxy_logger.exception().
-            # Including it in the SSE response leaks internal details to clients.
+            # Unexpected exceptions are logged above with their traceback; the
+            # expected Responses TTFT timeout is recorded as a warning instead.
+            # Including either traceback in SSE would leak internals to clients.
             error_msg = str(e)
 
         proxy_exception = ProxyException(
