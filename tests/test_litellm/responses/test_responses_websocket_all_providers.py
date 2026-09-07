@@ -125,6 +125,45 @@ class TestResponsesAPIWebSocketSupport:
             config.supports_native_websocket() is False
         ), "Hosted vLLM should use managed websocket handler"
 
+    @pytest.mark.asyncio
+    async def test_should_use_explicit_provider_for_unprefixed_websocket_model(self):
+        """Router deployments may store an unprefixed model with an explicit provider."""
+        from litellm.responses.main import _aresponses_websocket
+
+        logging_obj = MagicMock()
+        provider_config = MagicMock()
+        with (
+            patch(
+                "litellm.responses.main.litellm.get_llm_provider",
+                return_value=("gpt-5.6-luna", "chatgpt", None, None),
+            ) as mock_get_llm_provider,
+            patch(
+                "litellm.responses.main.ProviderConfigManager.get_provider_responses_api_config",
+                return_value=provider_config,
+            ),
+            patch(
+                "litellm.responses.main.base_llm_http_handler.async_responses_websocket",
+                new_callable=AsyncMock,
+            ) as mock_websocket_handler,
+        ):
+            await _aresponses_websocket(
+                model="gpt-5.6-luna",
+                websocket=MagicMock(),
+                custom_llm_provider="chatgpt",
+                litellm_logging_obj=logging_obj,
+            )
+
+        mock_get_llm_provider.assert_called_once_with(
+            model="gpt-5.6-luna",
+            custom_llm_provider="chatgpt",
+            api_base=None,
+            api_key=None,
+        )
+        assert (
+            mock_websocket_handler.await_args.kwargs["custom_llm_provider"]
+            == "chatgpt"
+        )
+
 
 class TestManagedWebSocketHandlerIntegration:
     """Test that ManagedResponsesWebSocketHandler is properly integrated"""

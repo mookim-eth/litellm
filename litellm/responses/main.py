@@ -1974,6 +1974,7 @@ async def _aresponses_websocket(
         dynamic_api_base,
     ) = litellm.get_llm_provider(
         model=model,
+        custom_llm_provider=kwargs.get("custom_llm_provider"),
         api_base=api_base,
         api_key=api_key,
     )
