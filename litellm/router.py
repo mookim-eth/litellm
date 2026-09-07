@@ -6031,7 +6031,12 @@ class Router:
         num_retries = kwargs.pop("num_retries")
 
         ## ADD MODEL GROUP SIZE TO METADATA - used for model_group_rate_limit_error tracking
-        _metadata: dict = kwargs.get("litellm_metadata", kwargs.get("metadata")) or {}
+        metadata_key = (
+            "litellm_metadata" if "litellm_metadata" in kwargs else "metadata"
+        )
+        if kwargs.get(metadata_key) is None:
+            kwargs[metadata_key] = {}
+        _metadata: dict = kwargs[metadata_key]
         if "model_group" in _metadata and isinstance(_metadata["model_group"], str):
             model_list = self.get_model_list(model_name=_metadata["model_group"])
             if model_list is not None:
@@ -6041,7 +6046,15 @@ class Router:
             f"async function w/ retries: original_function - {original_function}, num_retries - {num_retries}"
         )
         ## ADD RETRY TRACKING TO METADATA - used for spend logs retry tracking
-        _metadata["attempted_retries"] = 0
+        # Fallbacks re-enter this function. Preserve the whole request's count
+        # and count the new fallback attempt, instead of resetting it to zero.
+        # A fresh request must not inherit a caller-supplied retry count.
+        retries_before_group = (
+            (_metadata.get("attempted_retries") or 0) + 1
+            if kwargs.get("fallback_depth", 0) > 0
+            else 0
+        )
+        _metadata["attempted_retries"] = retries_before_group
         _metadata["max_retries"] = (
             num_retries  # Updated after overrides in exception handler
         )
@@ -6142,7 +6155,9 @@ class Router:
             for current_attempt in range(num_retries):
                 try:
                     # Update retry tracking metadata before each retry attempt
-                    _metadata["attempted_retries"] = current_attempt + 1
+                    _metadata["attempted_retries"] = (
+                        retries_before_group + current_attempt + 1
+                    )
                     _metadata["max_retries"] = num_retries
                     # if the function call is successful, no exception will be raised and we'll break out of the loop
                     response = await self.make_call(original_function, *args, **kwargs)

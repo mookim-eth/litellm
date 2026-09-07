@@ -3379,8 +3379,8 @@ class SpendLogsMetadata(TypedDict):
     litellm_overhead_time_ms: Optional[float]  # LiteLLM overhead time in milliseconds
     attempted_retries: Optional[
         int
-    ]  # Number of retries attempted (0 = first attempt succeeded)
-    max_retries: Optional[int]  # Max retries configured for this request
+    ]  # Total Router retries, including fallback attempts (0 = no retry)
+    max_retries: Optional[int]  # Same-group retry limit, not the total fallback limit
     cost_breakdown: Optional[
         CostBreakdown
     ]  # Detailed cost breakdown (input_cost, output_cost, margin, discount, etc.)
