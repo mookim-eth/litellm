@@ -112,6 +112,7 @@ async def test_responses_provider_headers_timeout_stops_after_headers():
     client.post = AsyncMock(return_value=response)
     logging_obj = Mock()
     logging_obj.model_call_details = {}
+    logging_obj._async_deployment_cleanup_callbacks = []
 
     iterator = await handler.async_response_api_handler(
         model="test-model",

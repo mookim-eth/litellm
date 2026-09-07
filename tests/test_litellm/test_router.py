@@ -1057,6 +1057,10 @@ async def test_responses_stream_overload_before_output_uses_fallback():
                 sequence_number=3,
             ),
             SimpleNamespace(
+                type="response.output_item.done",
+                item={"type": "reasoning", "summary": [], "encrypted_content": "opaque"},
+            ),
+            SimpleNamespace(
                 type="response.content_part.added",
                 item_id="primary-message",
                 part=SimpleNamespace(type="output_text", text=""),
@@ -1186,7 +1190,12 @@ async def test_responses_stream_midstream_fallback_error_before_output_uses_fall
 
 
 @pytest.mark.asyncio
-async def test_responses_stream_overload_after_output_does_not_fallback(caplog):
+@pytest.mark.parametrize(
+    "committing_event", ["response.output_text.delta", "response.output_item.done"]
+)
+async def test_responses_stream_overload_after_output_does_not_fallback(
+    caplog, committing_event
+):
     from types import SimpleNamespace
 
     router = litellm.Router(model_list=[], fallbacks=[{"primary": ["fallback"]}])
@@ -1198,13 +1207,22 @@ async def test_responses_stream_overload_after_output_does_not_fallback(caplog):
     overload.is_responses_stream_overload = True
     primary = _TestResponsesStream(
         [
-            SimpleNamespace(type="response.created", response=SimpleNamespace(id="primary")),
-            SimpleNamespace(type="response.output_text.delta", delta="partial"),
+            SimpleNamespace(
+                type="response.created", response=SimpleNamespace(id="primary")
+            ),
+            (
+                SimpleNamespace(type=committing_event, delta="partial")
+                if committing_event == "response.output_text.delta"
+                else SimpleNamespace(
+                    type=committing_event,
+                    item={"type": "message", "content": [{"text": "partial"}]},
+                )
+            ),
         ],
         error=overload,
     )
 
-    with caplog.at_level("DEBUG", logger="LiteLLM Router"):
+    with caplog.at_level("WARNING", logger="LiteLLM Router"):
         with patch.object(
             router,
             "async_function_with_fallbacks_common_utils",
@@ -1221,14 +1239,102 @@ async def test_responses_stream_overload_after_output_does_not_fallback(caplog):
 
     assert [event.type for event in events] == [
         "response.created",
-        "response.output_text.delta",
+        committing_event,
     ]
     mock_fallback.assert_not_awaited()
     assert any(
-        "committed_by_event_type=response.output_text.delta" in record.message
+        f"committed_by_event_type={committing_event}" in record.message
         and "stream_committed=True" in record.message
+        and "action=skip_fallback reason=stream_already_committed" in record.message
+        and record.levelname == "WARNING"
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_kind", ["overload", "midstream", "bad_request", None])
+async def test_responses_stream_fallback_decision_logs_only_safe_fields(
+    caplog, error_kind
+):
+    from types import SimpleNamespace
+
+    from litellm.exceptions import MidStreamFallbackError
+
+    secret = "sensitive-prompt-tool-arguments-and-api-key"
+    errors = {
+        "overload": litellm.RateLimitError(
+            message=secret, model="primary", llm_provider="chatgpt"
+        ),
+        "midstream": MidStreamFallbackError(
+            message=secret, model="primary", llm_provider="chatgpt"
+        ),
+        "bad_request": litellm.BadRequestError(
+            message=secret, model="primary", llm_provider="chatgpt"
+        ),
+        None: None,
+    }
+    errors["overload"].is_responses_stream_overload = True
+    error = errors[error_kind]
+    router = litellm.Router(model_list=[])
+    primary = _TestResponsesStream(
+        [SimpleNamespace(type="response.created", payload=secret) for _ in range(25)],
+        error=error,
+    )
+    primary.logging_obj = SimpleNamespace(litellm_call_id="stream-request-id")
+    fallback = _TestResponsesStream([])
+    should_fallback = error_kind in ("overload", "midstream")
+    request_id_kwargs = {
+        "overload": {"litellm_call_id": "explicit-request-id"},
+        "midstream": {"litellm_metadata": {"litellm_call_id": "metadata-request-id"}},
+    }.get(error_kind, {})
+
+    with caplog.at_level("WARNING", logger="LiteLLM Router"), patch.object(
+        router,
+        "async_function_with_fallbacks_common_utils",
+        new=AsyncMock(return_value=fallback),
+    ) as mock_fallback:
+        stream = router._aresponses_streaming_iterator(
+            model_response=primary,
+            initial_kwargs={
+                "model": "primary",
+                "stream": True,
+                "input": secret,
+                "fallbacks": [{"model": "fallback", "api_key": secret}],
+                **request_id_kwargs,
+            },
+        )
+        if error_kind == "bad_request":
+            with pytest.raises(litellm.BadRequestError):
+                _ = [event async for event in stream]
+        else:
+            _ = [event async for event in stream]
+
+    records = [
+        r
+        for r in caplog.records
+        if "litellm_responses_stream_fallback_decision" in r.message
+    ]
+    if error is None:
+        assert records == []
+    else:
+        assert len(records) == 1
+        record = records[0]
+        assert record.levelname == "WARNING"
+        request_id = {
+            "overload": "explicit-request-id",
+            "midstream": "metadata-request-id",
+        }.get(error_kind, "stream-request-id")
+        assert f"request_id={request_id} model_group=primary" in record.message
+        assert f"error_type={type(error).__name__}" in record.message
+        assert "stream_committed=False committed_by_event_type=None" in record.message
+        assert record.message.count("response.created") == 20
+        assert secret not in record.message
+        reason = "retryable_pre_output" if should_fallback else "non_retryable_error"
+        action = "attempt_fallback" if should_fallback else "skip_fallback"
+        assert f"action={action} reason={reason}" in record.message
+        assert record.created > 0  # Timestamp is supplied by the logging formatter.
+    assert mock_fallback.await_count == int(should_fallback)
+    assert primary.closed is True
 
 
 @pytest.mark.asyncio
@@ -1326,6 +1432,295 @@ async def test_responses_stream_non_overload_error_does_not_fallback():
         "error",
     ]
     mock_fallback.assert_not_awaited()
+
+
+class _TimedResponsesStream(_TestResponsesStream):
+    def __init__(self, events, *, deadline_seconds=0.03, stall=True):
+        import time
+
+        super().__init__(events)
+        self.stall = stall
+        self.cancelled = False
+        self.request_data = {
+            "_litellm_stream_ttft_trace": {
+                "handler_start": time.monotonic(),
+                "slow_warning_duration_ms": deadline_seconds * 1000,
+                "call_id": "effective-output-test",
+                "provider_first_raw_byte": time.monotonic(),
+                "provider_first_sse_event": time.monotonic(),
+            }
+        }
+
+    async def __anext__(self):
+        import asyncio
+
+        try:
+            return await super().__anext__()
+        except StopAsyncIteration:
+            if not self.stall:
+                raise
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            raise AssertionError("The first-output deadline did not cancel the read")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_responses_effective_output_timeout_closes_before_fallback(
+    caplog, cleanup_fails
+):
+    from types import SimpleNamespace
+
+    from litellm.exceptions import MidStreamFallbackError
+
+    router = litellm.Router(model_list=[])
+    primary = _TimedResponsesStream(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.in_progress"),
+            SimpleNamespace(type="response.output_text.delta", delta=""),
+            SimpleNamespace(
+                type="response.output_item.done",
+                item={"type": "reasoning", "summary": []},
+            ),
+            SimpleNamespace(type="response.content_part.done", part={"text": ""}),
+        ]
+    )
+    if cleanup_fails:
+        primary.aclose = AsyncMock(side_effect=RuntimeError("private-cleanup-detail"))
+    fallback_event = SimpleNamespace(type="response.output_text.delta", delta="ok")
+
+    async def run_fallback(**kwargs):
+        assert primary.cancelled
+        if cleanup_fails:
+            primary.aclose.assert_awaited()
+        else:
+            assert primary.closed
+        error = kwargs["e"]
+        assert isinstance(error, MidStreamFallbackError)
+        assert isinstance(error.original_exception, litellm.Timeout)
+        assert error.is_pre_first_chunk
+        return _TestResponsesStream([fallback_event])
+
+    with caplog.at_level("WARNING"), patch.object(
+        router, "async_function_with_fallbacks_common_utils", side_effect=run_fallback
+    ) as fallback:
+        stream = router._aresponses_streaming_iterator(
+            primary, {"model": "primary", "litellm_call_id": "effective-output-test"}
+        )
+        assert [event async for event in stream] == [fallback_event]
+    fallback.assert_awaited_once()
+    assert "error_type=SlowTTFT" in caplog.text
+    assert "waiting_for=proxy_first_yield" in caplog.text
+    assert "action=attempt_fallback" in caplog.text
+    assert "private-cleanup-detail" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_responses_status_events_do_not_reset_effective_output_deadline():
+    import asyncio
+    from types import SimpleNamespace
+
+    router = litellm.Router(model_list=[])
+    primary = _TimedResponsesStream([])
+    received = 0
+
+    async def status_events():
+        nonlocal received
+        for _ in range(200):
+            await asyncio.sleep(0.002)
+            received += 1
+            yield SimpleNamespace(type="response.in_progress")
+        raise AssertionError("Status events must not reset the deadline")
+
+    # Use an async provider iterator while retaining trace and close ownership.
+    with patch.object(
+        _TimedResponsesStream, "__aiter__", return_value=status_events()
+    ), patch.object(
+        router,
+        "async_function_with_fallbacks_common_utils",
+        new=AsyncMock(return_value=_TestResponsesStream([])),
+    ) as fallback:
+        stream = router._aresponses_streaming_iterator(primary, {"model": "primary"})
+        assert [event async for event in stream] == []
+    assert 0 < received < 200
+    fallback.assert_awaited_once()
+    assert primary.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"type": "response.output_text.delta", "delta": "hello"},
+        {"type": "response.reasoning_summary_text.delta", "delta": "thinking"},
+        {"type": "response.function_call_arguments.delta", "delta": "{"},
+        {"type": "response.refusal.done", "refusal": "no"},
+        {
+            "type": "response.output_item.done",
+            "item": {"type": "function_call", "name": "run", "arguments": ""},
+        },
+        {
+            "type": "response.output_item.added",
+            "item": {"type": "message", "content": [{"text": "hello"}]},
+        },
+        {
+            "type": "response.output_item.done",
+            "item": {"type": "reasoning", "summary": [{"text": "thinking"}]},
+        },
+        {"type": "response.mcp_call.in_progress"},
+        {"type": "response.completed"},
+        {"type": "response.incomplete"},
+    ],
+)
+async def test_responses_effective_output_disables_first_output_deadline(event):
+    import asyncio
+    from types import SimpleNamespace
+
+    router = litellm.Router(model_list=[])
+    output = SimpleNamespace(**event)
+    primary = _TimedResponsesStream([output], stall=False)
+    with patch.object(
+        router, "async_function_with_fallbacks_common_utils", new=AsyncMock()
+    ) as fallback:
+        stream = router._aresponses_streaming_iterator(primary, {"model": "primary"})
+        assert await stream.__anext__() is output
+        # Once committed, a later read must not inherit the expired deadline.
+        await asyncio.sleep(0.04)
+        with pytest.raises(StopAsyncIteration):
+            await stream.__anext__()
+    fallback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_responses_effective_output_deadline_includes_headers_time():
+    from types import SimpleNamespace
+
+    router = litellm.Router(model_list=[])
+    primary = _TimedResponsesStream(
+        [SimpleNamespace(type="response.output_text.delta", delta="late")]
+    )
+    primary.request_data["_litellm_stream_ttft_trace"]["handler_start"] -= 1
+    with patch.object(
+        router,
+        "async_function_with_fallbacks_common_utils",
+        new=AsyncMock(return_value=_TestResponsesStream([])),
+    ) as fallback:
+        stream = router._aresponses_streaming_iterator(primary, {"model": "primary"})
+        assert [event async for event in stream] == []
+    fallback.assert_awaited_once()
+    assert primary.closed
+
+
+@pytest.mark.asyncio
+async def test_responses_trace_without_timeout_does_not_enforce_deadline():
+    import asyncio
+    from types import SimpleNamespace
+
+    router = litellm.Router(model_list=[])
+    output = SimpleNamespace(type="response.output_text.delta", delta="ok")
+    primary = _TimedResponsesStream([output], stall=False)
+    primary.request_data["_litellm_stream_ttft_trace"].pop("slow_warning_duration_ms")
+    await asyncio.sleep(0.04)
+    stream = router._aresponses_streaming_iterator(primary, {"model": "primary"})
+    assert [event async for event in stream] == [output]
+
+
+@pytest.mark.asyncio
+async def test_responses_effective_output_timeout_with_real_sse_iterator():
+    import asyncio
+    from datetime import datetime
+    from types import MethodType, SimpleNamespace
+
+    import httpx
+
+    from litellm.litellm_core_utils.litellm_logging import Logging
+    from litellm.llms.base_llm.responses.transformation import BaseResponsesAPIConfig
+    from litellm.responses.streaming_iterator import (
+        ResponsesAPIStreamingIterator,
+        initialize_stream_ttft_trace,
+    )
+
+    class StatusOnlyBytes(httpx.AsyncByteStream):
+        closed = False
+        cancelled = False
+
+        async def __aiter__(self):
+            yield b'data: {"type":"response.in_progress"}\n\n'
+            yield b'data: {"type":"response.output_text.delta","delta":""}\n\n'
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+        async def aclose(self):
+            self.closed = True
+
+    transport = StatusOnlyBytes()
+    http_response = httpx.Response(200, stream=transport)
+    old_lease_cleanup = AsyncMock()
+    new_lease_cleanup = AsyncMock()
+    logging_obj = MagicMock(spec=Logging)
+    logging_obj.start_time = datetime.now()
+    logging_obj.model_call_details = {"litellm_params": {}}
+    logging_obj.litellm_call_id = "real-sse-output-test"
+    logging_obj._async_deployment_cleanup_callbacks = [old_lease_cleanup]
+    logging_obj.async_cleanup_deployment_resources = MethodType(
+        Logging.async_cleanup_deployment_resources, logging_obj
+    )
+    request_data = {}
+    initialize_stream_ttft_trace(
+        request_data,
+        logging_obj=logging_obj,
+        model="gpt-4",
+        custom_llm_provider="openai",
+        slow_warning_seconds=0.05,
+    )
+    config = MagicMock(spec=BaseResponsesAPIConfig)
+    config.transform_streaming_response.side_effect = (
+        lambda parsed_chunk, **kwargs: SimpleNamespace(**parsed_chunk)
+    )
+    primary = ResponsesAPIStreamingIterator(
+        response=http_response,
+        model="gpt-4",
+        responses_api_provider_config=config,
+        logging_obj=logging_obj,
+        custom_llm_provider="openai",
+        request_data=request_data,
+    )
+    primary._call_post_streaming_deployment_hook = AsyncMock(
+        side_effect=lambda chunk: chunk
+    )
+    router = litellm.Router(model_list=[])
+
+    async def run_fallback(**kwargs):
+        assert transport.closed and transport.cancelled
+        old_lease_cleanup.assert_awaited_once()
+        logging_obj._async_deployment_cleanup_callbacks.append(new_lease_cleanup)
+        # A fresh attempt gets its own deadline, not the expired primary trace.
+        return router._aresponses_streaming_iterator(
+            _TimedResponsesStream(
+                [SimpleNamespace(type="response.output_text.delta", delta="fallback")],
+                stall=False,
+            ),
+            {"model": "fallback"},
+        )
+
+    with patch.object(
+        router, "async_function_with_fallbacks_common_utils", side_effect=run_fallback
+    ):
+        stream = router._aresponses_streaming_iterator(primary, {"model": "primary"})
+        events = [event async for event in stream]
+    assert [event.delta for event in events] == ["fallback"]
+    old_lease_cleanup.assert_awaited_once()
+    new_lease_cleanup.assert_not_awaited()
+    assert primary.response is None
+    assert primary._pending_stream_event_task is None
+    assert primary._event_loop_lag_task is None
 
 
 def test_router_get_model_access_groups_team_only_models():

@@ -3966,6 +3966,7 @@ class Router:
         from litellm.exceptions import MidStreamFallbackError
         from litellm.responses.streaming_iterator import (
             BaseResponsesAPIStreamingIterator,
+            _log_slow_stream_ttft_if_needed,
         )
         from litellm.types.llms.openai import ResponsesAPIStreamEvents
 
@@ -4003,34 +4004,175 @@ class Router:
                     record()
 
         wrapper: ResponsesFallbackStreamWrapper
-        pre_output_event_types = (
-            ResponsesAPIStreamEvents.RESPONSE_CREATED,
-            ResponsesAPIStreamEvents.RESPONSE_IN_PROGRESS,
-            ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
-            ResponsesAPIStreamEvents.CONTENT_PART_ADDED,
-            ResponsesAPIStreamEvents.RESPONSE_PART_ADDED,
-            ResponsesAPIStreamEvents.ERROR,
+
+        def should_commit_stream(item: Any) -> bool:
+            field = BaseResponsesAPIStreamingIterator._get_response_field
+            event_type = field(item, "type")
+            # Non-empty text (including reasoning/refusal), tool arguments and
+            # image/audio data are output; lifecycle and empty deltas are not.
+            for name in (
+                "delta",
+                "text",
+                "refusal",
+                "arguments",
+                "input",
+                "partial_image_b64",
+            ):
+                value = field(item, name)
+                if isinstance(value, str) and value:
+                    return True
+            part = field(item, "part")
+            if field(part, "text") or field(part, "refusal"):
+                return True
+            output_item = field(item, "item")
+            if field(output_item, "arguments") or field(output_item, "input"):
+                return True
+            if output_item is not None:
+                if (
+                    event_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE
+                    and field(output_item, "type") == "function_call"
+                    and field(output_item, "name")
+                ):
+                    return True  # A complete no-argument tool call is valid output.
+                for content in (
+                    field(output_item, "content") or field(output_item, "summary") or []
+                ):
+                    if field(content, "text") or field(content, "refusal"):
+                        return True
+                if field(output_item, "type") not in (
+                    None,
+                    "message",
+                    "reasoning",
+                    "function_call",
+                    "custom_tool_call",
+                ):
+                    return True  # Preserve non-replay semantics for other tools.
+            # Built-in tools may already have side effects. Do not replay a
+            # request once the provider reports that tool execution has started.
+            # Unknown event kinds retain the previous conservative behavior.
+            return event_type not in (
+                ResponsesAPIStreamEvents.RESPONSE_CREATED,
+                ResponsesAPIStreamEvents.RESPONSE_IN_PROGRESS,
+                ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
+                ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE,
+                ResponsesAPIStreamEvents.CONTENT_PART_ADDED,
+                ResponsesAPIStreamEvents.CONTENT_PART_DONE,
+                ResponsesAPIStreamEvents.RESPONSE_PART_ADDED,
+                ResponsesAPIStreamEvents.REASONING_SUMMARY_PART_DONE,
+                ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DELTA,
+                ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DONE,
+                ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
+                ResponsesAPIStreamEvents.OUTPUT_TEXT_DONE,
+                ResponsesAPIStreamEvents.REFUSAL_DELTA,
+                ResponsesAPIStreamEvents.REFUSAL_DONE,
+                ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA,
+                ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE,
+                ResponsesAPIStreamEvents.ERROR,
+                "response.reasoning_text.delta",
+                "response.reasoning_text.done",
+                "response.custom_tool_call_input.delta",
+                "response.custom_tool_call_input.done",
+                "response.queued",
+                "response.audio.delta",
+                "response.audio.done",
+                "response.audio_transcript.delta",
+                "response.audio_transcript.done",
+                ResponsesAPIStreamEvents.IMAGE_GENERATION_PARTIAL_IMAGE,
+            )
+
+        trace = getattr(model_response, "request_data", {})
+        trace = (
+            trace.get("_litellm_stream_ttft_trace") if isinstance(trace, dict) else None
+        )
+        output_deadline = None
+        if isinstance(trace, dict):
+            duration_ms = trace.get("slow_warning_duration_ms")
+            started_at = trace.get("handler_start")
+            if (
+                isinstance(duration_ms, (int, float))
+                and duration_ms > 0
+                and isinstance(started_at, (int, float))
+            ):
+                # One absolute budget per attempt, including time spent on headers.
+                output_deadline = started_at + duration_ms / 1000
+        metadata = (
+            initial_kwargs.get("litellm_metadata", initial_kwargs.get("metadata")) or {}
+        )
+        if not isinstance(metadata, dict):
+            metadata = {}
+        request_id = (
+            initial_kwargs.get("litellm_call_id")
+            or metadata.get("litellm_call_id")
+            or getattr(
+                getattr(model_response, "logging_obj", None), "litellm_call_id", None
+            )
+            or "unknown"
         )
 
-        async def stream_with_fallbacks():
+        async def stream_with_fallbacks():  # noqa: PLR0915
             fallback_response = None
             buffered_events: List[Any] = []
             stream_committed = False
             committed_by_event_type = None
             observed_event_types: List[Any] = []
-            collect_debug_event_types = verbose_router_logger.isEnabledFor(
-                logging.DEBUG
-            )
             try:
                 try:
-                    async for item in model_response:
-                        event_type = getattr(item, "type", None)
+                    provider_iterator = model_response.__aiter__()
+                    while True:
+                        try:
+                            if output_deadline is not None and not stream_committed:
+                                try:
+                                    item = await asyncio.wait_for(
+                                        provider_iterator.__anext__(),
+                                        timeout=max(
+                                            0.0, output_deadline - time.monotonic()
+                                        ),
+                                    )
+                                except asyncio.TimeoutError as timeout_error:
+                                    _log_slow_stream_ttft_if_needed(trace)
+                                    # Release the old connection/lease before fallback.
+                                    try:
+                                        await model_response.aclose()
+                                    except Exception:
+                                        verbose_router_logger.warning(
+                                            "Responses TTFT cleanup failed request_id=%s",
+                                            request_id,
+                                        )
+                                    error = litellm.Timeout(
+                                        message=(
+                                            "Timed out waiting for the first "
+                                            "effective Responses output"
+                                        ),
+                                        model=initial_kwargs.get("model") or "",
+                                        llm_provider=getattr(
+                                            model_response, "custom_llm_provider", ""
+                                        )
+                                        or "",
+                                    )
+                                    raise MidStreamFallbackError(
+                                        message=str(error),
+                                        model=error.model,
+                                        llm_provider=error.llm_provider,
+                                        original_exception=error,
+                                        is_pre_first_chunk=True,
+                                    ) from timeout_error
+                            else:
+                                item = await provider_iterator.__anext__()
+                        except StopAsyncIteration:
+                            for buffered_item in buffered_events:
+                                yield buffered_item
+                            break
+                        event_type = (
+                            BaseResponsesAPIStreamingIterator._get_response_field(
+                                item, "type"
+                            )
+                        )
                         event_type_value = getattr(event_type, "value", event_type)
-                        if collect_debug_event_types and len(observed_event_types) < 20:
+                        if len(observed_event_types) < 20:
                             observed_event_types.append(event_type_value)
                         if (
                             not stream_committed
-                            and event_type in pre_output_event_types
+                            and not should_commit_stream(item)
                         ):
                             buffered_events.append(item)
                             continue
@@ -4046,33 +4188,37 @@ class Router:
                     is_responses_stream_overload = getattr(
                         e, "is_responses_stream_overload", False
                     )
-                    is_midstream_fallback_error = isinstance(
-                        e, MidStreamFallbackError
-                    )
+                    is_midstream_fallback_error = isinstance(e, MidStreamFallbackError)
                     is_retryable_stream_error = (
                         is_responses_stream_overload or is_midstream_fallback_error
                     )
-                    if is_retryable_stream_error:
-                        decision_type = (
-                            "overload"
-                            if is_responses_stream_overload
-                            else "MidStreamFallbackError"
-                        )
-                        verbose_router_logger.debug(
-                            "responses stream %s fallback decision: "
-                            "model_group=%s stream_committed=%s "
-                            "committed_by_event_type=%s observed_event_types=%s "
-                            "fallbacks=%s",
-                            decision_type,
-                            initial_kwargs.get("model"),
-                            stream_committed,
-                            committed_by_event_type,
-                            observed_event_types,
-                            initial_kwargs.get("fallbacks", router_self.fallbacks),
-                        )
-                    if not (
-                        is_retryable_stream_error and not stream_committed
-                    ):
+                    should_fallback = is_retryable_stream_error and not stream_committed
+                    # Log only diagnostic fields, never event payloads, exception
+                    # messages or fallback kwargs (which may contain credentials).
+                    verbose_router_logger.warning(
+                        "litellm_responses_stream_fallback_decision request_id=%s "
+                        "model_group=%s error_type=%s status_code=%s "
+                        "stream_committed=%s committed_by_event_type=%s "
+                        "observed_event_types=%s action=%s reason=%s",
+                        request_id,
+                        initial_kwargs.get("model"),
+                        type(e).__name__,
+                        getattr(e, "status_code", None),
+                        stream_committed,
+                        committed_by_event_type,
+                        observed_event_types,
+                        "attempt_fallback" if should_fallback else "skip_fallback",
+                        (
+                            "stream_already_committed"
+                            if stream_committed
+                            else (
+                                "retryable_pre_output"
+                                if is_retryable_stream_error
+                                else "non_retryable_error"
+                            )
+                        ),
+                    )
+                    if not should_fallback:
                         for buffered_item in buffered_events:
                             yield buffered_item
                         raise
