@@ -18,6 +18,122 @@ from litellm.proxy.hooks.proxy_track_cost_callback import (
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("route", ["/v1/responses", "/v1/chat/completions", "/v1/messages"])
+async def test_failure_duration_survives_public_failure_hook_removing_logging(stream, route):
+    from datetime import timedelta, timezone
+    from types import SimpleNamespace
+
+    import litellm
+    from litellm.caching.caching import DualCache
+    from litellm.proxy.utils import ProxyLogging
+    from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
+
+    ingress = datetime.now(timezone.utc) - timedelta(seconds=31)
+    last_attempt = ingress + timedelta(seconds=20)
+    data = {
+        "model": "gpt-4", "stream": stream,
+        "litellm_call_id": "failure-duration-test",
+        "proxy_server_request": {
+            "request_start_time": ingress.timestamp(),
+            "arrival_time": (ingress + timedelta(seconds=2)).timestamp(),
+        },
+        "litellm_logging_obj": SimpleNamespace(start_time=last_attempt),
+    }
+    proxy = ProxyLogging(user_api_key_cache=DualCache())
+    proxy.alert_types = []
+    proxy.update_request_status = AsyncMock()
+    error = litellm.Timeout(message="test timeout", model="gpt-4", llm_provider="openai")
+    with patch.object(litellm, "callbacks", [_ProxyDBLogger()]), patch(
+        "litellm.proxy.db.db_spend_update_writer.DBSpendUpdateWriter.update_database",
+        new_callable=AsyncMock,
+    ) as writer:
+        await proxy.post_call_failure_hook(
+            request_data=data, original_exception=error,
+            user_api_key_dict=UserAPIKeyAuth(api_key="test-key", request_route=route),
+        )
+    assert "litellm_logging_obj" not in data
+    writer.assert_awaited_once()
+    args = writer.await_args.kwargs
+    assert args["start_time"] == ingress.replace(tzinfo=None)
+    payload = get_logging_payload(
+        kwargs=args["kwargs"], response_obj=error,
+        start_time=args["start_time"], end_time=args["end_time"],
+    )
+    assert 31000 <= payload["request_duration_ms"] < 35000
+    assert payload["startTime"].timestamp() == ingress.timestamp()
+    assert (payload["endTime"] - payload["startTime"]).total_seconds() >= 31
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auth_failure", [False, True])
+async def test_failure_duration_from_http_ingress_includes_preparation(auth_failure):
+    import asyncio
+    import time
+
+    import httpx
+    import litellm
+    from fastapi import HTTPException
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+    from litellm.caching.caching import DualCache
+    from litellm.proxy.auth.auth_exception_handler import UserAPIKeyAuthExceptionHandler
+    from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
+    from litellm.proxy.middleware.in_flight_requests_middleware import InFlightRequestsMiddleware
+    from litellm.proxy.utils import ProxyLogging
+
+    proxy = ProxyLogging(user_api_key_cache=DualCache())
+    proxy.alert_types = []
+    proxy.update_request_status = AsyncMock()
+    user = UserAPIKeyAuth(api_key="test-key", request_route="/v1/responses")
+
+    async def fail(request):
+        # Delay before request setup, as happens during authentication/body reads.
+        await asyncio.sleep(0.05)
+        data = await request.json()
+        if auth_failure:
+            UserAPIKeyAuthExceptionHandler._add_request_context_to_failure_logging_data(
+                request, data, {}
+            )
+            error = HTTPException(status_code=401, detail="test auth failure")
+        else:
+            data = await add_litellm_data_to_request(
+                data, request, user, MagicMock(), general_settings={}
+            )
+            await asyncio.sleep(0.05)
+            error = litellm.Timeout(message="test timeout", model="gpt-4", llm_provider="openai")
+        await proxy.post_call_failure_hook(
+            request_data=data, original_exception=error, user_api_key_dict=user
+        )
+        return JSONResponse({"error": "test"}, status_code=401 if auth_failure else 408)
+
+    app = Starlette(routes=[Route("/v1/responses", fail, methods=["POST"])])
+    app.add_middleware(InFlightRequestsMiddleware)
+    with patch.object(litellm, "callbacks", [_ProxyDBLogger()]), patch(
+        "litellm.proxy.db.db_spend_update_writer.DBSpendUpdateWriter.update_database",
+        new_callable=AsyncMock,
+    ) as writer, patch("litellm.proxy.utils._premium_user_check"), patch.object(
+        proxy, "_handle_logging_proxy_only_error", new=AsyncMock()
+    ):
+        before = time.time()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://testserver") as client:
+            result = await client.post("/v1/responses", json={
+                "model": "gpt-4", "input": "test",
+                "proxy_server_request": {"request_start_time": 1, "arrival_time": 1},
+            })
+        after = time.time()
+    assert result.status_code == (401 if auth_failure else 408)
+    writer.assert_awaited_once()
+    args = writer.await_args.kwargs
+    from datetime import timezone
+    start = args["start_time"].replace(tzinfo=timezone.utc).timestamp()
+    end = args["end_time"].replace(tzinfo=timezone.utc).timestamp()
+    assert before <= start < end <= after
+    assert end - start >= (0.05 if auth_failure else 0.1)
+
+
+@pytest.mark.asyncio
 async def test_async_post_call_failure_hook():
     # Setup
     logger = _ProxyDBLogger()

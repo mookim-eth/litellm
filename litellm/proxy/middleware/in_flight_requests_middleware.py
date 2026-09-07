@@ -6,6 +6,7 @@ Prometheus gauge `litellm_in_flight_requests`.
 """
 
 import os
+import time
 from typing import Any, Optional
 
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -38,6 +39,8 @@ class InFlightRequestsMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Server-owned ingress time, before body parsing, auth and routing.
+        scope.setdefault("state", {})["_litellm_request_start_time"] = time.time()
         InFlightRequestsMiddleware._in_flight += 1
         gauge = InFlightRequestsMiddleware._get_gauge()
         if gauge is not None:
@@ -82,3 +85,13 @@ class InFlightRequestsMiddleware:
 def get_in_flight_requests() -> int:
     """Module-level convenience wrapper used by the /health/backlog endpoint."""
     return InFlightRequestsMiddleware.get_count()
+
+
+def get_request_start_time(request: Any) -> float:
+    """Read the ingress timestamp, never a timestamp from the request body."""
+    started_at = getattr(
+        getattr(request, "state", None), "_litellm_request_start_time", None
+    )
+    if isinstance(started_at, (int, float)) and not isinstance(started_at, bool):
+        return started_at
+    return time.time()

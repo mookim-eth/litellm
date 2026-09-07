@@ -54,6 +54,24 @@ def test_counter_zero_at_start():
     assert get_in_flight_requests() == 0
 
 
+def test_request_start_time_is_server_owned_and_precedes_handler():
+    import time
+    from litellm.proxy.middleware.in_flight_requests_middleware import get_request_start_time
+
+    async def handler(request):
+        started = get_request_start_time(request)
+        await asyncio.sleep(0.01)
+        assert get_request_start_time(request) == started
+        assert started <= time.time() - 0.009
+        return JSONResponse({"started": started})
+
+    before = time.time()
+    response = TestClient(_make_app(handler)).get(
+        "/", headers={"_litellm_request_start_time": "1"}
+    )
+    assert before <= response.json()["started"] <= time.time()
+
+
 def test_counter_increments_inside_handler():
     captured = []
 

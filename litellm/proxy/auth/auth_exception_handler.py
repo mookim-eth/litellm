@@ -179,6 +179,15 @@ class UserAPIKeyAuthExceptionHandler:
                 "arrival_time": time.time(),
             }
 
+        from litellm.proxy.middleware.in_flight_requests_middleware import (
+            get_request_start_time,
+        )
+
+        proxy_request = request_data.get("proxy_server_request")
+        if isinstance(proxy_request, dict):
+            # Auth can fail before normal request setup; overwrite body-injected time.
+            proxy_request["request_start_time"] = get_request_start_time(request)
+
         return requester_ip
 
     @staticmethod

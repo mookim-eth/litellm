@@ -30,6 +30,22 @@ from litellm.proxy.auth.auth_exception_handler import (
 )
 
 
+def test_auth_failure_uses_server_ingress_time_over_injected_time():
+    from starlette.requests import Request
+
+    request = Request({
+        "type": "http", "method": "POST", "path": "/v1/responses",
+        "headers": [], "query_string": b"", "scheme": "http",
+        "server": ("testserver", 80), "client": ("127.0.0.1", 1234),
+        "state": {"_litellm_request_start_time": 1700000000.0},
+    })
+    data = {"proxy_server_request": {"request_start_time": 1, "arrival_time": 1}}
+    UserAPIKeyAuthExceptionHandler._add_request_context_to_failure_logging_data(
+        request, data, {}
+    )
+    assert data["proxy_server_request"]["request_start_time"] == 1700000000.0
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "prisma_error", [HTTPClientClosedError(), ClientNotConnectedError()]

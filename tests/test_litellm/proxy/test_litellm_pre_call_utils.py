@@ -72,11 +72,12 @@ async def test_add_litellm_data_to_request_prefers_cloudflare_request_ip():
     }
     request_mock.client = MagicMock()
     request_mock.client.host = "10.0.0.10"
-    request_mock.state = SimpleNamespace()
+    request_mock.state = SimpleNamespace(_litellm_request_start_time=1700000000.0)
 
     data = {
         "model": "gpt-3.5-turbo",
         "messages": [{"role": "user", "content": "test"}],
+        "proxy_server_request": {"request_start_time": 1, "arrival_time": 1},
     }
     user_api_key_dict = UserAPIKeyAuth(api_key="test-key", metadata={})
 
@@ -91,6 +92,8 @@ async def test_add_litellm_data_to_request_prefers_cloudflare_request_ip():
         )
 
     assert updated_data["metadata"]["requester_ip_address"] == "203.0.113.10"
+    assert updated_data["proxy_server_request"]["request_start_time"] == 1700000000.0
+    assert updated_data["proxy_server_request"]["arrival_time"] > 1700000000.0
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 import asyncio
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, List, Optional, Union, cast
 
 import litellm
@@ -126,13 +126,31 @@ class _ProxyDBLogger(CustomLogger):
                     _litellm_logging_obj, "litellm_trace_id", None
                 )
 
-        # Use the actual request start time from the logging object so that
-        # failed requests record the real duration instead of 0.
-        actual_start_time = datetime.now()
+        # The public failure hook removes Logging before dispatching callbacks.
+        # Use the server-owned ingress timestamp, which survives that removal
+        # and includes auth, queueing and all retry/fallback attempts.
+        end_time = datetime.now(timezone.utc).replace(tzinfo=None)
+        actual_start_time = end_time
+        proxy_request = request_data["litellm_params"]["proxy_server_request"]
+        arrival_time = proxy_request.get(
+            "request_start_time", proxy_request.get("arrival_time")
+        )
         if _litellm_logging_obj is not None:
             obj_start = getattr(_litellm_logging_obj, "start_time", None)
-            if obj_start is not None:
+            if isinstance(obj_start, datetime):
                 actual_start_time = obj_start
+                if actual_start_time.tzinfo is not None:
+                    actual_start_time = actual_start_time.astimezone(
+                        timezone.utc
+                    ).replace(tzinfo=None)
+        if (
+            isinstance(arrival_time, (int, float))
+            and not isinstance(arrival_time, bool)
+            and 0 < arrival_time <= end_time.replace(tzinfo=timezone.utc).timestamp()
+        ):
+            actual_start_time = datetime.fromtimestamp(
+                arrival_time, timezone.utc
+            ).replace(tzinfo=None)
 
         await proxy_logging_obj.db_spend_update_writer.update_database(
             token=user_api_key_dict.api_key,
@@ -143,7 +161,7 @@ class _ProxyDBLogger(CustomLogger):
             kwargs=request_data,
             completion_response=original_exception,
             start_time=actual_start_time,
-            end_time=datetime.now(),
+            end_time=end_time,
             org_id=user_api_key_dict.org_id,
         )
 

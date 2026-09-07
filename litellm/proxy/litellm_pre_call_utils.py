@@ -1604,6 +1604,10 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     # we do this as soon as entering so we track the original request
     ##########################################################
     # Track arrival time for queue time metric
+    from litellm.proxy.middleware.in_flight_requests_middleware import (
+        get_request_start_time,
+    )
+
     arrival_time = time.time()
     body_for_proxy_server_request = (
         _build_proxy_server_request_body_for_memory_safe_logging(
@@ -1617,6 +1621,7 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
         "headers": _headers,
         "body": body_for_proxy_server_request,
         "arrival_time": arrival_time,  # Track when request arrived at proxy
+        "request_start_time": get_request_start_time(request),
     }
 
     safe_add_api_version_from_query_params(data, request)
