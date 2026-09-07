@@ -6,8 +6,12 @@ import pytest
 from fastapi import HTTPException, Request, Response
 
 import litellm
+from litellm.exceptions import MidStreamFallbackError
 from litellm.proxy._types import ProxyException, UserAPIKeyAuth
-from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
+from litellm.proxy.common_request_processing import (
+    ProxyBaseLLMRequestProcessing,
+    create_response,
+)
 from litellm.proxy.response_api_endpoints.endpoints import (
     _handle_responses_api_exception,
     responses_api,
@@ -233,3 +237,116 @@ async def test_should_not_hide_failure_hook_errors(code, handler_raises):
             version=None,
         )
     assert exc.value is mapped_error
+
+
+def _responses_ttft_timeout():
+    timeout = litellm.Timeout(
+        message="Timed out waiting for the first effective Responses output",
+        model="test-deployment",
+        llm_provider="chatgpt",
+    )
+    error = MidStreamFallbackError(
+        message=str(timeout),
+        model=timeout.model,
+        llm_provider=timeout.llm_provider,
+        original_exception=timeout,
+        is_pre_first_chunk=True,
+    )
+    error.is_responses_ttft_timeout = True
+    return error
+
+
+async def _ttft_http_response(
+    *, user_agent: str, stream: bool, marked: bool = True, status_code: int = 408
+):
+    from litellm.proxy.proxy_server import async_data_generator
+
+    error = _responses_ttft_timeout()
+    error.status_code = status_code
+    if not marked:
+        del error.is_responses_ttft_timeout
+
+    async def raise_ttft(*args, **kwargs):
+        raise error
+        yield  # pragma: no cover
+
+    proxy_logging = AsyncMock()
+    proxy_logging.async_post_call_streaming_iterator_hook = raise_ttft
+    provider_response = AsyncMock()
+    request_data = {
+        "model": "gpt-5.6-sol",
+        "stream": stream,
+        "proxy_server_request": {"headers": {"user-agent": user_agent}},
+    }
+    with patch("litellm.proxy.proxy_server.proxy_logging_obj", proxy_logging):
+        response = await create_response(
+            async_data_generator(
+                provider_response,
+                UserAPIKeyAuth(),
+                request_data,
+            ),
+            "text/event-stream",
+            {},
+        )
+    return response, error, proxy_logging
+
+
+@pytest.mark.asyncio
+async def test_should_return_codex_ttft_408_as_retryable_http_200_after_logging():
+    response, original_error, proxy_logging = await _ttft_http_response(
+        user_agent="codex_cli_rs/0.144.4",
+        stream=True,
+    )
+
+    assert response.status_code == 200
+    assert response.media_type == "text/event-stream"
+    chunks = [chunk async for chunk in response.body_iterator]
+    body = "".join(
+        chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks
+    )
+    event = json.loads(body.removeprefix("data: "))
+    assert event == {
+        "type": "response.failed",
+        "response": {
+            "error": {
+                "code": "rate_limit_exceeded",
+                "message": "Request timed out. Please try again in 10 seconds.",
+            }
+        },
+    }
+    assert original_error.status_code == 408
+    proxy_logging.post_call_failure_hook.assert_awaited_once()
+    assert (
+        proxy_logging.post_call_failure_hook.await_args.kwargs["original_exception"]
+        is original_error
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_agent,stream,marked,status_code",
+    [
+        ("openai-python/2.30.0", True, True, 408),
+        ("codex_cli_rs/0.144.4", False, True, 408),
+        ("codex_cli_rs/0.144.4", True, False, 408),
+        ("codex_cli_rs/0.144.4", True, True, 503),
+    ],
+)
+async def test_should_preserve_non_matching_ttft_error_responses(
+    user_agent, stream, marked, status_code
+):
+    response, original_error, proxy_logging = await _ttft_http_response(
+        user_agent=user_agent,
+        stream=stream,
+        marked=marked,
+        status_code=status_code,
+    )
+
+    assert response.status_code == status_code
+    assert json.loads(response.body)["error"]["code"] == str(status_code)
+    assert original_error.status_code == status_code
+    proxy_logging.post_call_failure_hook.assert_awaited_once()
+    assert (
+        proxy_logging.post_call_failure_hook.await_args.kwargs["original_exception"]
+        is original_error
+    )

@@ -6617,6 +6617,40 @@ async def async_data_generator(  # noqa: PLR0915
             f"\033[1;31mAn error occurred: {e}\n\n Debug this by setting `--debug`, e.g. `litellm --model gpt-3.5-turbo --debug`"
         )
 
+        proxy_server_request = request_data.get("proxy_server_request") or {}
+        request_headers = (
+            proxy_server_request.get("headers", {})
+            if isinstance(proxy_server_request, dict)
+            else {}
+        )
+        user_agent = (
+            request_headers.get("user-agent", "")
+            if isinstance(request_headers, dict)
+            else ""
+        )
+        if (
+            getattr(e, "is_responses_ttft_timeout", False)
+            and getattr(e, "status_code", None) == 408
+            and request_data.get("stream") is True
+            and isinstance(user_agent, str)
+            and "codex" in user_agent.lower()
+        ):
+            # The failure hook above must see the original 408 for SpendLogs.
+            # Only the downstream Codex response is converted to the retryable
+            # Responses event shape that Codex recognizes.
+            retryable_error = {
+                "type": "response.failed",
+                "response": {
+                    "error": {
+                        "code": "rate_limit_exceeded",
+                        "message": (
+                            "Request timed out. Please try again in 10 seconds."
+                        ),
+                    }
+                },
+            }
+            yield f"data: {json.dumps(retryable_error)}\n\n"
+            return
         if getattr(e, "is_responses_stream_overload", False):
             # Codex treats server_is_overloaded/slow_down as terminal errors. Map
             # the exhausted upstream overload to its retryable Responses error
