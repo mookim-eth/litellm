@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from starlette.responses import StreamingResponse
-from starlette.websockets import WebSocket
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from litellm._logging import verbose_proxy_logger
 from litellm.exceptions import RateLimitError
@@ -1145,6 +1145,8 @@ async def responses_websocket_endpoint(
                 )
             )
             await websocket.close(code=1003, reason="Invalid JSON")
+            return
+        except WebSocketDisconnect:
             return
         except Exception:
             verbose_proxy_logger.exception(
