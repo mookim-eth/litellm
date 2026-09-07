@@ -14,6 +14,7 @@ from openai._streaming import SSEDecoder
 
 import litellm
 from litellm._logging import verbose_proxy_logger
+from litellm.exceptions import MidStreamFallbackError
 from litellm.constants import (
     LITELLM_MAX_STREAMING_DURATION_SECONDS,
     STREAM_SSE_DONE_STRING,
@@ -224,9 +225,7 @@ class BaseResponsesAPIStreamingIterator:
 
     def _log_incomplete_response(self, chunk: Any) -> None:
         response = self._get_response_field(chunk, "response")
-        incomplete_details = self._get_response_field(
-            response, "incomplete_details"
-        )
+        incomplete_details = self._get_response_field(response, "incomplete_details")
         reason = self._get_response_field(incomplete_details, "reason") or "unknown"
         request_input = self.request_data.get("input")
         if request_input is None:
@@ -271,7 +270,9 @@ class BaseResponsesAPIStreamingIterator:
         if not isinstance(start_time, datetime):
             return None
         try:
-            return round(max(0.0, (datetime.now() - start_time).total_seconds()) * 1000, 2)
+            return round(
+                max(0.0, (datetime.now() - start_time).total_seconds()) * 1000, 2
+            )
         except (TypeError, ValueError):
             return None
 
@@ -289,11 +290,12 @@ class BaseResponsesAPIStreamingIterator:
             trace, "handler_start", "proxy_first_yield"
         )
         threshold_value = (
-            model_call_ttft_ms
-            if model_call_ttft_ms is not None
-            else handler_ttft_ms
+            model_call_ttft_ms if model_call_ttft_ms is not None else handler_ttft_ms
         )
-        if threshold_value is None or threshold_value < _stream_ttft_trace_min_duration_ms():
+        if (
+            threshold_value is None
+            or threshold_value < _stream_ttft_trace_min_duration_ms()
+        ):
             return
         trace["logged"] = True
         verbose_proxy_logger.warning(
@@ -321,9 +323,7 @@ class BaseResponsesAPIStreamingIterator:
             _duration_between_ms(
                 trace, "provider_first_sse_event", "iterator_first_yield"
             ),
-            _duration_between_ms(
-                trace, "iterator_first_yield", "proxy_first_yield"
-            ),
+            _duration_between_ms(trace, "iterator_first_yield", "proxy_first_yield"),
             round(float(trace.get("event_loop_lag_max_ms", 0.0)), 2),
         )
 
@@ -401,13 +401,10 @@ class BaseResponsesAPIStreamingIterator:
         update_completion_start_time = getattr(
             self.logging_obj, "_update_completion_start_time", None
         )
-        if (
-            getattr(self.logging_obj, "completion_start_time", None) is None
-            and callable(update_completion_start_time)
-        ):
-            update_completion_start_time(
-                completion_start_time=datetime.now()
-            )
+        if getattr(
+            self.logging_obj, "completion_start_time", None
+        ) is None and callable(update_completion_start_time):
+            update_completion_start_time(completion_start_time=datetime.now())
 
         try:
             # Parse the JSON chunk
@@ -456,7 +453,9 @@ class BaseResponsesAPIStreamingIterator:
                             custom_llm_provider=self.custom_llm_provider,
                             model_id=_stream_model_id,
                         )
-                elif _event_type == ResponsesAPIStreamEvents.OUTPUT_TEXT_ANNOTATION_ADDED:
+                elif (
+                    _event_type == ResponsesAPIStreamEvents.OUTPUT_TEXT_ANNOTATION_ADDED
+                ):
                     _annotation = getattr(
                         openai_responses_api_chunk, "annotation", None
                     )
@@ -532,10 +531,10 @@ class BaseResponsesAPIStreamingIterator:
                             )
                             if usage_obj is not None:
                                 try:
-                                    cost: Optional[
-                                        float
-                                    ] = self.logging_obj._response_cost_calculator(
-                                        result=response_obj
+                                    cost: Optional[float] = (
+                                        self.logging_obj._response_cost_calculator(
+                                            result=response_obj
+                                        )
                                     )
                                     if cost is not None:
                                         setattr(usage_obj, "cost", cost)
@@ -588,7 +587,10 @@ class BaseResponsesAPIStreamingIterator:
         if isinstance(error_info, dict):
             error_message = error_info.get("message", str(error_info))
 
-        if isinstance(error_info, dict) and error_info.get("code") in self._OVERLOADED_ERROR_CODES:
+        if (
+            isinstance(error_info, dict)
+            and error_info.get("code") in self._OVERLOADED_ERROR_CODES
+        ):
             exception = litellm.RateLimitError(
                 message=f"{error_message}",
                 model=self.model or "",
@@ -838,7 +840,48 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             )
 
     async def _iter_response_bytes(self):
-        async for chunk in self.response.aiter_bytes():
+        response_bytes = self.response.aiter_bytes()
+        trace = self.request_data.get(_STREAM_TTFT_TRACE_KEY)
+        first_byte_timeout = None
+        if isinstance(trace, dict):
+            warning_duration_ms = trace.get("slow_warning_duration_ms")
+            if (
+                isinstance(warning_duration_ms, (int, float))
+                and warning_duration_ms > 0
+            ):
+                first_byte_timeout = warning_duration_ms / 1000
+
+        if first_byte_timeout is not None:
+            try:
+                first_chunk = await asyncio.wait_for(
+                    response_bytes.__anext__(), timeout=first_byte_timeout
+                )
+            except asyncio.TimeoutError as timeout_error:
+                if isinstance(trace, dict):
+                    _log_slow_stream_ttft_if_needed(trace)
+                with contextlib.suppress(Exception):
+                    await self.response.aclose()
+                timeout = litellm.Timeout(
+                    message=(
+                        "Timed out waiting for the first provider Responses SSE byte "
+                        f"after {first_byte_timeout:g} seconds"
+                    ),
+                    model=self.model or "",
+                    llm_provider=self.custom_llm_provider or "",
+                )
+                raise MidStreamFallbackError(
+                    message=str(timeout),
+                    model=self.model or "",
+                    llm_provider=self.custom_llm_provider or "",
+                    original_exception=timeout,
+                    response=self.response,
+                    is_pre_first_chunk=True,
+                ) from timeout_error
+            else:
+                self._mark_ttft_stage("provider_first_raw_byte")
+                yield first_chunk
+
+        async for chunk in response_bytes:
             self._mark_ttft_stage("provider_first_raw_byte")
             yield chunk
 
@@ -1676,7 +1719,9 @@ class ManagedResponsesWebSocketHandler:
 
         body = getattr(exc, "body", None)
         if isinstance(body, dict):
-            nested_error = body.get("error") if isinstance(body.get("error"), dict) else body
+            nested_error = (
+                body.get("error") if isinstance(body.get("error"), dict) else body
+            )
             if isinstance(nested_error, dict):
                 error_type = nested_error.get("type", error_type)
                 message = nested_error.get("message", message)
@@ -1709,9 +1754,7 @@ class ManagedResponsesWebSocketHandler:
             }
             if error_code is not None:
                 error_payload["error"]["code"] = error_code
-            await self.websocket.send_text(
-                json.dumps(error_payload)
-            )
+            await self.websocket.send_text(json.dumps(error_payload))
         except Exception:
             pass
 
@@ -1864,7 +1907,9 @@ class ManagedResponsesWebSocketHandler:
             )
             return None, {}
 
-    def _rewrite_event_model_in_message(self, msg_obj: Dict[str, Any]) -> Dict[str, Any]:
+    def _rewrite_event_model_in_message(
+        self, msg_obj: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Normalize proxy-facing model aliases inside a response.create payload to the
         underlying deployment model before any later parsing happens.
