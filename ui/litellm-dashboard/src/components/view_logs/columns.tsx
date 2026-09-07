@@ -72,6 +72,7 @@ export type LogEntry = {
   session_mcp_count?: number;
   session_agent_count?: number;
   user_api_key_user_name?: string;
+  retries?: number;
   onKeyHashClick?: (keyHash: string) => void;
 };
 
@@ -248,11 +249,11 @@ export const createColumns = (sortProps?: LogsSortProps): ColumnDef<LogEntry>[] 
     },
   },
   {
-    header: "Team Name",
-    accessorKey: "metadata.user_api_key_team_alias",
+    header: "Retries",
+    accessorKey: "retries",
     cell: (info: any) => (
-      <Tooltip title={String(info.getValue() || "-")}>
-        <span className="max-w-[15ch] truncate block">{String(info.getValue() || "-")}</span>
+      <Tooltip title={String(info.getValue() ?? 0)}>
+        <span className="max-w-[15ch] truncate block">{String(info.getValue() ?? 0)}</span>
       </Tooltip>
     ),
   },

@@ -2544,6 +2544,35 @@ async def test_build_ui_spend_logs_response_dict_rows_session_counts():
 
 
 @pytest.mark.asyncio
+async def test_build_ui_spend_logs_response_exposes_retry_count():
+    from litellm.proxy.spend_tracking.spend_management_endpoints import (
+        _build_ui_spend_logs_response,
+    )
+
+    dict_rows = [
+        {
+            "request_id": "req-retried",
+            "metadata": {"attempted_retries": 2},
+        },
+        {"request_id": "req-first-attempt", "metadata": {}},
+        {"request_id": "req-no-metadata", "metadata": None},
+    ]
+
+    result = await _build_ui_spend_logs_response(
+        prisma_client=MagicMock(),
+        data=dict_rows,
+        total_records=3,
+        page=1,
+        page_size=50,
+        total_pages=1,
+        enrich_session_counts=False,
+        enrich_user_names=True,
+    )
+
+    assert [row["retries"] for row in result["data"]] == [2, 0, 0]
+
+
+@pytest.mark.asyncio
 async def test_build_ui_spend_logs_response_enriches_key_owner_names():
     from litellm.proxy.spend_tracking.spend_management_endpoints import (
         _build_ui_spend_logs_response,

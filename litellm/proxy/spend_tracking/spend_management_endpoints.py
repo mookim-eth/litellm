@@ -3552,6 +3552,17 @@ async def _build_ui_spend_logs_response(
     if enrich_session_counts or enrich_user_names:
         enriched: List[dict] = []
         for row_dict in row_dicts:
+            # Retry tracking is stored in the spend-log metadata by the Router.
+            # Expose it as a stable top-level field for the UI and API clients.
+            metadata = row_dict.get("metadata")
+            attempted_retries = (
+                metadata.get("attempted_retries")
+                if isinstance(metadata, dict)
+                else None
+            )
+            row_dict["retries"] = (
+                attempted_retries if isinstance(attempted_retries, int) else 0
+            )
             if enrich_session_counts:
                 sid = row_dict.get("session_id")
                 row_dict["session_total_count"] = count_map.get(sid, 1) if sid else 1
