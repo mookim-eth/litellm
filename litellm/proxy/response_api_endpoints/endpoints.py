@@ -110,7 +110,6 @@ async def _handle_responses_api_exception(
         and data.get("stream") is True
         and isinstance(error, RateLimitError)
         and error.llm_provider == "chatgpt"
-        and not getattr(error, "is_provider_account_concurrency_limit", False)
     ):
         # The router has already exhausted/skipped fallbacks. HTTP 429s arrive
         # here before SSE starts, so the streaming overload handler cannot map

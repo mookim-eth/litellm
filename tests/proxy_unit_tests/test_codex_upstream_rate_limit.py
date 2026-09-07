@@ -134,8 +134,11 @@ async def test_should_map_only_final_router_429_to_codex_retry(fallback_state):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("handler_raises", [False, True])
-async def test_should_preserve_mapped_headers_and_record_failure(handler_raises):
-    original_error = _rate_limit()
+@pytest.mark.parametrize("account_limit", [False, True])
+async def test_should_preserve_mapped_headers_and_record_failure(
+    handler_raises, account_limit
+):
+    original_error = _rate_limit(account_limit=account_limit)
     mapped_error = ProxyException(
         message=str(original_error),
         type="rate_limit_error",
@@ -175,7 +178,6 @@ async def test_should_preserve_mapped_headers_and_record_failure(handler_raises)
         ("", True, _rate_limit()),
         ("codex_cli_rs/0.144.4", False, _rate_limit()),
         ("codex_cli_rs/0.144.4", True, _rate_limit("openai")),
-        ("codex_cli_rs/0.144.4", True, _rate_limit(account_limit=True)),
         ("codex_cli_rs/0.144.4", True, HTTPException(429, "TPM limit reached")),
         (
             "codex_cli_rs/0.144.4",
