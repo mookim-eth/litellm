@@ -223,6 +223,94 @@ class BaseResponsesAPIStreamingIterator:
             return value.get(field)
         return getattr(value, field, None)
 
+    @classmethod
+    def is_effective_output(cls, item: Any) -> bool:
+        """Return whether a Responses event contains output that commits the stream."""
+        field = cls._get_response_field
+        event_type = field(item, "type")
+        # Non-empty text (including reasoning/refusal), tool arguments and
+        # image/audio data are output; lifecycle and empty deltas are not.
+        for name in (
+            "delta",
+            "text",
+            "refusal",
+            "arguments",
+            "input",
+            "partial_image_b64",
+        ):
+            value = field(item, name)
+            if isinstance(value, str) and value:
+                return True
+        part = field(item, "part")
+        if field(part, "text") or field(part, "refusal"):
+            return True
+        output_item = field(item, "item")
+        if field(output_item, "arguments") or field(output_item, "input"):
+            return True
+        if output_item is not None:
+            if (
+                event_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE
+                and field(output_item, "type") == "function_call"
+                and field(output_item, "name")
+            ):
+                return True  # A complete no-argument tool call is valid output.
+            for content in (
+                field(output_item, "content") or field(output_item, "summary") or []
+            ):
+                if field(content, "text") or field(content, "refusal"):
+                    return True
+            if field(output_item, "type") not in (
+                None,
+                "message",
+                "reasoning",
+                "function_call",
+                "custom_tool_call",
+            ):
+                return True  # Preserve non-replay semantics for other tools.
+        # Built-in tools may already have side effects. Do not replay a request
+        # once the provider reports that tool execution has started. Unknown
+        # event kinds retain the previous conservative behavior.
+        return event_type not in (
+            ResponsesAPIStreamEvents.RESPONSE_CREATED,
+            ResponsesAPIStreamEvents.RESPONSE_IN_PROGRESS,
+            ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
+            ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE,
+            ResponsesAPIStreamEvents.CONTENT_PART_ADDED,
+            ResponsesAPIStreamEvents.CONTENT_PART_DONE,
+            ResponsesAPIStreamEvents.RESPONSE_PART_ADDED,
+            ResponsesAPIStreamEvents.REASONING_SUMMARY_PART_DONE,
+            ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DELTA,
+            ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DONE,
+            ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
+            ResponsesAPIStreamEvents.OUTPUT_TEXT_DONE,
+            ResponsesAPIStreamEvents.REFUSAL_DELTA,
+            ResponsesAPIStreamEvents.REFUSAL_DONE,
+            ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA,
+            ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE,
+            ResponsesAPIStreamEvents.ERROR,
+            "response.reasoning_text.delta",
+            "response.reasoning_text.done",
+            "response.custom_tool_call_input.delta",
+            "response.custom_tool_call_input.done",
+            "response.queued",
+            "response.audio.delta",
+            "response.audio.done",
+            "response.audio_transcript.delta",
+            "response.audio_transcript.done",
+            ResponsesAPIStreamEvents.IMAGE_GENERATION_PARTIAL_IMAGE,
+        )
+
+    def _record_effective_output_time(self, item: Any) -> None:
+        if not self.is_effective_output(item):
+            return
+        update_completion_start_time = getattr(
+            self.logging_obj, "_update_completion_start_time", None
+        )
+        if getattr(
+            self.logging_obj, "completion_start_time", None
+        ) is None and callable(update_completion_start_time):
+            update_completion_start_time(completion_start_time=datetime.now())
+
     def _log_incomplete_response(self, chunk: Any) -> None:
         response = self._get_response_field(chunk, "response")
         incomplete_details = self._get_response_field(response, "incomplete_details")
@@ -398,14 +486,6 @@ class BaseResponsesAPIStreamingIterator:
             self.finished = True
             return None
 
-        update_completion_start_time = getattr(
-            self.logging_obj, "_update_completion_start_time", None
-        )
-        if getattr(
-            self.logging_obj, "completion_start_time", None
-        ) is None and callable(update_completion_start_time):
-            update_completion_start_time(completion_start_time=datetime.now())
-
         try:
             # Parse the JSON chunk
             parsed_chunk = json.loads(chunk)
@@ -419,6 +499,7 @@ class BaseResponsesAPIStreamingIterator:
                         logging_obj=self.logging_obj,
                     )
                 )
+                self._record_effective_output_time(openai_responses_api_chunk)
 
                 # Only when the SSE JSON carries a response body (delta events do not).
                 # Using getattr(..., "response") alone is unsafe with Mocks: they synthesize a
@@ -1386,6 +1467,7 @@ class MockResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             raise StopAsyncIteration
         evt = self._events[self._idx]
         self._idx += 1
+        self._record_effective_output_time(evt)
         return evt
 
     def __iter__(self):
@@ -1397,6 +1479,7 @@ class MockResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             raise StopIteration
         evt = self._events[self._idx]
         self._idx += 1
+        self._record_effective_output_time(evt)
         return evt
 
     def _collect_text(self, resp: ResponsesAPIResponse) -> str:

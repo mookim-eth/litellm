@@ -17,6 +17,7 @@ import os
 import sys
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -41,7 +42,7 @@ from litellm.types.llms.openai import (
 class TestBaseResponsesAPIStreamingIterator:
     """Test cases for BaseResponsesAPIStreamingIterator"""
 
-    def test_process_chunk_stamps_completion_start_time_once(self):
+    def test_process_chunk_stamps_completion_start_time_on_effective_output(self):
         from litellm.responses.streaming_iterator import (
             ResponsesAPIStreamingIterator,
         )
@@ -64,7 +65,22 @@ class TestBaseResponsesAPIStreamingIterator:
             update_completion_start_time
         )
         mock_config = Mock(spec=BaseResponsesAPIConfig)
-        mock_config.transform_streaming_response.side_effect = [Mock(), Mock()]
+        mock_config.transform_streaming_response.side_effect = [
+            SimpleNamespace(type=ResponsesAPIStreamEvents.RESPONSE_CREATED),
+            SimpleNamespace(type=ResponsesAPIStreamEvents.RESPONSE_IN_PROGRESS),
+            SimpleNamespace(
+                type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
+                delta="",
+            ),
+            SimpleNamespace(
+                type="response.reasoning_text.delta",
+                delta="thinking",
+            ),
+            SimpleNamespace(
+                type=ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA,
+                delta='{"city":"Paris"}',
+            ),
+        ]
 
         iterator = ResponsesAPIStreamingIterator(
             response=mock_response,
@@ -75,8 +91,21 @@ class TestBaseResponsesAPIStreamingIterator:
         )
 
         iterator._process_chunk(json.dumps({"type": "response.created"}))
+        iterator._process_chunk(json.dumps({"type": "response.in_progress"}))
         iterator._process_chunk(
-            json.dumps({"type": "response.output_text.delta", "delta": "hello"})
+            json.dumps({"type": "response.output_text.delta", "delta": ""})
+        )
+        mock_logging_obj._update_completion_start_time.assert_not_called()
+        iterator._process_chunk(
+            json.dumps({"type": "response.reasoning_text.delta", "delta": "thinking"})
+        )
+        iterator._process_chunk(
+            json.dumps(
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "delta": '{"city":"Paris"}',
+                }
+            )
         )
 
         mock_logging_obj._update_completion_start_time.assert_called_once()
@@ -85,6 +114,73 @@ class TestBaseResponsesAPIStreamingIterator:
         ]
         assert isinstance(stamped, datetime)
         assert mock_logging_obj.model_call_details["completion_start_time"] == stamped
+
+    @pytest.mark.parametrize(
+        ("event", "expected"),
+        [
+            (SimpleNamespace(type=ResponsesAPIStreamEvents.RESPONSE_CREATED), False),
+            (
+                SimpleNamespace(type=ResponsesAPIStreamEvents.RESPONSE_IN_PROGRESS),
+                False,
+            ),
+            (
+                SimpleNamespace(
+                    type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA, delta=""
+                ),
+                False,
+            ),
+            (
+                SimpleNamespace(type="response.reasoning_text.delta", delta="reason"),
+                True,
+            ),
+            (
+                SimpleNamespace(
+                    type=ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA,
+                    delta="{}",
+                ),
+                True,
+            ),
+            (
+                SimpleNamespace(
+                    type=ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE,
+                    item={"type": "function_call", "name": "lookup", "arguments": ""},
+                ),
+                True,
+            ),
+        ],
+    )
+    def test_effective_output_matches_router_commit_events(self, event, expected):
+        assert BaseResponsesAPIStreamingIterator.is_effective_output(event) is expected
+
+    def test_mock_iterator_stamps_first_effective_output(self):
+        from litellm.responses.streaming_iterator import (
+            MockResponsesAPIStreamingIterator,
+        )
+
+        mock_logging_obj = Mock(spec=LiteLLMLoggingObj)
+        mock_logging_obj.completion_start_time = None
+
+        def update_completion_start_time(*, completion_start_time):
+            mock_logging_obj.completion_start_time = completion_start_time
+
+        mock_logging_obj._update_completion_start_time.side_effect = (
+            update_completion_start_time
+        )
+        iterator = object.__new__(MockResponsesAPIStreamingIterator)
+        iterator.logging_obj = mock_logging_obj
+        iterator._events = [
+            SimpleNamespace(
+                type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA, delta="hello"
+            ),
+            SimpleNamespace(
+                type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA, delta=" world"
+            ),
+        ]
+        iterator._idx = 0
+
+        assert next(iterator).delta == "hello"
+        assert next(iterator).delta == " world"
+        mock_logging_obj._update_completion_start_time.assert_called_once()
 
     def test_done_marker_does_not_stamp_completion_start_time(self):
         from litellm.responses.streaming_iterator import (

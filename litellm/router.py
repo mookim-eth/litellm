@@ -3968,8 +3968,6 @@ class Router:
             BaseResponsesAPIStreamingIterator,
             _log_slow_stream_ttft_if_needed,
         )
-        from litellm.types.llms.openai import ResponsesAPIStreamEvents
-
         router_self = self
 
         class ResponsesFallbackStreamWrapper(BaseResponsesAPIStreamingIterator):
@@ -4004,81 +4002,6 @@ class Router:
                     record()
 
         wrapper: ResponsesFallbackStreamWrapper
-
-        def should_commit_stream(item: Any) -> bool:
-            field = BaseResponsesAPIStreamingIterator._get_response_field
-            event_type = field(item, "type")
-            # Non-empty text (including reasoning/refusal), tool arguments and
-            # image/audio data are output; lifecycle and empty deltas are not.
-            for name in (
-                "delta",
-                "text",
-                "refusal",
-                "arguments",
-                "input",
-                "partial_image_b64",
-            ):
-                value = field(item, name)
-                if isinstance(value, str) and value:
-                    return True
-            part = field(item, "part")
-            if field(part, "text") or field(part, "refusal"):
-                return True
-            output_item = field(item, "item")
-            if field(output_item, "arguments") or field(output_item, "input"):
-                return True
-            if output_item is not None:
-                if (
-                    event_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE
-                    and field(output_item, "type") == "function_call"
-                    and field(output_item, "name")
-                ):
-                    return True  # A complete no-argument tool call is valid output.
-                for content in (
-                    field(output_item, "content") or field(output_item, "summary") or []
-                ):
-                    if field(content, "text") or field(content, "refusal"):
-                        return True
-                if field(output_item, "type") not in (
-                    None,
-                    "message",
-                    "reasoning",
-                    "function_call",
-                    "custom_tool_call",
-                ):
-                    return True  # Preserve non-replay semantics for other tools.
-            # Built-in tools may already have side effects. Do not replay a
-            # request once the provider reports that tool execution has started.
-            # Unknown event kinds retain the previous conservative behavior.
-            return event_type not in (
-                ResponsesAPIStreamEvents.RESPONSE_CREATED,
-                ResponsesAPIStreamEvents.RESPONSE_IN_PROGRESS,
-                ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED,
-                ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE,
-                ResponsesAPIStreamEvents.CONTENT_PART_ADDED,
-                ResponsesAPIStreamEvents.CONTENT_PART_DONE,
-                ResponsesAPIStreamEvents.RESPONSE_PART_ADDED,
-                ResponsesAPIStreamEvents.REASONING_SUMMARY_PART_DONE,
-                ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DELTA,
-                ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DONE,
-                ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
-                ResponsesAPIStreamEvents.OUTPUT_TEXT_DONE,
-                ResponsesAPIStreamEvents.REFUSAL_DELTA,
-                ResponsesAPIStreamEvents.REFUSAL_DONE,
-                ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA,
-                ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE,
-                ResponsesAPIStreamEvents.ERROR,
-                "response.reasoning_text.delta",
-                "response.reasoning_text.done",
-                "response.custom_tool_call_input.delta",
-                "response.custom_tool_call_input.done",
-                "response.queued",
-                "response.audio.delta",
-                "response.audio.done",
-                "response.audio_transcript.delta",
-                "response.audio_transcript.done",
-                ResponsesAPIStreamEvents.IMAGE_GENERATION_PARTIAL_IMAGE,
-            )
 
         trace = getattr(model_response, "request_data", {})
         trace = (
@@ -4178,7 +4101,9 @@ class Router:
                             observed_event_types.append(event_type_value)
                         if (
                             not stream_committed
-                            and not should_commit_stream(item)
+                            and not BaseResponsesAPIStreamingIterator.is_effective_output(
+                                item
+                            )
                         ):
                             buffered_events.append(item)
                             continue
