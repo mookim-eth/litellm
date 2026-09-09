@@ -499,6 +499,7 @@ async def test_auth_with_allowed_routes(route, should_raise_error):
         # Internal User - allowed read-only routes
         ("/global/spend/logs", "internal_user", True),
         ("/spend/logs/ui", "internal_user", True),
+        ("/spend/logs/ui/request-owned-by-user", "internal_user", True),
         ("/global/activity/cache_hits", "internal_user", True),
         ("/health/services", "internal_user", True),
         # Internal User - BLOCKED from admin routes (security fix)
@@ -508,6 +509,7 @@ async def test_auth_with_allowed_routes(route, should_raise_error):
         ("/organization/member_add", "internal_user", False),
         # Internal User Viewer - allowed spend routes only
         ("/spend/logs/ui", "internal_user_viewer", True),
+        ("/spend/logs/ui/request-owned-by-viewer", "internal_user_viewer", True),
         ("/global/spend/all_tag_names", "internal_user_viewer", True),
         # Internal User Viewer - blocked from admin routes
         ("/config/update", "internal_user_viewer", False),

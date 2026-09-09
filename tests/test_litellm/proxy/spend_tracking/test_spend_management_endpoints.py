@@ -318,6 +318,32 @@ async def test_assert_user_can_view_request_id_rejects_both_users_none():
     assert exc_info.value.status_code == 403
 
 
+@pytest.mark.asyncio
+async def test_assert_user_can_view_request_id_rejects_missing_row():
+    """Do not consult external payload stores when DB ownership cannot be proven."""
+
+    class MockSpendLogs:
+        async def find_unique(self, where, include=None):
+            return None
+
+    class MockDB:
+        def __init__(self):
+            self.litellm_spendlogs = MockSpendLogs()
+
+    class MockPrisma:
+        def __init__(self):
+            self.db = MockDB()
+
+    auth = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER, user_id="owner-user"
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await spend_management_endpoints._assert_user_can_view_request_id(
+            MockPrisma(), auth, "missing-request"
+        )
+    assert exc_info.value.status_code == 403
+
+
 def test_ui_view_request_response_forbids_non_admin_without_db(client, monkeypatch):
     """
     Without prisma, non-admins cannot be authorized to read request/response
@@ -336,6 +362,61 @@ def test_ui_view_request_response_forbids_non_admin_without_db(client, monkeypat
         assert response.status_code == 403
         body = response.json()
         assert "database" in str(body).lower()
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+
+@pytest.mark.parametrize(
+    "authenticated_user_id, expected_status",
+    [("owner-user", 200), ("different-user", 403)],
+)
+def test_ui_view_request_response_only_returns_payload_to_owning_user(
+    client, monkeypatch, authenticated_user_id, expected_status
+):
+    """The detail route exposes stored content only to the spend-log owner."""
+
+    class MockRow:
+        user = "owner-user"
+        team_id = None
+
+    class MockSpendLogs:
+        async def find_unique(self, where, include=None):
+            assert where == {"request_id": "owned-request"}
+            return MockRow()
+
+    class MockDB:
+        def __init__(self):
+            self.litellm_spendlogs = MockSpendLogs()
+
+        async def query_raw(self, query, request_id):
+            assert request_id == "owned-request"
+            return [
+                {
+                    "messages": '[{"role":"user","content":"private prompt"}]',
+                    "response": '{"choices":[{"message":{"content":"private response"}}]}',
+                    "proxy_server_request": '{"body":{"model":"test-model"}}',
+                }
+            ]
+
+    class MockPrisma:
+        def __init__(self):
+            self.db = MockDB()
+
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", MockPrisma())
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id=authenticated_user_id,
+    )
+    try:
+        response = client.get(
+            "/spend/logs/ui/owned-request",
+            headers={"Authorization": "Bearer sk-test"},
+        )
+        assert response.status_code == expected_status
+        if expected_status == 200:
+            payload = response.json()
+            assert "private prompt" in payload["messages"]
+            assert "private response" in payload["response"]
     finally:
         app.dependency_overrides.pop(ps.user_api_key_auth, None)
 
