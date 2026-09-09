@@ -8,8 +8,9 @@ from litellm.proxy._types import LiteLLM_TeamTable, UserAPIKeyAuth
 from litellm.types.utils import CallTypes
 
 
-# Pin the existing team's ID: renaming it must not change the security boundary.
-ASTRA_TEAM_ID = "3880a488-52e7-44cc-9d91-a679452027f8"
+# The team ID is intentionally supplied by proxy configuration. If it is not
+# configured, this hook is disabled (including for Astra-named models).
+ASTRA_TEAM_ID_CONFIG_KEY = "astra_team_id"
 ASTRA_MODELS = frozenset(("gpt-6-astra", "gpt-6-astra-1", "gpt-6-astra-2"))
 
 
@@ -17,7 +18,21 @@ class AstraTeamAccess(CustomLogger):
     """Require astra_team membership in addition to normal model permissions."""
 
     @staticmethod
+    def _get_configured_team_id() -> Optional[str]:
+        """Return the configured Astra team ID, or disable the hook if absent."""
+        from litellm.proxy.proxy_server import general_settings
+
+        settings = general_settings if isinstance(general_settings, dict) else {}
+        team_id = settings.get(ASTRA_TEAM_ID_CONFIG_KEY)
+        if isinstance(team_id, str) and team_id.strip():
+            return team_id.strip()
+        return None
+
+    @staticmethod
     async def _check_access(model: Any, auth: Optional[UserAPIKeyAuth]) -> None:
+        configured_team_id = AstraTeamAccess._get_configured_team_id()
+        if configured_team_id is None:
+            return
         if not isinstance(model, str) or model.rsplit("/", 1)[-1] not in ASTRA_MODELS:
             return
 
@@ -36,7 +51,7 @@ class AstraTeamAccess(CustomLogger):
             if prisma_client is None:
                 raise denied
             row = await prisma_client.db.litellm_teamtable.find_unique(
-                where={"team_id": ASTRA_TEAM_ID}
+                where={"team_id": configured_team_id}
             )
             if row is None:
                 raise denied
@@ -46,7 +61,7 @@ class AstraTeamAccess(CustomLogger):
             raise denied from None
         if team.blocked:
             raise denied
-        if auth.team_id == ASTRA_TEAM_ID or (
+        if auth.team_id == configured_team_id or (
             auth.user_id is not None
             and any(
                 member.user_id == auth.user_id for member in team.members_with_roles

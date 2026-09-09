@@ -8,7 +8,10 @@ from fastapi import HTTPException
 import litellm
 from litellm.caching.caching import DualCache
 from litellm.proxy._types import LiteLLM_TeamTableCachedObj, UserAPIKeyAuth
-from litellm.proxy.hooks.astra_team_access import ASTRA_TEAM_ID, AstraTeamAccess
+from litellm.proxy.hooks.astra_team_access import AstraTeamAccess
+
+
+CONFIGURED_ASTRA_TEAM_ID = "test-astra-team"
 
 
 @pytest.fixture
@@ -17,7 +20,7 @@ def team_lookup(monkeypatch):
 
     lookup = AsyncMock(
         return_value=LiteLLM_TeamTableCachedObj(
-            team_id=ASTRA_TEAM_ID,
+            team_id=CONFIGURED_ASTRA_TEAM_ID,
             members_with_roles=[{"user_id": "member", "role": "user"}],
         )
     )
@@ -27,6 +30,11 @@ def team_lookup(monkeypatch):
         SimpleNamespace(
             db=SimpleNamespace(litellm_teamtable=SimpleNamespace(find_unique=lookup))
         ),
+    )
+    monkeypatch.setattr(
+        proxy_server,
+        "general_settings",
+        {"astra_team_id": CONFIGURED_ASTRA_TEAM_ID},
     )
     return lookup
 
@@ -54,8 +62,8 @@ async def test_should_deny_nonmembers_regardless_of_model_allowlist(
     [
         ("member", None),
         ("member", "other"),
-        ("outsider", ASTRA_TEAM_ID),
-        (None, ASTRA_TEAM_ID),
+        ("outsider", CONFIGURED_ASTRA_TEAM_ID),
+        (None, CONFIGURED_ASTRA_TEAM_ID),
     ],
 )
 async def test_should_allow_user_membership_or_key_team(team_lookup, user_id, team_id):
@@ -68,7 +76,7 @@ async def test_should_allow_user_membership_or_key_team(team_lookup, user_id, te
 async def test_should_not_exempt_admins_or_trust_forged_identity(team_lookup):
     for auth in (
         None,
-        {"user_id": "member", "team_id": ASTRA_TEAM_ID},
+        {"user_id": "member", "team_id": CONFIGURED_ASTRA_TEAM_ID},
         UserAPIKeyAuth(user_id="outsider", user_role="proxy_admin"),
     ):
         with pytest.raises(HTTPException):
@@ -77,7 +85,7 @@ async def test_should_not_exempt_admins_or_trust_forged_identity(team_lookup):
 
 @pytest.mark.asyncio
 async def test_should_fail_closed_when_team_blocked_deleted_or_unavailable(team_lookup):
-    auth = UserAPIKeyAuth(user_id="member", team_id=ASTRA_TEAM_ID)
+    auth = UserAPIKeyAuth(user_id="member", team_id=CONFIGURED_ASTRA_TEAM_ID)
     team_lookup.return_value.blocked = True
     with pytest.raises(HTTPException):
         await AstraTeamAccess._check_access("gpt-6-astra", auth)
@@ -93,6 +101,19 @@ async def test_should_fail_closed_when_team_blocked_deleted_or_unavailable(team_
 @pytest.mark.asyncio
 async def test_should_leave_other_models_unchanged_without_db_lookup(team_lookup):
     await AstraTeamAccess._check_access("chatgpt/gpt-5.6-luna", None)
+    team_lookup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_should_disable_astra_restriction_when_team_id_is_not_configured(
+    team_lookup, monkeypatch
+):
+    from litellm.proxy import proxy_server
+
+    monkeypatch.setattr(proxy_server, "general_settings", {})
+    await AstraTeamAccess._check_access(
+        "gpt-6-astra", UserAPIKeyAuth(user_id="outsider")
+    )
     team_lookup.assert_not_awaited()
 
 
@@ -127,7 +148,10 @@ async def test_should_keep_authenticated_identity_outside_fallback_metadata(
                 "model": "chatgpt/gpt-6-astra",
                 "litellm_logging_obj": logging_obj,
                 "metadata": {
-                    "user_api_key_auth": {"user_id": "member", "team_id": ASTRA_TEAM_ID}
+                    "user_api_key_auth": {
+                        "user_id": "member",
+                        "team_id": CONFIGURED_ASTRA_TEAM_ID,
+                    }
                 },
             },
             None,
@@ -266,14 +290,17 @@ async def test_should_use_authenticated_membership_on_public_inference_routes(
     monkeypatch.setitem(ps.app.dependency_overrides, ps.user_api_key_auth, lambda: auth)
     forged = {
         "user_api_key_user_id": "member",
-        "user_api_key_team_id": ASTRA_TEAM_ID,
-        "user_api_key_auth": {"user_id": "member", "team_id": ASTRA_TEAM_ID},
+        "user_api_key_team_id": CONFIGURED_ASTRA_TEAM_ID,
+        "user_api_key_auth": {
+            "user_id": "member",
+            "team_id": CONFIGURED_ASTRA_TEAM_ID,
+        },
     }
     data = {
         "model": "gpt-6-astra",
         "stream": stream,
         "user": "member",
-        "team_id": ASTRA_TEAM_ID,
+        "team_id": CONFIGURED_ASTRA_TEAM_ID,
         "metadata": forged,
         "litellm_metadata": forged,
         "_astra_request_auth": forged,
