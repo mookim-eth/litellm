@@ -1900,18 +1900,14 @@ async def ui_view_spend_logs(  # noqa: PLR0915
         # Build metadata filters
         metadata_filters = []
         if key_alias is not None:
+            # Prisma's JSON path filter does not support `equals` on the
+            # deployed engine. Use its supported substring filter for the
+            # initial candidate count; the UI count and rows are corrected
+            # with the exact SQL predicate below.
             key_alias_filter: dict[str, Any] = {
                 "path": ["user_api_key_alias"],
                 "string_contains": key_alias,
             }
-            # The UI filter represents a selected alias and must match it
-            # exactly. Keep the public v2 endpoint's historical substring
-            # behavior for backwards compatibility.
-            if not is_v2:
-                key_alias_filter = {
-                    "path": ["user_api_key_alias"],
-                    "equals": key_alias,
-                }
             metadata_filters.append(key_alias_filter)
 
         if error_code is not None:
@@ -2083,6 +2079,19 @@ async def ui_view_spend_logs(  # noqa: PLR0915
             )
             sql_params.append(f"%{error_message}%")
             p += 1
+
+        # Prisma's JSON path equality is not supported by the deployed
+        # engine. Recompute the UI total using the same exact SQL predicate
+        # as the paginated query so aliases such as `ab` do not count `abc`.
+        if key_alias is not None and not is_v2:
+            count_query = f'''
+                SELECT COUNT(*) AS count
+                FROM "LiteLLM_SpendLogs"
+                WHERE {" AND ".join(sql_conditions)}
+            '''
+            count_rows = await prisma_client.db.query_raw(count_query, *sql_params)
+            if count_rows and count_rows[0].get("count") is not None:
+                total_records = int(count_rows[0]["count"])
 
         # Quote column names that need quoting in SQL
         _sql_col = (

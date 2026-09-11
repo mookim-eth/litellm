@@ -82,6 +82,8 @@ def make_ui_spend_logs_mock_prisma(mock_spend_logs, filter_fn, team_lookup_fn=No
             return len(filtered)
 
         async def query_raw(self, sql_query, *params):
+            if "COUNT(*)" in sql_query.upper():
+                return [{"count": len(filtered_holder)}]
             page_size = params[-2] if len(params) >= 2 else 50
             skip = params[-1] if len(params) >= 1 else 0
             return filtered_holder[skip : skip + page_size]
@@ -2534,7 +2536,7 @@ async def test_ui_view_spend_logs_with_error_code_and_key_alias(client):
                 if "metadata" in cond:
                     mf = cond["metadata"]
                     if mf.get("path") == ["user_api_key_alias"]:
-                        key_alias = mf.get("equals")
+                        key_alias = mf.get("string_contains")
                     elif mf.get("path") == ["error_information", "error_code"]:
                         error_code = str(mf.get("equals", "")).strip('"')
             if key_alias == "test-key-1" and error_code == "500":
