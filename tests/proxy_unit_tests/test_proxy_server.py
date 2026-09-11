@@ -262,6 +262,7 @@ def test_add_headers_to_request(litellm_key_header_name):
 
     headers = {
         "Authorization": "Bearer 1234",
+        "User-Agent": "test-client/1.0",
         "X-Custom-Header": "Custom-Value",
         "X-Stainless-Header": "Stainless-Value",
         "anthropic-beta": "beta-value",
@@ -274,6 +275,7 @@ def test_add_headers_to_request(litellm_key_header_name):
         request_headers
     )
     assert forwarded_headers == {
+        "User-Agent": "test-client/1.0",
         "X-Custom-Header": "Custom-Value",
         "anthropic-beta": "beta-value",
     }
@@ -311,6 +313,7 @@ def test_chat_completion_forward_headers(
         }
 
         headers_to_forward = {
+            "User-Agent": "test-client/1.0",
             "X-Custom-Header": "Custom-Value",
             "X-Another-Header": "Another-Value",
         }
@@ -330,6 +333,7 @@ def test_chat_completion_forward_headers(
             assert "headers" not in mock_acompletion.call_args.kwargs
         else:
             assert mock_acompletion.call_args.kwargs["headers"] == {
+                "user-agent": "test-client/1.0",
                 "x-custom-header": "Custom-Value",
                 "x-another-header": "Another-Value",
             }

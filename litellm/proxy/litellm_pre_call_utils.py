@@ -834,6 +834,8 @@ class LiteLLMProxyRequestSetup:
         Looks for any `x-` headers and sends them to the LLM Provider.
 
         [07/09/2025] - Support 'anthropic-beta' header as well.
+        User-Agent is also forwarded when client-header forwarding is enabled so
+        upstreams such as ChatGPT can identify the originating client.
         """
         forwarded_headers = {}
         for header, value in headers.items():
@@ -842,6 +844,8 @@ class LiteLLMProxyRequestSetup:
             ):  # causes openai sdk to fail
                 forwarded_headers[header] = value
             elif header.lower().startswith("anthropic-beta"):
+                forwarded_headers[header] = value
+            elif header.lower() == "user-agent":
                 forwarded_headers[header] = value
 
         return forwarded_headers
