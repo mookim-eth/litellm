@@ -1769,7 +1769,7 @@ async def ui_view_spend_logs(  # noqa: PLR0915
         description="Filter logs by model ID (litellm model deployment id)",
     ),
     key_alias: Optional[str] = fastapi.Query(
-        default=None, description="Filter logs by key alias"
+        default=None, description="Filter logs by key alias (exact on the UI route)"
     ),
     end_user: Optional[str] = fastapi.Query(
         default=None, description="Filter logs by end user"
@@ -1900,12 +1900,19 @@ async def ui_view_spend_logs(  # noqa: PLR0915
         # Build metadata filters
         metadata_filters = []
         if key_alias is not None:
-            metadata_filters.append(
-                {
+            key_alias_filter: dict[str, Any] = {
+                "path": ["user_api_key_alias"],
+                "string_contains": key_alias,
+            }
+            # The UI filter represents a selected alias and must match it
+            # exactly. Keep the public v2 endpoint's historical substring
+            # behavior for backwards compatibility.
+            if not is_v2:
+                key_alias_filter = {
                     "path": ["user_api_key_alias"],
-                    "string_contains": key_alias,
+                    "equals": key_alias,
                 }
-            )
+            metadata_filters.append(key_alias_filter)
 
         if error_code is not None:
             metadata_filters.append(
@@ -2057,8 +2064,12 @@ async def ui_view_spend_logs(  # noqa: PLR0915
 
         # Metadata JSON filters (PostgreSQL JSONB operators)
         if key_alias is not None:
-            sql_conditions.append(f"metadata->>'user_api_key_alias' LIKE ${p}")
-            sql_params.append(f"%{key_alias}%")
+            if is_v2:
+                sql_conditions.append(f"metadata->>'user_api_key_alias' LIKE ${p}")
+                sql_params.append(f"%{key_alias}%")
+            else:
+                sql_conditions.append(f"metadata->>'user_api_key_alias' = ${p}")
+                sql_params.append(key_alias)
             p += 1
         if error_code is not None:
             sql_conditions.append(

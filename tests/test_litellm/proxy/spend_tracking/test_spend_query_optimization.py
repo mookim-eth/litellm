@@ -209,6 +209,7 @@ async def test_spend_logs_ui_wraps_params_in_at_time_zone_utc(monkeypatch):
         request_id=None,
         start_date="2026-02-16 00:00:00",
         end_date="2026-02-16 23:59:59",
+        key_alias="ab",
         page=1,
         page_size=50,
         sort_by="startTime",
@@ -222,3 +223,5 @@ async def test_spend_logs_ui_wraps_params_in_at_time_zone_utc(monkeypatch):
         "/spend/logs/ui must wrap both `startTime` bounds with "
         f"`AT TIME ZONE 'UTC'`. SQL was:\n{sql}"
     )
+    assert "metadata->>'user_api_key_alias' = $" in sql
+    assert "metadata->>'user_api_key_alias' LIKE" not in sql

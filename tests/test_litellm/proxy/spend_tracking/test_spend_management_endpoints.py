@@ -2479,7 +2479,7 @@ async def test_ui_view_spend_logs_with_error_message(client):
 
 @pytest.mark.asyncio
 async def test_ui_view_spend_logs_with_error_code_and_key_alias(client):
-    """Test merging error_code and key_alias filters with AND logic"""
+    """Test merging error_code and exact key_alias filters with AND logic"""
     mock_spend_logs = [
         {
             "id": "log1",
@@ -2514,6 +2514,17 @@ async def test_ui_view_spend_logs_with_error_code_and_key_alias(client):
             "model": "gpt-4",
             "metadata": '{"user_api_key_alias": "test-key-1", "error_information": {"error_code": "500"}}',
         },
+        {
+            "id": "log4",
+            "request_id": "req4",
+            "api_key": "sk-test-key",
+            "user": "test_user_4",
+            "team_id": "team1",
+            "spend": 0.20,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+            "metadata": '{"user_api_key_alias": "test-key-10", "error_information": {"error_code": "500"}}',
+        },
     ]
 
     def filter_by_error_code_and_key_alias(where):
@@ -2523,7 +2534,7 @@ async def test_ui_view_spend_logs_with_error_code_and_key_alias(client):
                 if "metadata" in cond:
                     mf = cond["metadata"]
                     if mf.get("path") == ["user_api_key_alias"]:
-                        key_alias = mf.get("string_contains")
+                        key_alias = mf.get("equals")
                     elif mf.get("path") == ["error_information", "error_code"]:
                         error_code = str(mf.get("equals", "")).strip('"')
             if key_alias == "test-key-1" and error_code == "500":
