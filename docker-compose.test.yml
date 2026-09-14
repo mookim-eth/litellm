@@ -1,0 +1,53 @@
+name: litellm-codex-gemini-test
+
+services:
+  test-db:
+    image: postgres:16
+    container_name: litellm-codex-gemini-test-db
+    environment:
+      POSTGRES_DB: litellm_test
+      POSTGRES_USER: llmproxy_test
+      POSTGRES_PASSWORD: litellm_test_only
+    volumes:
+      - litellm_codex_gemini_test_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d litellm_test -U llmproxy_test"]
+      interval: 1s
+      timeout: 5s
+      retries: 20
+
+  litellm-test:
+    image: ${LITELLM_TEST_IMAGE:-litellm:codex-gemini-test}
+    container_name: litellm-litellm-test-1
+    command:
+      - "--config=/app/config.yaml"
+    ports:
+      - "127.0.0.1:4001:4000"
+    environment:
+      DATABASE_URL: postgresql://llmproxy_test:litellm_test_only@test-db:5432/litellm_test
+      DISABLE_SCHEMA_UPDATE: "false"
+      STORE_MODEL_IN_DB: "True"
+      CHATGPT_TOKEN_DIR: "/root/litellm/auth"
+      CHATGPT_DISABLE_INTERACTIVE_LOGIN: "true"
+      LITELLM_LOCAL_MODEL_COST_MAP: "true"
+    env_file:
+      - /root/litellm/.env
+    volumes:
+      - /root/litellm/config.yaml:/app/config.yaml:ro
+      - /root/litellm/auth:/root/litellm/auth:ro
+    depends_on:
+      test-db:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness')"
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 15s
+
+volumes:
+  litellm_codex_gemini_test_data:
+    name: litellm_codex_gemini_test_data

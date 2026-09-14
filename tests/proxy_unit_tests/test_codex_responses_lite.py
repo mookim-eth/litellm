@@ -190,6 +190,7 @@ async def test_responses_endpoint_returns_retryable_sse_after_recording_429():
     payload = json.loads(event_lines[1].removeprefix("data: "))
     assert payload == {
         "type": "response.failed",
+        "sequence_number": 0,
         "response": {
             "error": {
                 "code": "rate_limit_exceeded",

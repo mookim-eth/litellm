@@ -6447,7 +6447,10 @@ async def _coalesce_plain_text_stream(response: Any):  # noqa: PLR0915
 
 
 async def async_data_generator(  # noqa: PLR0915
-    response, user_api_key_dict: UserAPIKeyAuth, request_data: dict
+    response,
+    user_api_key_dict: UserAPIKeyAuth,
+    request_data: dict,
+    is_responses_api: bool = False,
 ):
     verbose_proxy_logger.debug("inside generator")
     try:
@@ -6457,6 +6460,7 @@ async def async_data_generator(  # noqa: PLR0915
         )
         zai_responses_sequence_number = 0
         zai_responses_seen_events: set[tuple[str, str]] = set()
+        responses_error_sequence_number = 0
         model_mismatch_logged = False
         first_proxy_yield_recorded = False
         # Use a running string instead of list + join to avoid O(n^2) overhead.
@@ -6571,9 +6575,23 @@ async def async_data_generator(  # noqa: PLR0915
 
                     setattr(chunk, "sequence_number", zai_responses_sequence_number)
                     zai_responses_sequence_number += 1
+                chunk_sequence_number = getattr(chunk, "sequence_number", None)
+                if isinstance(chunk_sequence_number, int):
+                    responses_error_sequence_number = max(
+                        responses_error_sequence_number, chunk_sequence_number + 1
+                    )
                 chunk = chunk.model_dump_json(exclude_none=True, exclude_unset=True)
             elif isinstance(chunk, str) and chunk.startswith("data: "):
-                error_message = chunk
+                if is_responses_api:
+                    from litellm.proxy.response_api_endpoints.error_responses import (
+                        serialize_responses_error_event,
+                    )
+
+                    error_message = serialize_responses_error_event(
+                        chunk, sequence_number=responses_error_sequence_number
+                    )
+                else:
+                    error_message = chunk
                 break
 
             try:
@@ -6591,6 +6609,8 @@ async def async_data_generator(  # noqa: PLR0915
         # Streaming is done, yield the [DONE] chunk
         if error_message is not None:
             yield error_message
+            if is_responses_api:
+                return
         done_message = "[DONE]"
         yield f"data: {done_message}\n\n"
     except Exception as e:
@@ -6640,6 +6660,7 @@ async def async_data_generator(  # noqa: PLR0915
             # Responses event shape that Codex recognizes.
             retryable_error = {
                 "type": "response.failed",
+                "sequence_number": responses_error_sequence_number,
                 "response": {
                     "error": {
                         "code": "rate_limit_exceeded",
@@ -6649,7 +6670,8 @@ async def async_data_generator(  # noqa: PLR0915
                     }
                 },
             }
-            yield f"data: {json.dumps(retryable_error)}\n\n"
+            event_prefix = "event: response.failed\n" if is_responses_api else ""
+            yield f"{event_prefix}data: {json.dumps(retryable_error)}\n\n"
             return
         if getattr(e, "is_responses_stream_overload", False):
             # Codex treats server_is_overloaded/slow_down as terminal errors. Map
@@ -6657,6 +6679,7 @@ async def async_data_generator(  # noqa: PLR0915
             # shape, including the exact delay phrase parsed by the client.
             retryable_error = {
                 "type": "response.failed",
+                "sequence_number": responses_error_sequence_number,
                 "response": {
                     "error": {
                         "code": "rate_limit_exceeded",
@@ -6667,10 +6690,13 @@ async def async_data_generator(  # noqa: PLR0915
                     }
                 },
             }
-            yield f"data: {json.dumps(retryable_error)}\n\n"
+            event_prefix = "event: response.failed\n" if is_responses_api else ""
+            yield f"{event_prefix}data: {json.dumps(retryable_error)}\n\n"
             return
-        if isinstance(e, HTTPException):
+        if isinstance(e, HTTPException) and not is_responses_api:
             raise e
+        if isinstance(e, HTTPException):
+            error_msg = str(e.detail)
         elif isinstance(e, StreamingCallbackError):
             error_msg = str(e)
         else:
@@ -6686,8 +6712,18 @@ async def async_data_generator(  # noqa: PLR0915
             param=getattr(e, "param", "None"),
             code=getattr(e, "status_code", 500),
         )
-        error_returned = json.dumps({"error": proxy_exception.to_dict()})
-        yield f"data: {error_returned}\n\n"
+        if is_responses_api:
+            from litellm.proxy.response_api_endpoints.error_responses import (
+                serialize_responses_error_event,
+            )
+
+            yield serialize_responses_error_event(
+                proxy_exception,
+                sequence_number=responses_error_sequence_number,
+            )
+        else:
+            error_returned = json.dumps({"error": proxy_exception.to_dict()})
+            yield f"data: {error_returned}\n\n"
     finally:
         # Close the response stream to release the underlying HTTP connection
         # back to the connection pool. This prevents pool exhaustion when
@@ -6722,6 +6758,18 @@ def select_data_generator(
         response=response,
         user_api_key_dict=user_api_key_dict,
         request_data=request_data,
+    )
+
+
+def select_responses_data_generator(
+    response, user_api_key_dict: UserAPIKeyAuth, request_data: dict
+):
+    """Select the stream serializer with the Responses SSE contract enabled."""
+    return async_data_generator(
+        response=response,
+        user_api_key_dict=user_api_key_dict,
+        request_data=request_data,
+        is_responses_api=True,
     )
 
 
@@ -7632,8 +7680,20 @@ _PUBLIC_V1_MODEL_NAMES = frozenset(
 
 def _is_public_v1_model(model_name: str) -> bool:
     return model_name in _PUBLIC_V1_MODEL_NAMES or model_name.startswith(
-        ("glm-", "grok-")
+        ("gemini-", "glm-", "grok-")
     )
+
+
+def _model_list_response(model_data: List[dict], request: Request) -> Dict[str, Any]:
+    response: Dict[str, Any] = {
+        "data": model_data,
+        "object": "list",
+    }
+    if "codex" in request.headers.get("user-agent", "").lower():
+        # Codex's remote-model discovery client uses the models envelope,
+        # while OpenAI SDKs use the standard data/object list shape.
+        response["models"] = model_data
+    return response
 
 
 @router.get(
@@ -7643,6 +7703,7 @@ def _is_public_v1_model(model_name: str) -> bool:
     "/models", dependencies=[Depends(user_api_key_auth)], tags=["model management"]
 )  # if project requires model list
 async def model_list(
+    request: Request,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
     return_wildcard_routes: Optional[bool] = False,
     team_id: Optional[str] = None,
@@ -7740,10 +7801,7 @@ async def model_list(
             model for model in model_data if _is_public_v1_model(model.get("id", ""))
         ]
 
-        return dict(
-            data=model_data,
-            object="list",
-        )
+        return _model_list_response(model_data=model_data, request=request)
 
     # Otherwise, use the normal behavior (current implementation)
     # Get available models for the user
@@ -7777,10 +7835,7 @@ async def model_list(
         model for model in model_data if _is_public_v1_model(model.get("id", ""))
     ]
 
-    return dict(
-        data=model_data,
-        object="list",
-    )
+    return _model_list_response(model_data=model_data, request=request)
 
 
 @router.get(

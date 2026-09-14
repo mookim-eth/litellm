@@ -50,12 +50,29 @@ async def _assert_retry_event(response):
     event = json.loads(body.split("data: ", 1)[1])
     assert event == {
         "type": "response.failed",
+        "sequence_number": 0,
         "response": {
             "error": {
                 "code": "rate_limit_exceeded",
                 "message": "Rate limit exceeded. Please try again in 10 seconds.",
             }
         },
+    }
+
+
+async def _assert_error_event(response, mapped_error):
+    assert response.status_code == 200
+    assert response.media_type == "text/event-stream"
+    body = b"".join([chunk async for chunk in response.body_iterator]).decode()
+    assert body.startswith("event: error\n")
+    assert "[DONE]" not in body
+    event = json.loads(body.split("data: ", 1)[1])
+    assert event == {
+        "type": "error",
+        "code": str(mapped_error.code),
+        "message": mapped_error.message,
+        "param": None,
+        "sequence_number": 0,
     }
 
 
@@ -181,15 +198,6 @@ async def test_should_preserve_mapped_headers_and_record_failure(
         ("openai-python/2.30.0", True, _rate_limit()),
         ("", True, _rate_limit()),
         ("codex_cli_rs/0.144.4", False, _rate_limit()),
-        ("codex_cli_rs/0.144.4", True, _rate_limit("openai")),
-        ("codex_cli_rs/0.144.4", True, HTTPException(429, "TPM limit reached")),
-        (
-            "codex_cli_rs/0.144.4",
-            True,
-            litellm.AuthenticationError(
-                message="token_revoked", llm_provider="chatgpt", model="gpt-5.6-sol"
-            ),
-        ),
     ],
 )
 async def test_should_preserve_unrelated_error_responses(user_agent, stream, error):
@@ -215,9 +223,43 @@ async def test_should_preserve_unrelated_error_responses(user_agent, stream, err
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        _rate_limit("openai"),
+        HTTPException(429, "TPM limit reached"),
+        litellm.AuthenticationError(
+            message="token_revoked", llm_provider="chatgpt", model="gpt-5.6-sol"
+        ),
+    ],
+)
+async def test_should_return_other_codex_stream_failures_as_error_events(error):
+    processor = AsyncMock()
+    mapped_error = ProxyException(
+        message=str(error),
+        type="error",
+        param=None,
+        code=getattr(error, "status_code", 500),
+    )
+    processor._handle_llm_api_exception.side_effect = mapped_error
+
+    response = await _handle_responses_api_exception(
+        error=error,
+        request=_request(),
+        data={"stream": True},
+        processor=processor,
+        user_api_key_dict=UserAPIKeyAuth(),
+        proxy_logging_obj=None,
+        version=None,
+    )
+
+    await _assert_error_event(response, mapped_error)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("handler_raises", [False, True])
 @pytest.mark.parametrize("code", [403, 500])
-async def test_should_not_hide_failure_hook_errors(code, handler_raises):
+async def test_should_expose_failure_hook_errors_in_codex_stream(code, handler_raises):
     processor = AsyncMock()
     mapped_error = ProxyException(
         message="hook error", type="error", param=None, code=code
@@ -226,17 +268,16 @@ async def test_should_not_hide_failure_hook_errors(code, handler_raises):
         processor._handle_llm_api_exception.side_effect = mapped_error
     else:
         processor._handle_llm_api_exception.return_value = mapped_error
-    with pytest.raises(ProxyException) as exc:
-        await _handle_responses_api_exception(
-            error=_rate_limit(),
-            request=_request(),
-            data={"stream": True},
-            processor=processor,
-            user_api_key_dict=UserAPIKeyAuth(),
-            proxy_logging_obj=None,
-            version=None,
-        )
-    assert exc.value is mapped_error
+    response = await _handle_responses_api_exception(
+        error=_rate_limit(),
+        request=_request(),
+        data={"stream": True},
+        processor=processor,
+        user_api_key_dict=UserAPIKeyAuth(),
+        proxy_logging_obj=None,
+        version=None,
+    )
+    await _assert_error_event(response, mapped_error)
 
 
 def _responses_ttft_timeout():
@@ -307,6 +348,7 @@ async def test_should_return_codex_ttft_408_as_retryable_http_200_after_logging(
     event = json.loads(body.removeprefix("data: "))
     assert event == {
         "type": "response.failed",
+        "sequence_number": 0,
         "response": {
             "error": {
                 "code": "rate_limit_exceeded",

@@ -2225,6 +2225,56 @@ async def test_async_data_generator_midstream_error():
     mock_proxy_logging_obj.post_call_failure_hook.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_responses_data_generator_normalizes_bare_midstream_error_event():
+    from litellm.proxy._types import UserAPIKeyAuth
+    from litellm.proxy.proxy_server import async_data_generator
+
+    bare_error = (
+        'data: {"error":{"code":"invalid_request_error",'
+        '"message":"Gemini rejected the final model turn","param":null}}'
+    )
+
+    async def mock_streaming_iterator(*args, **kwargs):
+        yield bare_error
+
+    mock_proxy_logging_obj = MagicMock()
+    mock_proxy_logging_obj.async_post_call_streaming_iterator_hook = (
+        mock_streaming_iterator
+    )
+    mock_proxy_logging_obj.async_post_call_streaming_hook = AsyncMock(
+        side_effect=lambda **kwargs: kwargs["response"]
+    )
+    mock_proxy_logging_obj.post_call_failure_hook = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.aclose = AsyncMock()
+
+    with patch("litellm.proxy.proxy_server.proxy_logging_obj", mock_proxy_logging_obj):
+        chunks = [
+            chunk
+            async for chunk in async_data_generator(
+                mock_response,
+                UserAPIKeyAuth(),
+                {"model": "gemini-3.8-flash", "stream": True},
+                is_responses_api=True,
+            )
+        ]
+
+    assert len(chunks) == 1
+    assert chunks[0].startswith("event: error\n")
+    assert "[DONE]" not in chunks[0]
+    event = json.loads(chunks[0].split("data: ", 1)[1])
+    assert event == {
+        "type": "error",
+        "code": "invalid_request_error",
+        "message": "Gemini rejected the final model turn",
+        "param": None,
+        "sequence_number": 0,
+    }
+    assert "error" not in event
+    mock_response.aclose.assert_awaited_once()
+
+
 def _has_nested_none_values(obj, path="root"):
     """
     Recursively check if an object contains nested None values.
@@ -4817,13 +4867,16 @@ async def test_async_data_generator_maps_responses_overload_to_retryable_event()
                 mock_response,
                 MagicMock(spec=UserAPIKeyAuth),
                 {"model": "test-model", "stream": True},
+                is_responses_api=True,
             )
         ]
 
     assert len(chunks) == 1
-    event = json.loads(chunks[0].removeprefix("data: "))
+    assert chunks[0].startswith("event: response.failed\n")
+    event = json.loads(chunks[0].split("data: ", 1)[1])
     assert event == {
         "type": "response.failed",
+        "sequence_number": 0,
         "response": {
             "error": {
                 "code": "rate_limit_exceeded",

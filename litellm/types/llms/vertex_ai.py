@@ -7,9 +7,15 @@ from typing_extensions import (
 )
 
 
-class FunctionResponse(TypedDict):
-    name: str
-    response: Optional[dict]
+class FunctionResponsePart(TypedDict, total=False):
+    inline_data: "BlobType"
+    file_data: "FileDataType"
+
+
+class FunctionResponse(TypedDict, total=False):
+    name: Required[str]
+    response: Required[Optional[dict]]
+    parts: List[FunctionResponsePart]
 
 
 class FunctionCall(TypedDict):

@@ -86,6 +86,80 @@ def test_check_if_part_exists_in_parts_camel_case_snake_case():
     assert check_if_part_exists_in_parts(parts_mixed, part_mixed_casing)
 
 
+def test_gemini_history_ending_in_assistant_adds_continuation_turn():
+    contents = _gemini_convert_messages_with_history(
+        messages=[
+            {"role": "user", "content": "Start"},
+            {"role": "assistant", "content": "Intermediate answer"},
+        ],
+        model="gemini-3.8-flash",
+    )
+
+    assert [content["role"] for content in contents] == ["user", "model", "user"]
+    assert contents[-1]["parts"] == [{"text": " "}]
+
+
+def test_gemini_history_ending_in_function_call_adds_continuation_turn():
+    contents = _gemini_convert_messages_with_history(
+        messages=[
+            {"role": "user", "content": "Inspect the repository"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {"name": "inspect", "arguments": "{}"},
+                    }
+                ],
+            },
+        ],
+        model="gemini-3.8-flash",
+    )
+
+    assert [content["role"] for content in contents] == ["user", "model", "user"]
+    assert "function_call" in contents[-2]["parts"][0]
+    assert contents[-1]["parts"] == [{"text": " "}]
+
+
+def test_gemini_history_ending_in_user_is_unchanged():
+    contents = _gemini_convert_messages_with_history(
+        messages=[{"role": "user", "content": "Continue"}],
+        model="gemini-3.8-flash",
+    )
+
+    assert contents == [{"role": "user", "parts": [{"text": "Continue"}]}]
+
+
+def test_trailing_developer_message_does_not_leave_gemini_model_turn_last():
+    from litellm.llms.vertex_ai.gemini.vertex_and_google_ai_studio_gemini import (
+        VertexGeminiConfig,
+    )
+
+    messages = VertexGeminiConfig().translate_developer_role_to_system_role(
+        messages=[
+            {"role": "user", "content": "Start"},
+            {"role": "assistant", "content": "Intermediate answer"},
+            {"role": "developer", "content": "Continue with the same constraints"},
+        ]
+    )
+
+    result = _transform_request_body(
+        messages=messages,
+        model="gemini-3.8-flash",
+        optional_params={},
+        custom_llm_provider="vertex_ai",
+        litellm_params={},
+        cached_content=None,
+    )
+
+    assert result["system_instruction"]["parts"] == [
+        {"text": "Continue with the same constraints"}
+    ]
+    assert result["contents"][-1] == {"role": "user", "parts": [{"text": " "}]}
+
+
 # Tests for issue #14556: Labels field provider-aware filtering
 def test_google_genai_excludes_labels():
     """Test that Google GenAI/AI Studio endpoints exclude labels when custom_llm_provider='gemini'"""
@@ -965,36 +1039,23 @@ def test_convert_tool_response_with_base64_image():
         ]
     }
 
-    # Convert tool response (returns list when image is present)
+    # Convert tool response
     result = convert_to_gemini_tool_call_result(
         tool_message, last_message_with_tool_calls
     )
 
-    # Verify results - should be a list with 2 parts (function_response + inline_data)
-    assert isinstance(result, list), f"Expected list when image present, got {type(result)}"
-    assert len(result) == 2, f"Expected 2 parts, got {len(result)}"
-
-    # Find function_response part and inline_data part
-    function_response_part = None
-    inline_data_part = None
-    for part in result:
-        if "function_response" in part:
-            function_response_part = part
-        elif "inline_data" in part:
-            inline_data_part = part
-
-    # Check function_response exists
-    assert function_response_part is not None, "Missing function_response part"
-    function_response = function_response_part["function_response"]
+    # Media must be nested in functionResponse.parts, not emitted as a sibling.
+    assert "function_response" in result
+    assert "inline_data" not in result
+    function_response = result["function_response"]
     assert function_response["name"] == "click_at"
     assert "response" in function_response
     # Verify JSON response is parsed correctly
     assert "url" in function_response["response"]
     assert function_response["response"]["url"] == "https://example.com"
 
-    # Check inline_data exists
-    assert inline_data_part is not None, "Missing inline_data part"
-    inline_data: BlobType = inline_data_part["inline_data"]
+    assert len(function_response["parts"]) == 1
+    inline_data: BlobType = function_response["parts"][0]["inline_data"]
     assert "data" in inline_data
     assert "mime_type" in inline_data
     assert inline_data["mime_type"] == "image/png"
@@ -1040,22 +1101,14 @@ def test_convert_tool_response_with_url_image():
             tool_message, last_message_with_tool_calls
         )
 
-        # Should be a list with 2 parts when image is present
-        assert isinstance(result, list), f"Expected list when image present, got {type(result)}"
-        assert len(result) == 2, f"Expected 2 parts, got {len(result)}"
-
-        # Find parts
-        function_response_part = next(p for p in result if "function_response" in p)
-        inline_data_part = next(p for p in result if "inline_data" in p)
-
-        # Check function_response exists
-        assert function_response_part is not None, "Missing function_response part"
-        function_response = function_response_part["function_response"]
+        assert "function_response" in result
+        assert "inline_data" not in result
+        function_response = result["function_response"]
         assert function_response["name"] == "type_text_at"
 
-        # Check inline_data exists (URL should be downloaded and converted)
-        assert inline_data_part is not None, "Missing inline_data part"
-        inline_data: BlobType = inline_data_part["inline_data"]
+        # URL should be downloaded and nested in functionResponse.parts.
+        assert len(function_response["parts"]) == 1
+        inline_data: BlobType = function_response["parts"][0]["inline_data"]
         assert "data" in inline_data
         assert "mime_type" in inline_data
     except Exception as e:
@@ -1105,6 +1158,7 @@ def test_convert_tool_response_text_only():
 
     # Check inline_data does NOT exist (no image provided)
     assert "inline_data" not in result
+    assert "parts" not in function_response
 
 
 def test_file_data_field_order():
@@ -1341,36 +1395,22 @@ def test_convert_tool_response_with_pdf_file():
         ]
     }
 
-    # Convert tool response (returns list when file is present)
+    # Convert tool response
     result = convert_to_gemini_tool_call_result(
         tool_message, last_message_with_tool_calls
     )
 
-    # Verify results - should be a list with 2 parts (function_response + inline_data)
-    assert isinstance(result, list), f"Expected list when file present, got {type(result)}"
-    assert len(result) == 2, f"Expected 2 parts, got {len(result)}"
-
-    # Find function_response part and inline_data part
-    function_response_part = None
-    inline_data_part = None
-    for part in result:
-        if "function_response" in part:
-            function_response_part = part
-        elif "inline_data" in part:
-            inline_data_part = part
-
-    # Check function_response exists
-    assert function_response_part is not None, "Missing function_response part"
-    function_response = function_response_part["function_response"]
+    assert "function_response" in result
+    assert "inline_data" not in result
+    function_response = result["function_response"]
     assert function_response["name"] == "analyze_document"
     assert "response" in function_response
     # Verify JSON response is parsed correctly
     assert "status" in function_response["response"]
     assert function_response["response"]["status"] == "success"
 
-    # Check inline_data exists
-    assert inline_data_part is not None, "Missing inline_data part"
-    inline_data: BlobType = inline_data_part["inline_data"]
+    assert len(function_response["parts"]) == 1
+    inline_data: BlobType = function_response["parts"][0]["inline_data"]
     assert "data" in inline_data
     assert "mime_type" in inline_data
     assert inline_data["mime_type"] == "application/pdf"
@@ -1413,19 +1453,11 @@ def test_convert_tool_response_with_input_file_type():
         tool_message, last_message_with_tool_calls
     )
 
-    # Verify results
-    assert isinstance(result, list), f"Expected list when file present, got {type(result)}"
-    assert len(result) == 2, f"Expected 2 parts, got {len(result)}"
-
-    # Find inline_data part
-    inline_data_part = None
-    for part in result:
-        if "inline_data" in part:
-            inline_data_part = part
-
-    # Check inline_data exists
-    assert inline_data_part is not None, "Missing inline_data part"
-    assert inline_data_part["inline_data"]["mime_type"] == "application/pdf"
+    function_response = result["function_response"]
+    assert (
+        function_response["parts"][0]["inline_data"]["mime_type"]
+        == "application/pdf"
+    )
 
 
 def test_convert_tool_response_with_nested_file_object():
@@ -1466,19 +1498,9 @@ def test_convert_tool_response_with_nested_file_object():
         tool_message, last_message_with_tool_calls
     )
 
-    # Verify results - should be a list with 2 parts
-    assert isinstance(result, list), f"Expected list when file present, got {type(result)}"
-    assert len(result) == 2, f"Expected 2 parts, got {len(result)}"
-
-    # Find inline_data part
-    inline_data_part = None
-    for part in result:
-        if "inline_data" in part:
-            inline_data_part = part
-
-    # Check inline_data exists
-    assert inline_data_part is not None, "Missing inline_data part"
-    inline_data: BlobType = inline_data_part["inline_data"]
+    function_response = result["function_response"]
+    assert len(function_response["parts"]) == 1
+    inline_data: BlobType = function_response["parts"][0]["inline_data"]
     assert "data" in inline_data
     assert "mime_type" in inline_data
     assert inline_data["mime_type"] == "application/pdf"
@@ -1522,7 +1544,7 @@ def test_assistant_message_with_images_field():
     contents = _gemini_convert_messages_with_history(messages=messages)
     
     # Verify structure
-    assert len(contents) == 2, f"Expected 2 content blocks, got {len(contents)}"
+    assert len(contents) == 3, f"Expected 3 content blocks, got {len(contents)}"
     
     # Verify user message
     assert contents[0]["role"] == "user"
@@ -1553,6 +1575,7 @@ def test_assistant_message_with_images_field():
     assert "mime_type" in inline_data
     assert inline_data["mime_type"] == "image/png"
     assert inline_data["data"] == test_image_base64
+    assert contents[2] == {"role": "user", "parts": [{"text": " "}]}
 
 
 def test_assistant_message_with_multiple_images():
@@ -1755,6 +1778,55 @@ def test_function_response_has_user_role():
     # The critical assertion: function response must have role="user"
     assert contents[2]["role"] == "user"
     assert "function_response" in contents[2]["parts"][0]
+
+
+def test_image_tool_response_is_nested_under_function_response_parts():
+    image_base64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+        "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+    messages = [
+        {"role": "user", "content": "Inspect this image"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_image",
+                    "type": "function",
+                    "function": {"name": "inspect_image", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_image",
+            "content": [
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/png;base64,{image_base64}",
+                }
+            ],
+        },
+    ]
+
+    contents = _gemini_convert_messages_with_history(
+        messages=messages, model="gemini-3.8-flash"
+    )
+
+    assert [content["role"] for content in contents] == ["user", "model", "user"]
+    assert len(contents[2]["parts"]) == 1
+    function_response = contents[2]["parts"][0]["function_response"]
+    assert function_response["name"] == "inspect_image"
+    assert function_response["response"] == {"content": ""}
+    assert function_response["parts"] == [
+        {
+            "inline_data": {
+                "mime_type": "image/png",
+                "data": image_base64,
+            }
+        }
+    ]
 
 
 def test_multi_turn_function_calling_roles():

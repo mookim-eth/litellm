@@ -2112,6 +2112,20 @@ def test_reasoning_effort_maps_to_thinking_level_gemini_3():
     assert result["thinkingConfig"]["includeThoughts"] is False
 
 
+@pytest.mark.parametrize("reasoning_effort", ["max", "xhigh"])
+def test_codex_max_reasoning_effort_maps_to_gemini_high(reasoning_effort):
+    assert VertexGeminiConfig._map_reasoning_effort_to_thinking_level(
+        reasoning_effort, model="gemini-3.8-flash"
+    ) == VertexGeminiConfig._map_reasoning_effort_to_thinking_level(
+        "high", model="gemini-3.8-flash"
+    )
+    assert VertexGeminiConfig._map_reasoning_effort_to_thinking_budget(
+        reasoning_effort, model="gemini-2.5-pro"
+    ) == VertexGeminiConfig._map_reasoning_effort_to_thinking_budget(
+        "high", model="gemini-2.5-pro"
+    )
+
+
 def test_reasoning_effort_dict_format_gemini_3():
     """
     Test that reasoning_effort works when passed as dict format from OpenAI Agents SDK.

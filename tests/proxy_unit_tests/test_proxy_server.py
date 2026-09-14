@@ -2063,6 +2063,7 @@ async def test_gemini_pass_through_endpoint():
     ("model_name", "expected"),
     [
         ("gpt-5.6-sol", True),
+        ("gemini-3.8-flash", True),
         ("glm-5.3", True),
         ("grok-4.5", True),
         ("gpt-5.6-sol-1", False),
@@ -2073,6 +2074,36 @@ def test_public_v1_model_allowlist(model_name, expected):
     from litellm.proxy.proxy_server import _is_public_v1_model
 
     assert _is_public_v1_model(model_name) is expected
+
+
+def test_model_list_response_adds_codex_models_envelope():
+    from fastapi import Request
+
+    from litellm.proxy.proxy_server import _model_list_response
+
+    models = [{"id": "gemini-3.8-flash", "object": "model"}]
+    codex_request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/v1/models",
+            "headers": [(b"user-agent", b"codex_cli_rs/0.154.0")],
+        }
+    )
+    standard_request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/v1/models",
+            "headers": [(b"user-agent", b"openai-python/2.30.0")],
+        }
+    )
+
+    codex_response = _model_list_response(models, codex_request)
+    standard_response = _model_list_response(models, standard_request)
+
+    assert codex_response == {"data": models, "object": "list", "models": models}
+    assert standard_response == {"data": models, "object": "list"}
 
 
 @pytest.mark.parametrize("hidden", [True, False])
@@ -2117,6 +2148,7 @@ async def test_proxy_model_group_alias_checks(prisma_client, hidden):
     request._url = URL(url="/v1/models")
 
     resp = await model_list(
+        request=request,
         user_api_key_dict=UserAPIKeyAuth(models=[]),
     )
 
@@ -2197,6 +2229,7 @@ async def test_proxy_model_group_info_rerank(prisma_client):
     request._url = URL(url="/v1/models")
 
     resp = await model_list(
+        request=request,
         user_api_key_dict=UserAPIKeyAuth(models=[]),
     )
 

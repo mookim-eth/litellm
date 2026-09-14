@@ -611,6 +611,13 @@ def _gemini_convert_messages_with_history(  # noqa: PLR0915
         if len(tool_call_responses) > 0:
             contents.append(ContentType(role="user", parts=tool_call_responses))
 
+        if len(contents) > 0 and contents[-1].get("role") == "model":
+            # Gemini generateContent cannot continue from a history whose last
+            # content is a model turn. This occurs in Responses conversations
+            # that end in an assistant message/function call, and after a
+            # trailing developer message is lifted into system instructions.
+            contents.append(ContentType(role="user", parts=[PartType(text=" ")]))
+
         if len(contents) == 0:
             verbose_logger.warning(
                 """

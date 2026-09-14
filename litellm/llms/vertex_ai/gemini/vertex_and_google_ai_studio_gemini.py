@@ -781,7 +781,7 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
                 "thinkingBudget": DEFAULT_REASONING_EFFORT_MEDIUM_THINKING_BUDGET,
                 "includeThoughts": True,
             }
-        elif reasoning_effort == "high":
+        elif reasoning_effort in ("high", "max", "xhigh"):
             return {
                 "thinkingBudget": DEFAULT_REASONING_EFFORT_HIGH_THINKING_BUDGET,
                 "includeThoughts": True,
@@ -831,7 +831,7 @@ class VertexGeminiConfig(VertexAIBaseConfig, BaseConfig):
                 return {"thinkingLevel": "medium", "includeThoughts": True}
             else:
                 return {"thinkingLevel": "high", "includeThoughts": True}
-        elif reasoning_effort == "high":
+        elif reasoning_effort in ("high", "max", "xhigh"):
             return {"thinkingLevel": "high", "includeThoughts": True}
         elif reasoning_effort == "disable":
             # Gemini 3 cannot fully disable thinking, so we use "minimal" for gemini-3-flash-preview, "low" for others

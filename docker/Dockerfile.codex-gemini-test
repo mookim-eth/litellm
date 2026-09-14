@@ -1,0 +1,21 @@
+ARG LITELLM_TEST_BASE_IMAGE=mookim/litellm:9511eb7165df
+FROM ${LITELLM_TEST_BASE_IMAGE}
+
+USER root
+RUN python -m pip install --no-cache-dir \
+    black==24.10.0 \
+    fakeredis==2.34.1 \
+    parameterized==0.9.0 \
+    psycopg-binary==3.3.5 \
+    pytest==8.3.5 \
+    pytest-asyncio==1.2.0 \
+    pytest-mock==3.15.1 \
+    pytest-postgresql==7.0.2 \
+    requests-mock==1.12.1 \
+    responses==0.26.0 \
+    respx==0.22.0 \
+    ruff==0.15.3
+
+COPY litellm /app/litellm
+ENV PYTHONPATH=/app
+WORKDIR /app

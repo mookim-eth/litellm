@@ -1468,7 +1468,7 @@ def convert_to_gemini_tool_call_invoke(
 def convert_to_gemini_tool_call_result(  # noqa: PLR0915
     message: Union[ChatCompletionToolMessage, ChatCompletionFunctionMessage],
     last_message_with_tool_calls: Optional[dict],
-) -> Union[VertexPartType, List[VertexPartType]]:
+) -> VertexPartType:
     """
     OpenAI message with a tool result looks like:
     {
@@ -1640,17 +1640,16 @@ def convert_to_gemini_tool_call_result(  # noqa: PLR0915
         name=name, response=response_data  # type: ignore
     )
 
-    # Create part with function_response, and optionally inline_data for images (Computer Use)
-    _part: VertexPartType = {"function_response": _function_response}
-
-    # For Computer Use, if we have images/files, we need separate parts:
-    # - One part with function_response
-    # - One part per inline_data item
-    # Gemini's PartType is a oneof, so we can't have both in the same part
+    # Gemini requires media returned by a function to live under
+    # functionResponse.parts. Sending inline_data as sibling Content parts makes
+    # the request look like a normal user image turn and is rejected by newer
+    # Gemini generateContent endpoints.
     if inline_data_list:
-        return [_part] + [{"inline_data": d} for d in inline_data_list]
+        _function_response["parts"] = [
+            {"inline_data": inline_data} for inline_data in inline_data_list
+        ]
 
-    return _part
+    return {"function_response": _function_response}
 
 
 def _sanitize_anthropic_tool_use_id(tool_use_id: str) -> str:

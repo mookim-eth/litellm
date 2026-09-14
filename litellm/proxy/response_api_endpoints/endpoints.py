@@ -21,6 +21,9 @@ from litellm.proxy.common_request_processing import (
     ProxyBaseLLMRequestProcessing,
     _is_expected_max_parallel_requests_limit,
 )
+from litellm.proxy.response_api_endpoints.error_responses import (
+    responses_error_streaming_response,
+)
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
 from litellm.types.responses.main import DeleteResponseResult
 
@@ -56,11 +59,21 @@ def _should_return_codex_concurrency_retry(
     )
 
 
+def _should_return_codex_stream_error(
+    *, request: Request, data: Dict[str, Any]
+) -> bool:
+    return (
+        "codex" in request.headers.get("user-agent", "").lower()
+        and data.get("stream") is True
+    )
+
+
 def _codex_retry_response(
     *, message: str, mapped_error: Optional[Exception] = None
 ) -> StreamingResponse:
     error_event = {
         "type": "response.failed",
+        "sequence_number": 0,
         "response": {
             "error": {
                 "code": "rate_limit_exceeded",
@@ -76,9 +89,11 @@ def _codex_retry_response(
     async def _body():
         yield body
 
-    headers = dict(getattr(mapped_error, "headers", None) or {})
-    headers.pop("content-length", None)
-    headers.pop("content-type", None)
+    headers = {
+        key: value
+        for key, value in (getattr(mapped_error, "headers", None) or {}).items()
+        if key.lower() not in {"content-length", "content-type"}
+    }
     headers["Cache-Control"] = "no-cache"
     headers["X-Accel-Buffering"] = "no"
     return StreamingResponse(
@@ -131,6 +146,11 @@ async def _handle_responses_api_exception(
             return _codex_retry_response(
                 message=retry_message, mapped_error=mapped_error
             )
+        if _should_return_codex_stream_error(request=request, data=data):
+            return responses_error_streaming_response(
+                mapped_error,
+                headers=getattr(mapped_error, "headers", None),
+            )
         raise
 
     if (
@@ -139,6 +159,11 @@ async def _handle_responses_api_exception(
         and mapped_error.code == "429"
     ):
         return _codex_retry_response(message=retry_message, mapped_error=mapped_error)
+    if _should_return_codex_stream_error(request=request, data=data):
+        return responses_error_streaming_response(
+            mapped_error,
+            headers=getattr(mapped_error, "headers", None),
+        )
     raise mapped_error
 
 
@@ -201,7 +226,7 @@ async def responses_api(
         proxy_config,
         proxy_logging_obj,
         redis_usage_cache,
-        select_data_generator,
+        select_responses_data_generator,
         user_api_base,
         user_max_tokens,
         user_model,
@@ -300,7 +325,7 @@ async def responses_api(
                 llm_router=llm_router,
                 proxy_config=proxy_config,
                 proxy_logging_obj=proxy_logging_obj,
-                select_data_generator=select_data_generator,
+                select_data_generator=select_responses_data_generator,
                 user_model=user_model,
                 user_temperature=user_temperature,
                 user_request_timeout=user_request_timeout,
@@ -326,7 +351,7 @@ async def responses_api(
             llm_router=llm_router,
             general_settings=general_settings,
             proxy_config=proxy_config,
-            select_data_generator=select_data_generator,
+            select_data_generator=select_responses_data_generator,
             model=None,
             user_model=user_model,
             user_temperature=user_temperature,
@@ -617,7 +642,7 @@ async def get_response(
         proxy_config,
         proxy_logging_obj,
         redis_usage_cache,
-        select_data_generator,
+        select_responses_data_generator,
         user_api_base,
         user_max_tokens,
         user_model,
@@ -665,7 +690,7 @@ async def get_response(
             llm_router=llm_router,
             general_settings=general_settings,
             proxy_config=proxy_config,
-            select_data_generator=select_data_generator,
+            select_data_generator=select_responses_data_generator,
             model=None,
             user_model=user_model,
             user_temperature=user_temperature,
@@ -725,7 +750,7 @@ async def delete_response(
         proxy_config,
         proxy_logging_obj,
         redis_usage_cache,
-        select_data_generator,
+        select_responses_data_generator,
         user_api_base,
         user_max_tokens,
         user_model,
@@ -775,7 +800,7 @@ async def delete_response(
             llm_router=llm_router,
             general_settings=general_settings,
             proxy_config=proxy_config,
-            select_data_generator=select_data_generator,
+            select_data_generator=select_responses_data_generator,
             model=None,
             user_model=user_model,
             user_temperature=user_temperature,
@@ -821,7 +846,7 @@ async def get_response_input_items(
         llm_router,
         proxy_config,
         proxy_logging_obj,
-        select_data_generator,
+        select_responses_data_generator,
         user_api_base,
         user_max_tokens,
         user_model,
@@ -843,7 +868,7 @@ async def get_response_input_items(
             llm_router=llm_router,
             general_settings=general_settings,
             proxy_config=proxy_config,
-            select_data_generator=select_data_generator,
+            select_data_generator=select_responses_data_generator,
             model=None,
             user_model=user_model,
             user_temperature=user_temperature,
@@ -904,7 +929,7 @@ async def compact_response(
         llm_router,
         proxy_config,
         proxy_logging_obj,
-        select_data_generator,
+        select_responses_data_generator,
         user_api_base,
         user_max_tokens,
         user_model,
@@ -925,7 +950,7 @@ async def compact_response(
             llm_router=llm_router,
             general_settings=general_settings,
             proxy_config=proxy_config,
-            select_data_generator=select_data_generator,
+            select_data_generator=select_responses_data_generator,
             model=None,
             user_model=user_model,
             user_temperature=user_temperature,
@@ -990,7 +1015,7 @@ async def cancel_response(
         proxy_config,
         proxy_logging_obj,
         redis_usage_cache,
-        select_data_generator,
+        select_responses_data_generator,
         user_api_base,
         user_max_tokens,
         user_model,
@@ -1044,7 +1069,7 @@ async def cancel_response(
             llm_router=llm_router,
             general_settings=general_settings,
             proxy_config=proxy_config,
-            select_data_generator=select_data_generator,
+            select_data_generator=select_responses_data_generator,
             model=None,
             user_model=user_model,
             user_temperature=user_temperature,
