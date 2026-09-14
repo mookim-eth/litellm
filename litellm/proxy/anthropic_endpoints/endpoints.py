@@ -143,6 +143,13 @@ async def anthropic_response(  # noqa: PLR0915
         )
 
         error_msg = f"{str(e)}"
+        # ProxyException already carries the canonical HTTP status in ``code``.
+        # Preserve it when adding the route-level response headers instead of
+        # rebuilding the exception from the non-existent ``status_code`` field.
+        if isinstance(e, ProxyException):
+            e.headers.update(headers)
+            raise
+
         raise ProxyException(
             message=getattr(e, "message", error_msg),
             type=getattr(e, "type", "None"),
