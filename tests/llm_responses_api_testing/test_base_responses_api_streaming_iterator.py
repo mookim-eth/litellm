@@ -1252,12 +1252,21 @@ class TestBaseResponsesAPIStreamingIterator:
             mock_logging_obj.async_failure_handler.assert_not_called()
             mock_logging_obj.failure_handler.assert_not_called()
 
-    def test_process_chunk_response_failed_server_overloaded_raises_retryable(
-        self, caplog
+    @pytest.mark.parametrize(
+        "error_code",
+        [
+            "server_is_overloaded",
+            "slow_down",
+            "rate_limit_exceeded",
+            "usage_limit_reached",
+        ],
+    )
+    def test_process_chunk_response_failed_retryable_limit_raises_retryable(
+        self, caplog, error_code
     ):
         """
-        A RESPONSE_FAILED SSE event carrying error.code = server_is_overloaded (or
-        slow_down) must surface as a retryable RateLimitError (429) instead of
+        A RESPONSE_FAILED SSE event carrying a retryable capacity/quota error must
+        surface as a retryable RateLimitError (429) instead of
         flowing the dead chunk downstream, so Router/retry logic can kick in.
         """
         import logging as _logging
@@ -1276,7 +1285,7 @@ class TestBaseResponsesAPIStreamingIterator:
         mock_responses_api_response = Mock(spec=ResponsesAPIResponse)
         mock_responses_api_response.id = "resp_failed_123"
         mock_responses_api_response.error = {
-            "code": "server_is_overloaded",
+            "code": error_code,
             "message": "Selected model is at capacity. Please try a different model.",
         }
         mock_responses_api_response.usage = None
@@ -1301,7 +1310,7 @@ class TestBaseResponsesAPIStreamingIterator:
             "response": {
                 "id": "resp_failed_123",
                 "error": {
-                    "code": "server_is_overloaded",
+                    "code": error_code,
                     "message": "Selected model is at capacity. Please try a different model.",
                 },
             },
@@ -1322,9 +1331,9 @@ class TestBaseResponsesAPIStreamingIterator:
         assert "Selected model is at capacity" in str(exc_info.value)
         assert "retry-after" not in exc_info.value.response.headers
         assert any(
-            "server_is_overloaded" in rec.message and "RateLimitError" in rec.message
+            error_code in rec.message and "RateLimitError" in rec.message
             for rec in caplog.records
-        ), f"expected overload->429 warning, got: {[r.message for r in caplog.records]}"
+        ), f"expected retryable-limit->429 warning, got: {[r.message for r in caplog.records]}"
 
     def test_process_chunk_response_failed_server_overloaded_preserves_retry_after_if_present(
         self,

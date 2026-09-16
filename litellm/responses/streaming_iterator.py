@@ -705,8 +705,15 @@ class BaseResponsesAPIStreamingIterator:
         )
         self._handle_failure(exception)
 
-    # Error codes the upstream treats as "model at capacity" / transient overload.
-    _OVERLOADED_ERROR_CODES = frozenset({"server_is_overloaded", "slow_down"})
+    # Error codes the upstream treats as retryable capacity or quota limits.
+    _OVERLOADED_ERROR_CODES = frozenset(
+        {
+            "server_is_overloaded",
+            "slow_down",
+            "rate_limit_exceeded",
+            "usage_limit_reached",
+        }
+    )
 
     async def _call_post_streaming_deployment_hook(self, chunk):
         """
