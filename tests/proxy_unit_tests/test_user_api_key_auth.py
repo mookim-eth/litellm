@@ -989,7 +989,10 @@ async def test_user_api_key_auth_websocket():
     mock_websocket.query_params = {"model": "some_model"}
     mock_websocket.headers = {"authorization": "Bearer some_api_key"}
     # Mock the scope attribute that user_api_key_auth_websocket accesses
-    mock_websocket.scope = {"headers": [(b"authorization", b"Bearer some_api_key")]}
+    mock_websocket.scope = {
+        "headers": [(b"authorization", b"Bearer some_api_key")],
+        "path": "/v1/responses",
+    }
     # Mock the url attribute
     mock_websocket.url = URL(url="/ws")
 
@@ -1014,6 +1017,9 @@ async def test_user_api_key_auth_websocket():
             "authorization" in request_arg.headers
         ), "Request headers should contain authorization"
         assert request_arg.headers["authorization"] == "Bearer some_api_key"
+
+        assert request_arg.method == "GET"
+        assert request_arg.scope["path"] == "/v1/responses"
 
         assert (
             mock_user_api_key_auth.call_args.kwargs["api_key"] == "Bearer some_api_key"

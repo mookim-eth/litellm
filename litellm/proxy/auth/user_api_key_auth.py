@@ -300,8 +300,21 @@ def _apply_budget_limits_to_end_user_params(
 async def user_api_key_auth_websocket(websocket: WebSocket):
     # Accept the WebSocket connection
 
-    scope_headers = list(websocket.scope.get("headers") or [])
-    request = Request(scope={"type": "http", "headers": scope_headers})
+    ws_scope = websocket.scope or {}
+    scope_headers = list(ws_scope.get("headers") or [])
+    # Authentication runs against a synthetic HTTP request. A WebSocket
+    # handshake is a GET, and carrying the ASGI path keeps route checks tied
+    # to the server-owned path rather than a Host-derived URL fallback.
+    synthetic_scope = {
+        "type": "http",
+        "method": "GET",
+        "headers": scope_headers,
+        "path": ws_scope.get("path", ""),
+    }
+    for key in ("root_path", "app_root_path"):
+        if key in ws_scope:
+            synthetic_scope[key] = ws_scope[key]
+    request = Request(scope=synthetic_scope)
 
     request._url = websocket.url
 
