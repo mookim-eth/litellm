@@ -29,6 +29,25 @@ from litellm.types.utils import (
 
 
 class TestLiteLLMCompletionResponsesConfig:
+    def test_transform_omits_empty_tools_for_chat_bridge(self):
+        """Providers may reject an explicitly empty tools array."""
+        result = LiteLLMCompletionResponsesConfig.transform_responses_api_request_to_chat_completion_request(
+            model="custom_openai/test-model",
+            input=[
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Hello"}],
+                }
+            ],
+            responses_api_request={"instructions": "Answer briefly."},
+        )
+
+        assert result["messages"] == [
+            {"role": "system", "content": "Answer briefly."},
+            {"role": "user", "content": [{"type": "text", "text": "Hello"}]},
+        ]
+        assert "tools" not in result
+
     def test_transform_input_file_item_to_file_item_with_file_id(self):
         """Test transformation of input_file item with file_id to Chat Completion file format"""
         # Setup

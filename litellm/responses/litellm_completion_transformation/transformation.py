@@ -289,6 +289,12 @@ class LiteLLMCompletionResponsesConfig:
             "extra_headers": extra_headers,
         }
 
+        # OpenAI-compatible providers may reject an explicitly empty tools
+        # array.  Responses requests without tools should omit the field;
+        # preserve the non-empty list for tool-enabled requests.
+        if not tools:
+            litellm_completion_request.pop("tools", None)
+
         # Responses API `Completed` events require usage, we pass `stream_options` to litellm.completion to include usage
         if stream is True:
             stream_options = {
