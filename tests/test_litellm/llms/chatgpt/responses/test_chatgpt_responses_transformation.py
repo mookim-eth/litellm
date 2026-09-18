@@ -145,17 +145,24 @@ class TestChatGPTResponsesAPITransformation:
         assert "reasoning.encrypted_content" in request["include"]
         assert request["instructions"] == ""
 
-    def test_chatgpt_codex_responses_lite_forces_parallel_tool_calls_false(self):
+    def test_chatgpt_codex_responses_lite_applies_required_overrides(self):
         config = ChatGPTResponsesAPIConfig()
         request = config.transform_responses_api_request(
             model="chatgpt/gpt-5.6-sol",
             input="hi",
-            response_api_optional_request_params={"parallel_tool_calls": True},
+            response_api_optional_request_params={
+                "parallel_tool_calls": True,
+                "reasoning": {"effort": "high", "context": "none"},
+            },
             litellm_params=GenericLiteLLMParams(),
             headers={CODEX_RESPONSES_LITE_HEADER: "true"},
         )
 
         assert request["parallel_tool_calls"] is False
+        assert request["reasoning"] == {
+            "effort": "high",
+            "context": "all_turns",
+        }
         assert "instructions" not in request
 
     @pytest.mark.parametrize(
@@ -370,6 +377,34 @@ class TestChatGPTResponsesAPITransformation:
         assert "id" not in request["input"][2]
         assert invalid_message["id"] == "external-message-id"
         assert replayable_reasoning_item["id"] == "rs_replayable"
+
+    def test_chatgpt_responses_strips_reasoning_content_from_replayed_input(self):
+        config = ChatGPTResponsesAPIConfig()
+        reasoning_item = {
+            "type": "reasoning",
+            "id": "rs_existing",
+            "summary": [],
+            "content": [{"type": "reasoning_text", "text": "internal reasoning"}],
+            "encrypted_content": "encrypted-reasoning",
+        }
+
+        request = config.transform_responses_api_request(
+            model="chatgpt/gpt-5.6-sol",
+            input=[reasoning_item],
+            response_api_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert request["input"] == [
+            {
+                "type": "reasoning",
+                "summary": [],
+                "encrypted_content": "encrypted-reasoning",
+            }
+        ]
+        assert reasoning_item["id"] == "rs_existing"
+        assert len(reasoning_item["content"]) == 1
 
     def test_chatgpt_responses_preserves_previous_response_id(self):
         config = ChatGPTResponsesAPIConfig()

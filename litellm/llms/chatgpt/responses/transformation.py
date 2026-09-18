@@ -126,20 +126,17 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         return sanitized_items
 
     @staticmethod
-    def _strip_non_persisted_reasoning_item_ids(input_items: Any) -> Any:
-        """Remove reasoning IDs that stateless ChatGPT cannot resolve."""
+    def _sanitize_reasoning_items_for_stateless_replay(input_items: Any) -> Any:
+        """Remove reasoning fields that stateless ChatGPT cannot replay."""
         if not isinstance(input_items, list):
             return input_items
 
         sanitized_items: List[Any] = []
         for item in input_items:
-            if (
-                isinstance(item, dict)
-                and item.get("type") == "reasoning"
-                and "id" in item
-            ):
+            if isinstance(item, dict) and item.get("type") == "reasoning":
                 item = dict(item)
                 item.pop("id", None)
+                item.pop("content", None)
             sanitized_items.append(item)
         return sanitized_items
 
@@ -605,7 +602,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             litellm_params,
             headers,
         )
-        request["input"] = self._strip_non_persisted_reasoning_item_ids(
+        request["input"] = self._sanitize_reasoning_items_for_stateless_replay(
             request.get("input")
         )
         if is_codex_responses_lite:
@@ -620,6 +617,11 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             request["service_tier"] = "priority"
         if is_codex_responses_lite:
             request["parallel_tool_calls"] = False
+            reasoning = request.get("reasoning")
+            request["reasoning"] = {
+                **(reasoning if isinstance(reasoning, dict) else {}),
+                "context": "all_turns",
+            }
         include = list(request.get("include") or [])
         if "reasoning.encrypted_content" not in include:
             include.append("reasoning.encrypted_content")
