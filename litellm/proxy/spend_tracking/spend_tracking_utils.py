@@ -316,13 +316,19 @@ def get_logging_payload(  # noqa: PLR0915
     standard_logging_completion_tokens: int = 0
     standard_logging_total_tokens: int = 0
     if standard_logging_payload is not None:
-        standard_logging_prompt_tokens = standard_logging_payload.get(
-            "prompt_tokens", 0
+        # Failure events may include a standard logging object whose usage
+        # fields are present but explicitly set to None. SpendLogs columns are
+        # non-null integers, so normalize those values before building the
+        # payload instead of allowing a failed request to be dropped at flush.
+        standard_logging_prompt_tokens = (
+            standard_logging_payload.get("prompt_tokens") or 0
         )
-        standard_logging_completion_tokens = standard_logging_payload.get(
-            "completion_tokens", 0
+        standard_logging_completion_tokens = (
+            standard_logging_payload.get("completion_tokens") or 0
         )
-        standard_logging_total_tokens = standard_logging_payload.get("total_tokens", 0)
+        standard_logging_total_tokens = (
+            standard_logging_payload.get("total_tokens") or 0
+        )
     if api_key is not None and isinstance(api_key, str):
         api_key = _hash_api_key_for_spend_log(api_key)
         if (
@@ -475,11 +481,10 @@ def get_logging_payload(  # noqa: PLR0915
             metadata=safe_dumps(clean_metadata),
             cache_key=cache_key,
             spend=kwargs.get("response_cost", 0),
-            total_tokens=usage.get("total_tokens", standard_logging_total_tokens),
-            prompt_tokens=usage.get("prompt_tokens", standard_logging_prompt_tokens),
-            completion_tokens=usage.get(
-                "completion_tokens", standard_logging_completion_tokens
-            ),
+            total_tokens=usage.get("total_tokens") or standard_logging_total_tokens,
+            prompt_tokens=usage.get("prompt_tokens") or standard_logging_prompt_tokens,
+            completion_tokens=usage.get("completion_tokens")
+            or standard_logging_completion_tokens,
             request_tags=request_tags,
             end_user=end_user_id or "",
             api_base=litellm_params.get("api_base", ""),

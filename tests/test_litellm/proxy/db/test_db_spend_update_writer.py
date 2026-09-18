@@ -1304,6 +1304,59 @@ async def test_update_database_creates_single_task():
 
 
 @pytest.mark.asyncio
+async def test_update_database_persists_failed_retry_without_usage_as_zero_tokens():
+    """Failed provider retries without usage still produce a SpendLogs row."""
+    db_writer = DBSpendUpdateWriter()
+    inserted_payloads = []
+
+    async def capture_insert(*, payload, prisma_client):
+        inserted_payloads.append(payload)
+
+    db_writer._insert_spend_log_to_db = capture_insert
+    db_writer._batch_database_updates = AsyncMock()
+
+    failure = Exception("provider quota exhausted")
+    with patch("litellm.proxy.proxy_server.disable_spend_logs", False), patch(
+        "litellm.proxy.proxy_server.prisma_client", MagicMock()
+    ), patch("litellm.proxy.proxy_server.user_api_key_cache", MagicMock()), patch(
+        "litellm.proxy.proxy_server.litellm_proxy_budget_name", "test-budget"
+    ):
+        await db_writer.update_database(
+            token="test-key",
+            user_id="test-user",
+            end_user_id=None,
+            team_id="test-team",
+            org_id=None,
+            kwargs={
+                "model": "zai/glm-5.3",
+                "call_type": "acompletion",
+                "litellm_call_id": "failed-retry-request",
+                "custom_llm_provider": "zai",
+                "litellm_params": {
+                    "metadata": {
+                        "status": "failure",
+                        "user_api_key": "test-key",
+                        "model_group": "glm-5.3-2",
+                    }
+                },
+            },
+            completion_response=failure,
+            start_time=datetime.now(timezone.utc),
+            end_time=datetime.now(timezone.utc),
+            response_cost=0.0,
+        )
+        await asyncio.sleep(0)
+
+    assert len(inserted_payloads) == 1
+    payload = inserted_payloads[0]
+    assert payload["status"] == "failure"
+    assert payload["spend"] == 0.0
+    assert payload["prompt_tokens"] == 0
+    assert payload["completion_tokens"] == 0
+    assert payload["total_tokens"] == 0
+
+
+@pytest.mark.asyncio
 async def test_batch_database_updates_isolation_on_failure():
     """
     Test that if one helper inside _batch_database_updates raises,

@@ -45,6 +45,52 @@ def test_hash_api_key_for_spend_log_strips_bearer_and_hashes_sk_key():
     assert len(hashed) == 64
 
 
+def test_get_logging_payload_failure_without_usage_defaults_tokens_to_zero():
+    """A final failed retry without upstream usage must still be persistable."""
+    from datetime import datetime, timezone
+
+    failure = litellm.RateLimitError(
+        message="provider quota exhausted",
+        model="glm-5.3",
+        llm_provider="zai",
+    )
+    kwargs = {
+        "model": "zai/glm-5.3",
+        "call_type": "acompletion",
+        "litellm_call_id": "failed-glm-request",
+        "custom_llm_provider": "zai",
+        "litellm_params": {
+            "metadata": {
+                "status": "failure",
+                "user_api_key": "test-key",
+                "model_group": "glm-5.3-2",
+            }
+        },
+        # The failure logger can retain a standard payload with null usage.
+        "standard_logging_object": {
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": None,
+            "metadata": {},
+            "hidden_params": {},
+            "model_map_information": None,
+        },
+    }
+
+    payload = get_logging_payload(
+        kwargs=kwargs,
+        response_obj=failure,
+        start_time=datetime.now(timezone.utc),
+        end_time=datetime.now(timezone.utc),
+    )
+
+    assert payload["status"] == "failure"
+    assert payload["spend"] == 0
+    assert payload["prompt_tokens"] == 0
+    assert payload["completion_tokens"] == 0
+    assert payload["total_tokens"] == 0
+
+
 def test_spend_logs_metadata_hashes_bearer_key():
     metadata = _get_spend_logs_metadata(
         metadata={"user_api_key": "Bearer sk-sensitive-test-key"}
