@@ -17,6 +17,10 @@ from litellm.types.utils import CustomPricingLiteLLMParams
 CLOUDFLARE_CLIENT_IP_HEADERS = ("cf-connecting-ip", "true-client-ip")
 
 
+class UnsafeRequestError(ValueError):
+    """Expected rejection of unsafe client-controlled request parameters."""
+
+
 def _get_request_header_value(request: Request, header_name: str) -> Optional[str]:
     """
     Read a request header case-insensitively.
@@ -310,7 +314,7 @@ def _check_banned_params(
             is True
         ):
             continue
-        raise ValueError(
+        raise UnsafeRequestError(
             f"Rejected Request: {param} is not allowed in request body. "
             "Clientside passthrough requires explicit admin opt-in via "
             "`general_settings.allow_client_side_credentials = true` or "
@@ -331,7 +335,7 @@ def is_request_body_safe(
     # This is server-owned router configuration, not a client credential
     # passthrough field, so the client-side-credentials opt-in never permits it.
     if "model_list" in request_body:
-        raise ValueError(
+        raise UnsafeRequestError(
             "Rejected Request: model_list is not allowed in the request body."
         )
     _check_banned_params(request_body, general_settings, llm_router, model)

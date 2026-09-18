@@ -390,6 +390,7 @@ class TestLiteLLMCompletionResponsesConfig:
             item for item in responses_api_response.output if item.type == "message"
         ]
         assert len(message_items) == 1, "Should have exactly one message item"
+        assert message_items[0].id.startswith("msg_")
         assert message_items[0].content[0].text == "Just a regular answer."
 
     def test_transform_chat_completion_response_multiple_choices_with_reasoning(self):
@@ -1846,9 +1847,8 @@ class TestStreamingIDConsistency:
         # Verify the cached ID is set and matches
         assert iterator._cached_item_id is not None, "Iterator should cache the item_id"
         assert iterator._cached_item_id == item_id_1, "Cached ID should match event IDs"
-        assert (
-            iterator._cached_item_id == "chatcmpl-first-id"
-        ), "Should use the first chunk's ID"
+        assert iterator._cached_item_id.startswith("msg_")
+        assert iterator._cached_item_id != "chatcmpl-first-id"
 
     def test_streaming_iterator_initial_events_use_cached_id(self):
         """
@@ -2291,6 +2291,42 @@ class TestEnsureOutputItemContentPartAdded:
         assert completed_event is not None
         assert completed_event.response.status == "incomplete"
         assert completed_event.response.output[0].status == "incomplete"
+
+    def test_completed_message_reuses_streamed_message_id(self):
+        from unittest.mock import Mock
+
+        import litellm
+        from litellm.responses.litellm_completion_transformation.streaming_iterator import (
+            LiteLLMCompletionStreamingIterator,
+        )
+
+        stream_wrapper = Mock(spec=litellm.CustomStreamWrapper)
+        stream_wrapper.logging_obj = Mock()
+        iterator = LiteLLMCompletionStreamingIterator(
+            model="test-model",
+            litellm_custom_stream_wrapper=stream_wrapper,
+            request_input="hello",
+            responses_api_request={},
+        )
+        iterator._cached_item_id = "msg_streamed"
+        response = ModelResponse(
+            id="provider-id",
+            created=1234567890,
+            model="test-model",
+            object="chat.completion",
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(content="done", role="assistant"),
+                )
+            ],
+        )
+
+        completed_event = iterator._emit_response_completed_event(response)
+
+        assert completed_event is not None
+        assert completed_event.response.output[0].id == "msg_streamed"
 
     def test_reasoning_item_does_not_emit_content_part_added(self):
         """Reasoning items should not get a content_part.added event."""

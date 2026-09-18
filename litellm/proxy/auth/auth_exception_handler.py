@@ -15,7 +15,7 @@ from litellm.proxy._types import (
     ProxyException,
     UserAPIKeyAuth,
 )
-from litellm.proxy.auth.auth_utils import _get_request_ip_address
+from litellm.proxy.auth.auth_utils import UnsafeRequestError, _get_request_ip_address
 from litellm.proxy.common_utils.http_parsing_utils import _safe_get_request_headers
 from litellm.proxy.db.exception_handler import PrismaDBExceptionHandler
 from litellm.types.services import ServiceTypes
@@ -254,6 +254,7 @@ class UserAPIKeyAuthExceptionHandler:
                         litellm.BudgetExceededError,
                         MissingAPIKeyError,
                         MalformedAPIKeyError,
+                        UnsafeRequestError,
                     ),
                 )
                 or (

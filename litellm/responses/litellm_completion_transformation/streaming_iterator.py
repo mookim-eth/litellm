@@ -1229,9 +1229,9 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         and the ReasoningSummaryTextDeltaEvent, which is used by the responses API to emit reasoning content.
         It also handles emitting annotation.added events when annotations are detected in the chunk.
         """
-        if self._cached_item_id is None and chunk.id:
-            self._cached_item_id = chunk.id
-        item_id = self._cached_item_id or chunk.id
+        if self._cached_item_id is None:
+            self._cached_item_id = f"msg_{uuid.uuid4()}"
+        item_id = self._cached_item_id
 
         # Check if this chunk has annotations first (before processing text/reasoning)
         # This ensures we detect and queue annotation events from the annotation chunk
@@ -1360,6 +1360,8 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             if self._cached_response_id:
                 responses_api_response.id = self._cached_response_id
 
+            self._align_output_item_ids_with_streamed_ids(responses_api_response)
+
             # Encode the response ID to match non-streaming behavior
             encoded_response = ResponsesAPIRequestUtils._update_responses_api_response_id_with_model_id(
                 responses_api_response=responses_api_response,
@@ -1373,3 +1375,23 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             )
         else:
             return None
+
+    def _align_output_item_ids_with_streamed_ids(
+        self, responses_api_response: ResponsesAPIResponse
+    ) -> None:
+        if self._cached_item_id is None:
+            return
+
+        for item in getattr(responses_api_response, "output", None) or []:
+            item_type = (
+                item.get("type")
+                if isinstance(item, dict)
+                else getattr(item, "type", None)
+            )
+            if item_type != "message":
+                continue
+            if isinstance(item, dict):
+                item["id"] = self._cached_item_id
+            else:
+                item.id = self._cached_item_id
+            return

@@ -69,6 +69,33 @@ def test_convert_dict_to_text_completion_response():
     assert response.choices[0].logprobs.top_logprobs == [None, {",": -2.1568563}]
 
 
+def test_text_completion_accepts_structured_content_after_string_message():
+    """Text completion must not join structured message content before dispatch."""
+    response = TextCompletionResponse(
+        id="cmpl-test",
+        created=1,
+        model="test-model",
+        choices=[{"text": "Hi", "index": 0, "finish_reason": "stop"}],
+        usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    )
+    messages = [
+        {"role": "system", "content": "Answer briefly."},
+        {"role": "user", "content": [{"type": "text", "text": "Hello"}]},
+    ]
+
+    with patch(
+        "litellm.main.openai_text_completions.completion", return_value=response
+    ) as completion_mock:
+        result = litellm.completion(
+            model="text-completion-openai/test-model",
+            messages=messages,
+            text_completion=True,
+        )
+
+    assert result is response
+    completion_mock.assert_called_once()
+
+
 @pytest.mark.skip(
     reason="need to migrate huggingface to support httpx client being passed in"
 )

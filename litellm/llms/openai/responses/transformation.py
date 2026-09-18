@@ -421,6 +421,10 @@ class OpenAIResponsesAPIConfig(BaseResponsesAPIConfig):
             raise OpenAIError(
                 message=raw_response.text, status_code=raw_response.status_code
             )
+        if raw_response.is_error:
+            raise OpenAIError(
+                message=raw_response.text, status_code=raw_response.status_code
+            )
         raw_response_headers = dict(raw_response.headers)
         processed_headers = process_response_headers(raw_response_headers)
         response = ResponsesAPIResponse(**raw_response_json)

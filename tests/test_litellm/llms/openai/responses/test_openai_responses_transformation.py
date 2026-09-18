@@ -12,6 +12,7 @@ sys.path.insert(
 
 import litellm
 from litellm.llms.azure.responses.transformation import AzureOpenAIResponsesAPIConfig
+from litellm.llms.openai.common_utils import OpenAIError
 from litellm.llms.openai.responses.transformation import OpenAIResponsesAPIConfig
 from litellm.types.llms.openai import (
     ImageGenerationPartialImageEvent,
@@ -84,6 +85,22 @@ class TestOpenAIResponsesAPIConfig:
         }
 
         self.validate_responses_api_request_params(result, expected_fields)
+
+    def test_transform_get_response_api_response_preserves_error_status(self):
+        """JSON error responses must not be parsed as successful Responses objects."""
+        raw_response = httpx.Response(
+            status_code=404,
+            json={"error": {"message": "Response not found"}},
+        )
+
+        with pytest.raises(OpenAIError) as exc_info:
+            self.config.transform_get_response_api_response(
+                raw_response=raw_response,
+                logging_obj=self.logging_obj,
+            )
+
+        assert exc_info.value.status_code == 404
+        assert "Response not found" in exc_info.value.message
 
     def test_transform_streaming_response(self):
         """Test streaming response transformation"""

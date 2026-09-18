@@ -113,15 +113,40 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
 
     @staticmethod
     def _strip_input_item_namespace(input_items: Any) -> Any:
-        """Remove output-only Codex tool namespaces before history replay."""
+        """Remove output-only fields ChatGPT rejects during history replay."""
         if not isinstance(input_items, list):
             return input_items
 
         sanitized_items: List[Any] = []
         for item in input_items:
-            if isinstance(item, dict) and "namespace" in item:
+            if isinstance(item, dict):
+                message_id = item.get("id")
+                has_invalid_message_id = (
+                    item.get("type") == "message"
+                    and "id" in item
+                    and not (
+                        isinstance(message_id, str) and message_id.startswith("msg_")
+                    )
+                )
+                if "namespace" in item or has_invalid_message_id:
+                    item = dict(item)
+                    item.pop("namespace", None)
+                    if has_invalid_message_id:
+                        item.pop("id", None)
+            sanitized_items.append(item)
+        return sanitized_items
+
+    @staticmethod
+    def _strip_non_persisted_reasoning_item_ids(input_items: Any) -> Any:
+        """Remove reasoning IDs that stateless ChatGPT cannot resolve."""
+        if not isinstance(input_items, list):
+            return input_items
+
+        sanitized_items: List[Any] = []
+        for item in input_items:
+            if isinstance(item, dict) and item.get("type") == "reasoning" and "id" in item:
                 item = dict(item)
-                item.pop("namespace", None)
+                item.pop("id", None)
             sanitized_items.append(item)
         return sanitized_items
 
@@ -587,6 +612,9 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             litellm_params,
             headers,
         )
+        request["input"] = self._strip_non_persisted_reasoning_item_ids(
+            request.get("input")
+        )
         if is_codex_responses_lite:
             request.pop("instructions", None)
         elif extracted_instructions:
@@ -616,7 +644,6 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             "reasoning",
             "text",
             "prompt_cache_key",
-            "previous_response_id",
             "parallel_tool_calls",
             "truncation",
             "service_tier",

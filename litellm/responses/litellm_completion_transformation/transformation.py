@@ -2,6 +2,7 @@
 Handles transforming from Responses API -> LiteLLM completion  (Chat Completion API)
 """
 
+import uuid
 from collections.abc import Sequence
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union, cast
 
@@ -2160,7 +2161,7 @@ class LiteLLMCompletionResponsesConfig:
                 message_output_items.append(
                     GenericResponseOutputItem(
                         type="message",
-                        id=chat_completion_response.id,
+                        id=f"msg_{uuid.uuid4()}",
                         status=LiteLLMCompletionResponsesConfig._map_chat_completion_finish_reason_to_responses_status(
                             choice.finish_reason
                         ),

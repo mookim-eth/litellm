@@ -2094,17 +2094,6 @@ def completion(  # type: ignore # noqa: PLR0915
             if litellm.organization:
                 openai.organization = litellm.organization
 
-            if (
-                len(messages) > 0
-                and "content" in messages[0]
-                and isinstance(messages[0]["content"], list)
-            ):
-                # text-davinci-003 can accept a string or array, if it's an array, assume the array is set in messages[0]['content']
-                # https://platform.openai.com/docs/api-reference/completions/create
-                prompt = messages[0]["content"]
-            else:
-                prompt = " ".join([message["content"] for message in messages])  # type: ignore
-
             ## COMPLETION CALL
             _response = openai_text_completions.completion(
                 model=model,
