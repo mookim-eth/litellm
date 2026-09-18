@@ -91,6 +91,40 @@ def test_get_logging_payload_failure_without_usage_defaults_tokens_to_zero():
     assert payload["total_tokens"] == 0
 
 
+def test_get_logging_payload_preserves_explicit_zero_usage():
+    """Explicit response usage zero must not fall back to stale standard usage."""
+    from datetime import datetime, timezone
+
+    payload = get_logging_payload(
+        kwargs={
+            "model": "test-model",
+            "litellm_call_id": "zero-usage-request",
+            "litellm_params": {"metadata": {}},
+            "standard_logging_object": {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18,
+                "metadata": {},
+                "hidden_params": {},
+                "model_map_information": None,
+            },
+        },
+        response_obj={
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            }
+        },
+        start_time=datetime.now(timezone.utc),
+        end_time=datetime.now(timezone.utc),
+    )
+
+    assert payload["prompt_tokens"] == 0
+    assert payload["completion_tokens"] == 0
+    assert payload["total_tokens"] == 0
+
+
 def test_spend_logs_metadata_hashes_bearer_key():
     metadata = _get_spend_logs_metadata(
         metadata={"user_api_key": "Bearer sk-sensitive-test-key"}

@@ -332,7 +332,7 @@ class TestChatGPTResponsesAPITransformation:
         assert function_call["namespace"] == "multi_agent_v1"
         assert function_call_output["namespace"] == "multi_agent_v1"
 
-    def test_chatgpt_responses_drops_invalid_replayed_message_ids(self):
+    def test_chatgpt_responses_only_drops_replayable_reasoning_ids(self):
         config = ChatGPTResponsesAPIConfig()
         invalid_message = {
             "type": "message",
@@ -346,22 +346,32 @@ class TestChatGPTResponsesAPITransformation:
             "role": "assistant",
             "content": [{"type": "input_text", "text": "Hi"}],
         }
-        reasoning_item = {"type": "reasoning", "id": "rs_existing", "summary": []}
+        replayable_reasoning_item = {
+            "type": "reasoning",
+            "id": "rs_replayable",
+            "summary": [],
+            "encrypted_content": "encrypted-history",
+        }
 
         request = config.transform_responses_api_request(
             model="chatgpt/gpt-5.6-sol",
-            input=[invalid_message, valid_message, reasoning_item],
+            input=[
+                invalid_message,
+                valid_message,
+                replayable_reasoning_item,
+            ],
             response_api_optional_request_params={},
             litellm_params=GenericLiteLLMParams(),
             headers={},
         )
 
-        assert "id" not in request["input"][0]
+        assert request["input"][0]["id"] == "external-message-id"
         assert request["input"][1]["id"] == "msg_existing"
         assert "id" not in request["input"][2]
         assert invalid_message["id"] == "external-message-id"
+        assert replayable_reasoning_item["id"] == "rs_replayable"
 
-    def test_chatgpt_responses_strips_previous_response_id(self):
+    def test_chatgpt_responses_preserves_previous_response_id(self):
         config = ChatGPTResponsesAPIConfig()
         request = config.transform_responses_api_request(
             model="chatgpt/gpt-5.6-sol",
@@ -373,7 +383,7 @@ class TestChatGPTResponsesAPITransformation:
             headers={},
         )
 
-        assert "previous_response_id" not in request
+        assert request["previous_response_id"] == "resp_123"
 
     def test_chatgpt_responses_extracted_instructions_replace_existing_instructions(self):
         config = ChatGPTResponsesAPIConfig()
@@ -562,7 +572,7 @@ class TestChatGPTResponsesAPITransformation:
         assert "stream_options" not in request
 
         assert request["truncation"] == "auto"
-        assert "previous_response_id" not in request
+        assert request["previous_response_id"] == "resp_123"
         assert request["parallel_tool_calls"] is False
         assert request["reasoning"] == {"effort": "medium"}
         assert request["text"] == {"format": {"type": "json_object"}}

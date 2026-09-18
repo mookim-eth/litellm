@@ -113,26 +113,15 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
 
     @staticmethod
     def _strip_input_item_namespace(input_items: Any) -> Any:
-        """Remove output-only fields ChatGPT rejects during history replay."""
+        """Remove output-only Codex tool namespaces before history replay."""
         if not isinstance(input_items, list):
             return input_items
 
         sanitized_items: List[Any] = []
         for item in input_items:
-            if isinstance(item, dict):
-                message_id = item.get("id")
-                has_invalid_message_id = (
-                    item.get("type") == "message"
-                    and "id" in item
-                    and not (
-                        isinstance(message_id, str) and message_id.startswith("msg_")
-                    )
-                )
-                if "namespace" in item or has_invalid_message_id:
-                    item = dict(item)
-                    item.pop("namespace", None)
-                    if has_invalid_message_id:
-                        item.pop("id", None)
+            if isinstance(item, dict) and "namespace" in item:
+                item = dict(item)
+                item.pop("namespace", None)
             sanitized_items.append(item)
         return sanitized_items
 
@@ -144,7 +133,11 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
 
         sanitized_items: List[Any] = []
         for item in input_items:
-            if isinstance(item, dict) and item.get("type") == "reasoning" and "id" in item:
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "reasoning"
+                and "id" in item
+            ):
                 item = dict(item)
                 item.pop("id", None)
             sanitized_items.append(item)
@@ -644,6 +637,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             "reasoning",
             "text",
             "prompt_cache_key",
+            "previous_response_id",
             "parallel_tool_calls",
             "truncation",
             "service_tier",

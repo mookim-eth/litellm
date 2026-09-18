@@ -329,6 +329,10 @@ def get_logging_payload(  # noqa: PLR0915
         standard_logging_total_tokens = (
             standard_logging_payload.get("total_tokens") or 0
         )
+
+    def _usage_token_or_default(key: str, default: int) -> int:
+        value = usage.get(key)
+        return default if value is None else value
     if api_key is not None and isinstance(api_key, str):
         api_key = _hash_api_key_for_spend_log(api_key)
         if (
@@ -481,10 +485,15 @@ def get_logging_payload(  # noqa: PLR0915
             metadata=safe_dumps(clean_metadata),
             cache_key=cache_key,
             spend=kwargs.get("response_cost", 0),
-            total_tokens=usage.get("total_tokens") or standard_logging_total_tokens,
-            prompt_tokens=usage.get("prompt_tokens") or standard_logging_prompt_tokens,
-            completion_tokens=usage.get("completion_tokens")
-            or standard_logging_completion_tokens,
+            total_tokens=_usage_token_or_default(
+                "total_tokens", standard_logging_total_tokens
+            ),
+            prompt_tokens=_usage_token_or_default(
+                "prompt_tokens", standard_logging_prompt_tokens
+            ),
+            completion_tokens=_usage_token_or_default(
+                "completion_tokens", standard_logging_completion_tokens
+            ),
             request_tags=request_tags,
             end_user=end_user_id or "",
             api_base=litellm_params.get("api_base", ""),
