@@ -13,61 +13,64 @@ from litellm.proxy._types import ProxyException
 from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
 
 
+@pytest.mark.asyncio
+async def test_should_preserve_proxy_exception_status_code():
+    """Route errors must retain the status code carried by ProxyException."""
+    from fastapi import Response
+
+    from litellm.proxy.anthropic_endpoints.endpoints import anthropic_response
+
+    proxy_logging_obj = MagicMock()
+    proxy_logging_obj.post_call_failure_hook = AsyncMock()
+    proxy_exception = ProxyException(
+        message="upstream request was rate limited",
+        type="rate_limit_error",
+        param=None,
+        code=429,
+    )
+
+    with (
+        patch(
+            "litellm.proxy.anthropic_endpoints.endpoints._read_request_body",
+            new=AsyncMock(return_value={"model": "test-model"}),
+        ),
+        patch.object(
+            ProxyBaseLLMRequestProcessing,
+            "base_process_llm_request",
+            new=AsyncMock(side_effect=proxy_exception),
+        ),
+        patch.object(
+            ProxyBaseLLMRequestProcessing,
+            "get_custom_headers",
+            return_value={"x-litellm-model-id": "test-deployment"},
+        ),
+        patch.multiple(
+            "litellm.proxy.proxy_server",
+            proxy_logging_obj=proxy_logging_obj,
+            general_settings={},
+            llm_router=None,
+            proxy_config=MagicMock(),
+            user_api_base=None,
+            user_max_tokens=None,
+            user_model=None,
+            user_request_timeout=None,
+            user_temperature=None,
+            version="test",
+        ),
+    ):
+        with pytest.raises(ProxyException) as exc_info:
+            await anthropic_response(
+                fastapi_response=Response(),
+                request=MagicMock(),
+                user_api_key_dict=MagicMock(),
+            )
+
+    assert exc_info.value.code == "429"
+    assert exc_info.value.headers["x-litellm-model-id"] == "test-deployment"
+    proxy_logging_obj.post_call_failure_hook.assert_awaited_once()
+
+
 class TestAnthropicEndpoints(unittest.TestCase):
-    @pytest.mark.asyncio
-    async def test_should_preserve_proxy_exception_status_code(self):
-        """Route errors must retain the status code carried by ProxyException."""
-        from fastapi import Response
-
-        from litellm.proxy.anthropic_endpoints.endpoints import anthropic_response
-
-        proxy_logging_obj = MagicMock()
-        proxy_logging_obj.post_call_failure_hook = AsyncMock()
-        proxy_exception = ProxyException(
-            message="upstream request was rate limited",
-            type="rate_limit_error",
-            param=None,
-            code=429,
-        )
-
-        with (
-            patch(
-                "litellm.proxy.anthropic_endpoints.endpoints._read_request_body",
-                new=AsyncMock(return_value={"model": "test-model"}),
-            ),
-            patch.object(
-                ProxyBaseLLMRequestProcessing,
-                "base_process_llm_request",
-                new=AsyncMock(side_effect=proxy_exception),
-            ),
-            patch.object(
-                ProxyBaseLLMRequestProcessing,
-                "get_custom_headers",
-                return_value={},
-            ),
-            patch.multiple(
-                "litellm.proxy.proxy_server",
-                proxy_logging_obj=proxy_logging_obj,
-                general_settings={},
-                llm_router=None,
-                proxy_config=MagicMock(),
-                user_api_base=None,
-                user_max_tokens=None,
-                user_model=None,
-                user_request_timeout=None,
-                user_temperature=None,
-                version="test",
-            ),
-        ):
-            with pytest.raises(ProxyException) as exc_info:
-                await anthropic_response(
-                    fastapi_response=Response(),
-                    request=MagicMock(),
-                    user_api_key_dict=MagicMock(),
-                )
-
-        assert exc_info.value.code == "429"
-        proxy_logging_obj.post_call_failure_hook.assert_awaited_once()
 
     @patch("litellm.litellm_core_utils.safe_json_dumps.safe_dumps")
     @pytest.mark.asyncio
