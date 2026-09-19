@@ -296,6 +296,9 @@ export const createColumns = (sortProps?: LogsSortProps): ColumnDef<LogEntry>[] 
   {
     header: "Model",
     accessorKey: "model",
+    meta: {
+      className: "w-[220px] min-w-[220px]",
+    },
     cell: (info: any) => {
       const row = info.row.original;
       const provider = row.custom_llm_provider;
@@ -314,7 +317,7 @@ export const createColumns = (sortProps?: LogsSortProps): ColumnDef<LogEntry>[] 
             />
           )}
           <Tooltip title={modelName}>
-            <span className="max-w-[15ch] truncate block">{modelName}</span>
+            <span className="max-w-[32ch] truncate block">{modelName}</span>
           </Tooltip>
         </div>
       );

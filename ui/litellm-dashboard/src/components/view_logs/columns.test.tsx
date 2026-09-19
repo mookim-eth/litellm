@@ -58,4 +58,10 @@ describe("view logs columns", () => {
 
     expect(screen.getByTestId("tooltip")).toHaveAttribute("data-title", "user-123");
   });
+
+  it("should reserve enough width for the model column", () => {
+    const modelColumn = createColumns().find((column) => column.header === "Model");
+
+    expect(modelColumn?.meta).toEqual({ className: "w-[220px] min-w-[220px]" });
+  });
 });
