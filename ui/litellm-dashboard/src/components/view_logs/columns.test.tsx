@@ -62,6 +62,9 @@ describe("view logs columns", () => {
   it("should reserve enough width for the model column", () => {
     const modelColumn = createColumns().find((column) => column.header === "Model");
 
-    expect(modelColumn?.meta).toEqual({ className: "w-[220px] min-w-[220px]" });
+    expect(modelColumn?.meta).toEqual({
+      className: "w-[220px] min-w-[220px]",
+      style: { width: 220, minWidth: 220 },
+    });
   });
 });

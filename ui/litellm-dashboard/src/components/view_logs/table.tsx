@@ -72,6 +72,9 @@ export function DataTable<TData, TValue>({
               {headerGroup.headers.map((header) => {
                 const canSort = enableSorting && header.column.getCanSort();
                 const isSorted = header.column.getIsSorted();
+                const columnMeta = header.column.columnDef.meta as
+                  | { className?: string; style?: Record<string, string | number> }
+                  | undefined;
 
                 return (
                   <TableHeaderCell
@@ -79,6 +82,7 @@ export function DataTable<TData, TValue>({
                     className={`py-1 h-8 ${canSort ? "cursor-pointer select-none hover:bg-gray-50" : ""} ${
                       (header.column.columnDef.meta as { className?: string } | undefined)?.className || ""
                     }`}
+                    style={columnMeta?.style}
                     onClick={canSort ? header.column.getToggleSortingHandler() : undefined}
                   >
                     {header.isPlaceholder ? null : (
@@ -119,6 +123,9 @@ export function DataTable<TData, TValue>({
                       className={`py-0.5 max-h-8 overflow-hidden text-ellipsis whitespace-nowrap ${
                         (cell.column.columnDef.meta as { className?: string } | undefined)?.className || ""
                       }`}
+                      style={
+                        (cell.column.columnDef.meta as { style?: Record<string, string | number> } | undefined)?.style
+                      }
                     >
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </TableCell>

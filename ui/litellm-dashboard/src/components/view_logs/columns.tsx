@@ -298,6 +298,7 @@ export const createColumns = (sortProps?: LogsSortProps): ColumnDef<LogEntry>[] 
     accessorKey: "model",
     meta: {
       className: "w-[220px] min-w-[220px]",
+      style: { width: 220, minWidth: 220 },
     },
     cell: (info: any) => {
       const row = info.row.original;
