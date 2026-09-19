@@ -9,6 +9,13 @@ import { TimeCell } from "./time_cell";
 import { AGENT_CALL_TYPES, MCP_CALL_TYPES } from "./constants";
 import { AgentBadge, LlmBadge, McpBadge } from "./TypeBadges";
 
+declare module "@tanstack/react-table" {
+  interface ColumnMeta<TData, TValue> {
+    className?: string;
+    style?: React.CSSProperties;
+  }
+}
+
 /** API sort field mapping for /spend/logs/ui endpoint */
 export const LOGS_SORT_FIELD_MAP = {
   startTime: "startTime",
