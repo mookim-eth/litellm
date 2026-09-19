@@ -189,6 +189,10 @@ RUN if [ ! -f enterprise/enterprise_ui/enterprise_colors.json ] && [ -f ui/litel
         npm run build && \
         rm -rf ../../litellm/proxy/_experimental/out/* && \
         cp -r out/* ../../litellm/proxy/_experimental/out/ && \
+        INSTALLED_UI_DIR="$(find /usr/lib /usr/local/lib -type d -path '*/site-packages/litellm/proxy/_experimental/out' -print -quit)" && \
+        test -n "$INSTALLED_UI_DIR" && \
+        rm -rf "$INSTALLED_UI_DIR"/* && \
+        cp -r out/. "$INSTALLED_UI_DIR/" && \
         rm -rf out; \
     fi
 RUN ls -la /app
