@@ -178,6 +178,19 @@ RUN pip install *.whl --no-index --no-deps && rm -f *.whl
 # directory).  Keep this as late as possible: Python-only edits now invalidate
 # this cheap copy/chmod tail rather than dependency, Prisma, or CVE-patch layers.
 COPY . .
+
+# Rebuild the default dashboard from the same source tree as the image. The
+# builder stage intentionally has no Node toolchain, while the runtime base
+# already contains Node/npm. Static assets are ignored by the Docker context,
+# so generating them here prevents stale bundles from surviving across builds.
+RUN if [ ! -f enterprise/enterprise_ui/enterprise_colors.json ] && [ -f ui/litellm-dashboard/package.json ]; then \
+        cd ui/litellm-dashboard && \
+        if [ -f package-lock.json ]; then npm_config_min_release_age=259200 npm ci --no-audit --no-fund; else npm_config_min_release_age=259200 npm install --no-audit --no-fund; fi && \
+        npm run build && \
+        rm -rf ../../litellm/proxy/_experimental/out/* && \
+        cp -r out/* ../../litellm/proxy/_experimental/out/ && \
+        rm -rf out; \
+    fi
 RUN ls -la /app
 
 # Convert Windows line endings to Unix for entrypoint scripts
