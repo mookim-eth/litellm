@@ -35,6 +35,13 @@ fi
 echo "Contents of ui_colors.json:"
 cat ui_colors.json
 
+# Install the dashboard dependencies in clean Docker build contexts.
+if [ -f package-lock.json ]; then
+  npm ci --no-audit --no-fund
+else
+  npm install --no-audit --no-fund
+fi
+
 # Run npm build
 npm run build
 
